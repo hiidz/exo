@@ -1,0 +1,7 @@
+# Gradle
+build/
+.gradle/
+
+# Spike capture output, regenerable and large
+*.h264
+*.mp4
