@@ -5,3 +5,16 @@ build/
 # Spike capture output, regenerable and large
 *.h264
 *.mp4
+
+# MSVC build output
+*.exe
+*.obj
+*.dll
+*.lib
+*.exp
+*.pdb
+*.ilk
+
+# Raw frame dumps, regenerable
+*.nv12
+*.raw
