@@ -18,3 +18,10 @@ build/
 # Raw frame dumps, regenerable
 *.nv12
 *.raw
+
+# .NET build output
+bin/
+obj/
+
+# Spike capture stills, regenerable
+*.png
