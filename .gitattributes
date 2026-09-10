@@ -1,0 +1,6 @@
+# Shell scripts run on the phone (bw.sh) or under Git Bash (gradlew), and
+# both break on CRLF line endings. core.autocrlf is true on this machine, so
+# without this a fresh checkout would convert them and the failure would be
+# silent or cryptic.
+*.sh     text eol=lf
+gradlew  text eol=lf
