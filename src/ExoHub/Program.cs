@@ -1,8 +1,8 @@
-// ExoHub. Build order item 3, step 1: capture only.
+// ExoHub. Build order item 3, step 2: capture with ACCESS_LOST recovery.
 //
 // Duplicates the virtual display and logs what every AcquireNextFrame
-// returns. No encode, no network, no recovery: a failure is reported and
-// the process exits. Ctrl+C stops it and prints totals.
+// returns. Any failure drops the duplication and rebuilds it, forever, per
+// DECISIONS 5.5. No encode, no network. Ctrl+C stops it and prints totals.
 //
 // Usage: ExoHub [monitorId]
 // monitorId is the EDID code Windows shows for the monitor, e.g. ACR0721.
@@ -22,59 +22,81 @@ const string VddMonitorId = "MTT1337";
 // shows exactly the gaps the heartbeat will have to fill.
 const uint TimeoutMs = 500;
 
+// Retry waits double from the first to the cap and stay there. Keyed to
+// consecutive failed Reopen attempts, not to losses: one user action gives
+// a burst of losses that each recover in milliseconds (spike 2 step 4). The
+// cap is the most a user waits after unlocking, so it stays short.
+const int FirstRetryMs = 100;
+const int MaxRetryMs = 1000;
+
 // 2 is PROCESS_PER_MONITOR_DPI_AWARE. Anything else means the manifest did
 // not apply, and every rectangle printed below is suspect.
 int awareness = Win32.GetAwarenessFromDpiAwarenessContext(Win32.GetThreadDpiAwarenessContext());
 Console.WriteLine($"dpi awareness {awareness} {(awareness == 2 ? "per-monitor" : "NOT per-monitor")}");
 
-using IDXGIFactory1 factory = DXGI.CreateDXGIFactory1<IDXGIFactory1>();
-List<OutputInfo> outputs = Outputs.List(factory);
-foreach (OutputInfo o in outputs)
-    Console.WriteLine($"  {o}");
+using (IDXGIFactory1 factory = DXGI.CreateDXGIFactory1<IDXGIFactory1>())
+    foreach (OutputInfo o in Outputs.List(factory))
+        Console.WriteLine($"  {o}");
 
 string wanted = args.Length > 0 ? args[0] : VddMonitorId;
-List<OutputInfo> matches = outputs.Where(o => o.MonitorId == wanted).ToList();
-if (matches.Count != 1)
-{
-    Console.WriteLine($"need exactly one output with monitor {wanted ?? "(none given)"}, found {matches.Count}");
-    return 1;
-}
-OutputInfo target = matches[0];
-Console.WriteLine($"target {target}");
-
-DesktopDuplicationSource source;
-try
-{
-    source = DesktopDuplicationSource.Open(factory, target);
-}
-catch (SharpGenException ex)
-{
-    Console.WriteLine($"open failed 0x{ex.ResultCode.Code:X8} {ex.Message}");
-    return 2;
-}
-using var _ = source;
-Console.WriteLine($"duplicating {source.Width}x{source.Height} {source.Format}, timeout {TimeoutMs}ms, Ctrl+C to stop");
+using var source = new DesktopDuplicationSource(wanted);
+Console.WriteLine($"target monitor {wanted}, timeout {TimeoutMs}ms, Ctrl+C to stop");
 Console.WriteLine();
 
 var stop = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; stop.Cancel(); };
 
 var clock = Stopwatch.StartNew();
+var sinceLoss = Stopwatch.StartNew();  // startup counts as the first loss
+int losses = 0, failedAttempts = 0;
 int timeouts = 0, newImages = 0, cursorOnly = 0, disagreements = 0;
 long prevPresent = 0, prevMouse = 0;
-int exitCode = 0;
 
 while (!stop.IsCancellationRequested)
 {
-    Result r = source.Next(TimeoutMs, out FrameKind kind, out OutduplFrameInfo info);
     string t = $"{clock.Elapsed.TotalSeconds,8:F3}s";
+
+    if (!source.IsOpen)
+    {
+        try
+        {
+            source.Reopen();
+        }
+        catch (Exception ex) when (ex is SharpGenException or InvalidOperationException)
+        {
+            failedAttempts++;
+            int waitMs = Math.Min(FirstRetryMs << Math.Min(failedAttempts - 1, 10), MaxRetryMs);
+            // A SharpGenException message is several lines; the HRESULT is the content.
+            string why = ex is SharpGenException sg ? $"0x{sg.ResultCode.Code:X8}" : ex.Message;
+            Console.WriteLine($"{t} attempt {failedAttempts} failed {why} " +
+                              $"removed=0x{source.DeviceRemovedReason.Code:X8}, retry in {waitMs}ms");
+            stop.Token.WaitHandle.WaitOne(waitMs);
+            continue;
+        }
+
+        // isCurrent is printed again here, after recovery, because spike 2
+        // could not tell whether it fires per event or latches false. With a
+        // fresh factory it reads true here, and the next loss line tells.
+        OutputInfo o = source.Output;
+        Console.WriteLine($"{t} {(losses == 0 ? "opened" : "recovered")} after {failedAttempts} failed attempts " +
+                          $"in {sinceLoss.ElapsedMilliseconds}ms: {source.Width}x{source.Height} {source.Format} " +
+                          $"at ({o.Left},{o.Top}) {o.GdiName} isCurrent={source.FactoryIsCurrent} factories={source.FactoriesCreated}");
+        failedAttempts = 0;
+        prevPresent = prevMouse = 0;  // gaps are measured within one duplication only
+        continue;
+    }
+
+    Result r = source.Next(TimeoutMs, out FrameKind kind, out OutduplFrameInfo info);
 
     if (r.Failure)
     {
+        losses++;
         string what = r == Vortice.DXGI.ResultCode.AccessLost ? "ACCESS_LOST" : "acquire failed";
-        Console.WriteLine($"{t} {what} 0x{r.Code:X8}, exiting (recovery is the next step)");
-        exitCode = 3;
-        break;
+        Console.WriteLine($"{t} LOST #{losses} {what} 0x{r.Code:X8} isCurrent={source.FactoryIsCurrent} " +
+                          $"removed=0x{source.DeviceRemovedReason.Code:X8}");
+        source.Drop();
+        sinceLoss.Restart();
+        continue;
     }
 
     if (kind == FrameKind.Timeout)
@@ -114,6 +136,6 @@ while (!stop.IsCancellationRequested)
 }
 
 Console.WriteLine();
-Console.WriteLine($"totals {clock.Elapsed.TotalSeconds:F1}s  timeouts={timeouts} newImages={newImages} " +
+Console.WriteLine($"totals {clock.Elapsed.TotalSeconds:F1}s  losses={losses} timeouts={timeouts} newImages={newImages} " +
                   $"cursorOnly={cursorOnly} disagreements={disagreements}");
-return exitCode;
+return 0;
