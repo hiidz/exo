@@ -138,6 +138,18 @@ sealed class Nv12Converter : IDisposable
 
         processor = videoDevice.CreateVideoProcessor(vpEnum, 0);
 
+        // Colour spaces, DECISIONS 11.7. Both are set rather than left to
+        // the driver, whose own getters misreport its defaults. In: the SDR
+        // desktop, sRGB full range. Out: BT.709 limited ("studio") range,
+        // which is what the stream is tagged and what a decoder assumes
+        // when unsure. The ID3D11VideoContext1 setters speak the DXGI names
+        // the getters below report in.
+        using (var vc1 = videoContext.QueryInterface<ID3D11VideoContext1>())
+        {
+            vc1.VideoProcessorSetStreamColorSpace1(processor, 0, ColorSpaceType.RgbFullG22NoneP709);
+            vc1.VideoProcessorSetOutputColorSpace1(processor, ColorSpaceType.YcbcrStudioG22LeftP709);
+        }
+
         // RenderTarget is what CreateVideoProcessorOutputView requires
         // (spike 5). Default usage: GPU only, no CPU access.
         target = device.CreateTexture2D(new Texture2DDescription
@@ -203,9 +215,9 @@ sealed class Nv12Converter : IDisposable
                 Marshal.Copy(uv + (nint)(y * rowPitch), bytes, w * h + y * w, w);
             File.WriteAllBytes(path, bytes);
 
-            // The range of Y says which range the processor wrote: limited
-            // range puts white at 235, full range at 255. Evidence for
-            // DECISIONS 11.7, not a decision.
+            // The range of Y says which range the processor wrote. Limited
+            // range, as set, keeps Y within 16..235 and UV within 16..240;
+            // a 0 or a 255 means the setting did not take.
             byte yMin = 255, yMax = 0, cMin = 255, cMax = 0;
             for (int i = 0; i < w * h; i++) { yMin = Math.Min(yMin, bytes[i]); yMax = Math.Max(yMax, bytes[i]); }
             for (int i = w * h; i < bytes.Length; i++) { cMin = Math.Min(cMin, bytes[i]); cMax = Math.Max(cMax, bytes[i]); }
@@ -218,8 +230,9 @@ sealed class Nv12Converter : IDisposable
         }
     }
 
-    // What the processor is set to. Nothing here sets a colour space
-    // (DECISIONS 11.7 is open), so these are the defaults it came with.
+    // What the processor reports it is set to. Rebuild sets both colour
+    // spaces; the legacy getters are printed too, since with nothing set
+    // they disagreed with what the processor actually wrote.
     public string ColourReport()
     {
         VideoProcessorColorSpace o = videoContext.VideoProcessorGetOutputColorSpace(processor);

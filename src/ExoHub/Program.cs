@@ -200,13 +200,12 @@ while (!stop.IsCancellationRequested)
         {
             Console.WriteLine($"{t} dump {converter.DumpLast(dumpPath)}");
 
-            // Throwaway inspection, so ffmpeg is fine here. BT.709 full
-            // range is what the processor was measured to write on
-            // 2026-10-09, not a decision on DECISIONS 11.7. Without these
-            // flags ffmpeg assumes BT.601 limited and the PNG looks wrong
-            // when the conversion is right.
+            // Throwaway inspection, so ffmpeg is fine here. BT.709 limited
+            // range is what the converter is set to write (DECISIONS 11.7).
+            // ffmpeg would assume BT.601 without being told, and the PNG
+            // colours would be off when the conversion is right.
             string ffArgs = $"-v error -y -f rawvideo -pix_fmt nv12 -s {converter.Width}x{converter.Height} " +
-                            $"-i \"{dumpPath}\" -vf scale=in_range=full:in_color_matrix=bt709:out_range=full,format=rgb24 " +
+                            $"-i \"{dumpPath}\" -vf scale=in_range=limited:in_color_matrix=bt709:out_range=full,format=rgb24 " +
                             $"\"{dumpPath}.png\"";
             try
             {
