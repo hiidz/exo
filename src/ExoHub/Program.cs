@@ -1,17 +1,25 @@
-// ExoHub. Build order item 3, step 2: capture with ACCESS_LOST recovery.
+// ExoHub. Build order item 3, step 3: BGRA to NV12 on the GPU.
 //
 // Duplicates the virtual display and logs what every AcquireNextFrame
 // returns. Any failure drops the duplication and rebuilds it, forever, per
-// DECISIONS 5.5. No encode, no network. Ctrl+C stops it and prints totals.
+// DECISIONS 5.5. Every new image is converted to NV12 by the video
+// processor while the frame is held. No encode, no network. Ctrl+C stops
+// it and prints totals.
 //
-// Usage: ExoHub [monitorId]
+// Usage: ExoHub [monitorId] [--debug] [--seconds N] [--dump F]
 // monitorId is the EDID code Windows shows for the monitor, e.g. ACR0721.
 // Without one, the virtual display is used.
+// --debug     D3D11 debug layer on, messages printed as they arrive. Slow.
+// --seconds N stop after N seconds, as if Ctrl+C was pressed.
+// --dump F    write the first converted frame to F as raw NV12. The one
+//             debug readback DECISIONS 4.1 allows; nothing reads back
+//             without it.
 
 using System.Diagnostics;
 using ExoHub;
 using ExoHub.Display;
 using SharpGen.Runtime;
+using Vortice.Direct3D11;
 using Vortice.DXGI;
 
 // EDID manufacturer and product code of the Virtual Display Driver monitor.
@@ -38,13 +46,55 @@ using (IDXGIFactory1 factory = DXGI.CreateDXGIFactory1<IDXGIFactory1>())
     foreach (OutputInfo o in Outputs.List(factory))
         Console.WriteLine($"  {o}");
 
-string wanted = args.Length > 0 ? args[0] : VddMonitorId;
-using var source = new DesktopDuplicationSource(wanted);
-Console.WriteLine($"target monitor {wanted}, timeout {TimeoutMs}ms, Ctrl+C to stop");
+string wanted = VddMonitorId;
+bool debugLayer = false;
+double seconds = 0;
+string dumpPath = null;
+for (int i = 0; i < args.Length; i++)
+{
+    switch (args[i])
+    {
+        case "--debug": debugLayer = true; break;
+        case "--seconds": seconds = double.Parse(args[++i]); break;
+        case "--dump": dumpPath = args[++i]; break;
+        default: wanted = args[i]; break;
+    }
+}
+
+using var source = new DesktopDuplicationSource(wanted, debugLayer);
+Console.WriteLine($"target monitor {wanted}, timeout {TimeoutMs}ms, debug layer {(debugLayer ? "ON" : "off")}, " +
+                  $"{(seconds > 0 ? $"stopping after {seconds}s" : "Ctrl+C to stop")}");
 Console.WriteLine();
 
 var stop = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; stop.Cancel(); };
+if (seconds > 0)
+    stop.CancelAfter(TimeSpan.FromSeconds(seconds));
+
+// Created once the first Reopen has made the device, and kept with it.
+Nv12Converter converter = null;
+int debugMessages = 0;
+
+// Which texture objects duplication hands out. If it is one object
+// reused, a per-frame input view could become a cached one; until then the
+// view is made per frame.
+var textures = new HashSet<IntPtr>();
+
+// Per-frame Blt times, for the totals. The first NFR-1 data point.
+var submitMs = new List<double>();
+var doneMs = new List<double>();
+
+// Runs inside Next, between AcquireNextFrame and ReleaseFrame. Records
+// what to print and returns, so printing never lengthens the frame hold.
+bool rebuilt = false;
+Texture2DDescription rebuiltFor = default;
+void OnNewImage(ID3D11Texture2D texture)
+{
+    textures.Add(texture.NativePointer);
+    rebuilt = converter.Convert(texture, source.RefreshRate);
+    if (rebuilt)
+        rebuiltFor = texture.Description;
+}
 
 var clock = Stopwatch.StartNew();
 var sinceLoss = Stopwatch.StartNew();  // startup counts as the first loss
@@ -83,10 +133,41 @@ while (!stop.IsCancellationRequested)
                           $"at ({o.Left},{o.Top}) {o.GdiName} isCurrent={source.FactoryIsCurrent} factories={source.FactoriesCreated}");
         failedAttempts = 0;
         prevPresent = prevMouse = 0;  // gaps are measured within one duplication only
+        converter ??= new Nv12Converter(source.Device, source.Context);
         continue;
     }
 
-    Result r = source.Next(TimeoutMs, out FrameKind kind, out OutduplFrameInfo info);
+    rebuilt = false;
+    Result r;
+    FrameKind kind;
+    OutduplFrameInfo info;
+    try
+    {
+        r = source.Next(TimeoutMs, OnNewImage, out kind, out info);
+    }
+    catch when (debugLayer)
+    {
+        // A converter failure is not a display event, so it is not retried.
+        // Print what the debug layer knows before it propagates.
+        D3DDebug.Drain(source.Device, $"{t} failed");
+        throw;
+    }
+    if (debugLayer)
+        debugMessages += D3DDebug.Drain(source.Device, $"{t} frame");
+
+    if (rebuilt)
+    {
+        // The duplication texture's own description, next to the mode the
+        // duplication reported. Spike 5's dupflags read these from the
+        // primary monitor; this is the VDD.
+        var d = rebuiltFor;
+        Console.WriteLine($"{t} converter build #{converter.Rebuilds} for {d.Width}x{d.Height} {d.Format} " +
+                          $"(mode {source.Width}x{source.Height} @{source.RefreshRate.Numerator}/{source.RefreshRate.Denominator}), " +
+                          $"built in {converter.LastRebuildMs:F1}ms, input view accepted");
+        Console.WriteLine($"           texture usage={d.Usage} bind={d.BindFlags} misc={d.MiscFlags} cpu={d.CPUAccessFlags}");
+        foreach (string line in converter.ColourReport().Split('\n'))
+            Console.WriteLine($"           {line}");
+    }
 
     if (r.Failure)
     {
@@ -106,7 +187,44 @@ while (!stop.IsCancellationRequested)
         continue;
     }
 
-    if (kind == FrameKind.NewImage) newImages++; else cursorOnly++;
+    string blt = "";
+    if (kind == FrameKind.NewImage)
+    {
+        newImages++;
+        submitMs.Add(converter.LastSubmitMs);
+        doneMs.Add(converter.LastDoneMs);
+        blt = $" blt={converter.LastSubmitMs:F2}/{converter.LastDoneMs:F2}ms";
+
+        // After Next returned, so the frame is already released.
+        if (dumpPath != null)
+        {
+            Console.WriteLine($"{t} dump {converter.DumpLast(dumpPath)}");
+
+            // Throwaway inspection, so ffmpeg is fine here. BT.709 full
+            // range is what the processor was measured to write on
+            // 2026-10-09, not a decision on DECISIONS 11.7. Without these
+            // flags ffmpeg assumes BT.601 limited and the PNG looks wrong
+            // when the conversion is right.
+            string ffArgs = $"-v error -y -f rawvideo -pix_fmt nv12 -s {converter.Width}x{converter.Height} " +
+                            $"-i \"{dumpPath}\" -vf scale=in_range=full:in_color_matrix=bt709:out_range=full,format=rgb24 " +
+                            $"\"{dumpPath}.png\"";
+            try
+            {
+                using var ff = Process.Start("ffmpeg", ffArgs);
+                ff.WaitForExit();
+                Console.WriteLine($"           ffmpeg exit {ff.ExitCode}: {dumpPath}.png");
+            }
+            catch (System.ComponentModel.Win32Exception)
+            {
+                Console.WriteLine($"           ffmpeg not found, run: ffmpeg {ffArgs}");
+            }
+            dumpPath = null;
+        }
+    }
+    else
+    {
+        cursorOnly++;
+    }
 
     // Spike 2 never saw these two indicators disagree, on one machine. Keep
     // counting rather than assume it holds everywhere.
@@ -132,10 +250,33 @@ while (!stop.IsCancellationRequested)
     Console.WriteLine($"{t} {(kind == FrameKind.NewImage ? "NEW   " : "CURSOR")} " +
                       $"acc={info.AccumulatedFrames} present={present} mouse={mouse} " +
                       $"ptr={pointer} shape={info.PointerShapeBufferSize} meta={info.TotalMetadataBufferSize}" +
-                      (disagree ? "  INDICATORS DISAGREE" : ""));
+                      blt + (disagree ? "  INDICATORS DISAGREE" : ""));
 }
 
 Console.WriteLine();
 Console.WriteLine($"totals {clock.Elapsed.TotalSeconds:F1}s  losses={losses} timeouts={timeouts} newImages={newImages} " +
                   $"cursorOnly={cursorOnly} disagreements={disagreements}");
+Console.WriteLine($"converter builds={converter?.Rebuilds ?? 0} distinct duplication textures={textures.Count} " +
+                  $"debug messages={(debugLayer ? debugMessages.ToString() : "n/a")}");
+if (debugLayer && source.Device != null)
+{
+    // Positive control. The live object report always produces messages,
+    // so a nonzero count here proves the queue was real and every zero
+    // above meant the layer had nothing to say.
+    using (var debug = source.Device.QueryInterface<Vortice.Direct3D11.Debug.ID3D11Debug>())
+        debug.ReportLiveDeviceObjects(Vortice.Direct3D11.Debug.ReportLiveDeviceObjectFlags.Summary);
+    Console.WriteLine($"debug layer control: live object report gave {D3DDebug.Drain(source.Device, "control")} messages");
+}
+Console.WriteLine($"blt submit ms {Spread(submitMs)}");
+Console.WriteLine($"blt done   ms {Spread(doneMs)}");
+converter?.Dispose();
 return 0;
+
+static string Spread(List<double> ms)
+{
+    if (ms.Count == 0)
+        return "no frames";
+    double[] s = ms.Order().ToArray();
+    double At(double q) => s[(int)Math.Min(s.Length - 1, Math.Floor(q * s.Length))];
+    return $"n={s.Length} min={s[0]:F2} median={At(0.5):F2} p95={At(0.95):F2} p99={At(0.99):F2} max={s[^1]:F2}";
+}

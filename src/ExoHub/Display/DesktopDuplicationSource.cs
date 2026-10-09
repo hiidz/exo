@@ -24,12 +24,19 @@ enum FrameKind
 sealed class DesktopDuplicationSource : IDisposable
 {
     readonly string monitorId;
+    readonly bool debugLayer;
     IDXGIFactory1 factory = DXGI.CreateDXGIFactory1<IDXGIFactory1>();
     ID3D11Device device;           // null until the first successful Reopen
     Luid deviceAdapter;            // the adapter the device was created on
     IDXGIOutputDuplication dup;    // null while lost
 
     public bool IsOpen => dup != null;
+
+    // The device and its immediate context, for whatever consumes frames.
+    // Both are created on the first Reopen and live as long as the source.
+    public ID3D11Device Device => device;
+    public ID3D11DeviceContext Context { get; private set; }
+    public Rational RefreshRate { get; private set; }
 
     // Geometry of the current duplication. A resolution change alters all
     // of these, so they are refreshed on every Reopen, never cached.
@@ -42,9 +49,10 @@ sealed class DesktopDuplicationSource : IDisposable
     public bool FactoryIsCurrent => factory.IsCurrent;
     public int FactoriesCreated { get; private set; } = 1;
 
-    public DesktopDuplicationSource(string monitorId)
+    public DesktopDuplicationSource(string monitorId, bool debugLayer)
     {
         this.monitorId = monitorId;
+        this.debugLayer = debugLayer;
     }
 
     // Finds the target afresh and duplicates it. Called at startup and after
@@ -118,6 +126,7 @@ sealed class DesktopDuplicationSource : IDisposable
         Width = mode.Width;
         Height = mode.Height;
         Format = mode.Format;
+        RefreshRate = mode.RefreshRate;
         Output = target;
     }
 
@@ -134,28 +143,46 @@ sealed class DesktopDuplicationSource : IDisposable
     public Result DeviceRemovedReason => device?.DeviceRemovedReason ?? Result.Ok;
 
     // DriverType must be Unknown when an explicit adapter is passed.
-    // VideoSupport is what the BGRA to NV12 stage will need (spike 5);
-    // BgraSupport is what duplication needs.
-    static ID3D11Device CreateDevice(IDXGIAdapter1 adapter)
+    // VideoSupport is what the BGRA to NV12 stage needs (spike 5);
+    // BgraSupport is what duplication needs. Debug adds the D3D11 debug
+    // layer, which costs speed, so it is off for any timed run.
+    ID3D11Device CreateDevice(IDXGIAdapter1 adapter)
     {
+        var flags = DeviceCreationFlags.VideoSupport | DeviceCreationFlags.BgraSupport;
+        if (debugLayer)
+            flags |= DeviceCreationFlags.Debug;
+
         FeatureLevel[] levels = { FeatureLevel.Level_11_1, FeatureLevel.Level_11_0 };
-        D3D11.D3D11CreateDevice(adapter, DriverType.Unknown,
-                                DeviceCreationFlags.VideoSupport | DeviceCreationFlags.BgraSupport,
-                                levels, out ID3D11Device device, out FeatureLevel _,
+        D3D11.D3D11CreateDevice(adapter, DriverType.Unknown, flags, levels,
+                                out ID3D11Device created, out FeatureLevel _,
                                 out ID3D11DeviceContext context).CheckError();
-        context.Dispose();
-        return device;
+        Context = context;
+
+        // One thread today, but the encoder MFT will call into this device
+        // from its own threads. Without this the symptom is intermittent
+        // corruption rather than an error (spike 5), so it is on from the
+        // start rather than added when the corruption shows up.
+        using (var mt = created.QueryInterface<ID3D11Multithread>())
+            mt.SetMultithreadProtected(true);
+
+        return created;
     }
 
     static string Hex(Luid l) => $"{l.HighPart:X8}:{l.LowPart:X8}";
 
-    // Waits up to timeoutMs for the next frame, classifies it, and releases
-    // it. Nothing consumes the texture yet, so it is not held.
+    // Waits up to timeoutMs for the next frame, classifies it, hands a
+    // NewImage texture to onNewImage, and releases it.
+    //
+    // The texture is only valid inside onNewImage: ReleaseFrame gives it
+    // back to DWM. A callback rather than returning the texture means no
+    // caller can hold a frame across the next acquire. Cursor-only frames
+    // are never passed on; their texture is blank.
     //
     // Returns the AcquireNextFrame result. WAIT_TIMEOUT comes back as
     // success with FrameKind.Timeout. Any other failure, ACCESS_LOST
     // included, is returned for the caller to report.
-    public Result Next(uint timeoutMs, out FrameKind kind, out OutduplFrameInfo info)
+    public Result Next(uint timeoutMs, Action<ID3D11Texture2D> onNewImage,
+                       out FrameKind kind, out OutduplFrameInfo info)
     {
         Result r = dup.AcquireNextFrame(timeoutMs, out info, out IDXGIResource resource);
         kind = FrameKind.Timeout;
@@ -165,22 +192,32 @@ sealed class DesktopDuplicationSource : IDisposable
         if (r.Failure)
             return r;
 
-        // Release every acquired frame before the next acquire, including the
-        // cursor-only ones we do not want. Skipping it produces failures that
-        // look unrelated to their cause. ReleaseFrame can report ACCESS_LOST
-        // too, so its result is passed on rather than ignored.
-        resource.Dispose();
-        r = dup.ReleaseFrame();
-        if (r.Failure)
-            return r;
-
         kind = info.LastPresentTime > 0 ? FrameKind.NewImage : FrameKind.CursorOnly;
-        return Result.Ok;
+        try
+        {
+            if (kind == FrameKind.NewImage)
+            {
+                using var texture = resource.QueryInterface<ID3D11Texture2D>();
+                onNewImage(texture);
+            }
+        }
+        finally
+        {
+            // Release every acquired frame before the next acquire, including
+            // the cursor-only ones, and even when onNewImage threw. Skipping
+            // it produces failures that look unrelated to their cause.
+            // ReleaseFrame can report ACCESS_LOST too, so its result is
+            // passed on rather than ignored.
+            resource.Dispose();
+            r = dup.ReleaseFrame();
+        }
+        return r;
     }
 
     public void Dispose()
     {
         Drop();
+        Context?.Dispose();
         device?.Dispose();
         factory.Dispose();
     }
