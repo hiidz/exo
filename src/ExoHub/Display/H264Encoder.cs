@@ -56,9 +56,14 @@ sealed class H264Encoder : IDisposable
     // from a 40 Mbps setting). A frame that arrives early waits in pending
     // and the timer submits it when the gate opens, unless a newer one
     // replaces it first.
+    //
+    // The gate runs on a fixed schedule: each due time is one interval after
+    // the previous due time, not after the actual submit. The timer fires
+    // about 0.8ms late, and counting from the actual submit added that to
+    // every interval (measured 2026-10-11: 28.6fps instead of 30).
     readonly long interval;
     readonly Timer gateTimer;
-    long lastSubmitQpc;
+    long nextDueQpc;      // 0 until the first submit; then when the next is allowed
     long timerDueQpc;     // 0 when the timer is not armed
     long lastOutputQpc;
     bool forceRequested;  // the next submitted frame is to be an IDR
@@ -254,15 +259,14 @@ sealed class H264Encoder : IDisposable
             return;
 
         long now = Stopwatch.GetTimestamp();
-        long due = lastSubmitQpc + interval;
-        if (lastSubmitQpc != 0 && now < due)
+        if (nextDueQpc != 0 && now < nextDueQpc)
         {
             if (timerDueQpc == 0)
             {
-                timerDueQpc = due;
+                timerDueQpc = nextDueQpc;
                 GateWaits++;
                 // Rounded up, so the timer never fires before the gate opens.
-                long ms = ((due - now) * 1000 + Stopwatch.Frequency - 1) / Stopwatch.Frequency;
+                long ms = ((nextDueQpc - now) * 1000 + Stopwatch.Frequency - 1) / Stopwatch.Frequency;
                 gateTimer.Change(ms, Timeout.Infinite);
             }
             return;
@@ -296,7 +300,13 @@ sealed class H264Encoder : IDisposable
             }
             mft.ProcessInput(0, sample, 0);
         });
-        lastSubmitQpc = now;
+        // Keep the schedule. If this submit came more than an interval after
+        // it was due (an idle screen, or no credit for a while), the old
+        // schedule is in the past and would let a burst through to catch up,
+        // so start a new one from now.
+        nextDueQpc = nextDueQpc == 0 ? now + interval : nextDueQpc + interval;
+        if (nextDueQpc <= now)
+            nextDueQpc = now + interval;
         Submitted++;
     }
 
