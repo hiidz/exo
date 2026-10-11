@@ -7,8 +7,16 @@
 // Every client thread sends the newest message it has not sent; a frame
 // superseded before a client got to it is skipped, never queued. So one
 // decode serves every client (FR-1.3), and a slow client holds back only
-// itself. A published message is never written again, so client threads
-// read it without the lock.
+// itself. A published message is not written again until it is free, so
+// client threads read it without the lock.
+//
+// Message buffers are pooled and reference counted by hand, as COM counts
+// its objects. A new 1.4MB array per frame went on the large-object heap,
+// which only a gen-2 collection reclaims: 12 to 14 of them every 5s at
+// 30fps. The slot holds one reference to the newest frame and each client
+// holds one while it writes; the frame that drops to 0 goes back on the
+// free list, and the producer takes from that list before allocating. So
+// the pool settles at about clients + 2 buffers. All of it under gate.
 //
 // One thread accepts and one thread serves each client, as DeviceListener.
 
@@ -31,10 +39,21 @@ sealed class CameraLink : IDisposable
     readonly Stopwatch clock;
     readonly object gate = new();
     readonly List<Socket> clients = new();  // under gate
-    byte[] latest;     // under gate: the newest whole FRAME message
-    uint latestSeq;    // under gate: its seq
+
+    sealed class Frame(int length)
+    {
+        public readonly byte[] Data = new byte[length];  // a whole FRAME message
+        public uint Seq;
+        public int Refs;  // under gate
+    }
+
+    readonly Stack<Frame> free = new();  // under gate
+    Frame latest;      // under gate: the newest, holding one reference
     uint seq;          // the producer's alone
     bool disposed;     // under gate
+    int allocated;     // under gate: buffers ever made, for the log
+
+    public int Allocated { get { lock (gate) return allocated; } }
 
     // Random per hub start, sent in every WELCOME, as on the device link.
     public ulong SessionId { get; } = BinaryPrimitives.ReadUInt64BigEndian(RandomNumberGenerator.GetBytes(8));
@@ -59,7 +78,24 @@ sealed class CameraLink : IDisposable
     public void Publish(long stampQpc, int width, int height, int stride, ReadOnlySpan<byte> y, ReadOnlySpan<byte> uv)
     {
         int ySize = stride * height, uvSize = stride * height / 2;
-        byte[] m = new byte[Wire.HeaderSize + BodyPrefix + ySize + uvSize];
+        int length = Wire.HeaderSize + BodyPrefix + ySize + uvSize;
+        Frame f = null;
+        lock (gate)
+        {
+            // A buffer of another size, from before a geometry change, is
+            // dropped here for the collector rather than reused.
+            while (f == null && free.TryPop(out Frame old))
+                if (old.Data.Length == length)
+                    f = old;
+            if (f == null)
+            {
+                allocated++;
+                if (allocated <= 8 || allocated % 100 == 0)
+                    Log($"frame buffer {allocated} allocated, {length} bytes");
+            }
+        }
+        f ??= new Frame(length);
+        byte[] m = f.Data;
         m[0] = Wire.TypeFrame;
         BinaryPrimitives.WriteUInt32BigEndian(m.AsSpan(4), (uint)(BodyPrefix + ySize + uvSize));
         BinaryPrimitives.WriteUInt32BigEndian(m.AsSpan(8), ++seq);
@@ -69,14 +105,24 @@ sealed class CameraLink : IDisposable
         BinaryPrimitives.WriteUInt32BigEndian(m.AsSpan(28), (uint)stride);
         y[..ySize].CopyTo(m.AsSpan(Wire.HeaderSize + BodyPrefix));
         uv[..uvSize].CopyTo(m.AsSpan(Wire.HeaderSize + BodyPrefix + ySize));
+        f.Seq = seq;
         lock (gate)
         {
-            latest = m;
-            latestSeq = seq;
+            f.Refs = 1;  // the slot's
+            if (latest != null)
+                ReleaseLocked(latest);
+            latest = f;
             // Monitor is C#'s condition variable: Wait releases the lock and
             // sleeps, PulseAll wakes every waiter to re-check.
             Monitor.PulseAll(gate);
         }
+    }
+
+    // Under gate. The last reference puts the buffer back for reuse.
+    void ReleaseLocked(Frame f)
+    {
+        if (--f.Refs == 0)
+            free.Push(f);
     }
 
     void AcceptLoop()
@@ -191,37 +237,48 @@ sealed class CameraLink : IDisposable
         double windowMaxMs = 0;
         while (true)
         {
-            byte[] m;
-            uint mSeq;
+            Frame f;
             lock (gate)
             {
-                while (!disposed && (latest == null || latestSeq == lastSeq))
+                while (!disposed && (latest == null || latest.Seq == lastSeq))
                     Monitor.Wait(gate);
                 if (disposed)
                     return;
-                m = latest;
-                mSeq = latestSeq;
+                f = latest;
+                f.Refs++;  // ours while we write it
             }
+            byte[] m = f.Data;
+            uint mSeq = f.Seq;
+            // Read while the reference is held: once released, the producer
+            // may refill this buffer.
+            string geometry = sent == 0
+                ? $"{BinaryPrimitives.ReadUInt32BigEndian(m.AsSpan(20))}x{BinaryPrimitives.ReadUInt32BigEndian(m.AsSpan(24))} " +
+                  $"stride {BinaryPrimitives.ReadUInt32BigEndian(m.AsSpan(28))}, {m.Length} bytes"
+                : null;
             if (lastSeq != 0)
                 windowSkipped += (int)(mSeq - lastSeq - 1);
             lastSeq = mSeq;
 
             long now = Stopwatch.GetTimestamp();
-            net.Write(m);
+            try
+            {
+                net.Write(m);
+            }
+            finally
+            {
+                lock (gate)
+                    ReleaseLocked(f);
+            }
             double ms = (Stopwatch.GetTimestamp() - now) * 1000.0 / Stopwatch.Frequency;
             sent++;
             windowFrames++;
             windowMaxMs = Math.Max(windowMaxMs, ms);
-            if (sent == 1)
-            {
-                int w = (int)BinaryPrimitives.ReadUInt32BigEndian(m.AsSpan(20));
-                int h = (int)BinaryPrimitives.ReadUInt32BigEndian(m.AsSpan(24));
-                int stride = (int)BinaryPrimitives.ReadUInt32BigEndian(m.AsSpan(28));
-                Log($"{name} first frame written, seq {mSeq}, {w}x{h} stride {stride}, {m.Length} bytes, in {ms:F2}ms");
-            }
+            if (geometry != null)
+                Log($"{name} first frame written, seq {mSeq}, {geometry}, in {ms:F2}ms");
             if (now - windowStart >= Stopwatch.Frequency * 5)
             {
-                Log($"{name} last 5s: {windowFrames} frames, {windowSkipped} superseded unsent, write max {windowMaxMs:F2}ms");
+                Log($"{name} last 5s: {windowFrames} frames, {windowSkipped} superseded unsent, write max {windowMaxMs:F2}ms, " +
+                    $"{Allocated} frame buffers ever allocated");
                 windowStart = now;
                 windowFrames = windowSkipped = 0;
                 windowMaxMs = 0;
