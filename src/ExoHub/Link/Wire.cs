@@ -23,6 +23,12 @@ static class Wire
     // prefix and framing, its own version. The port is a constant because
     // the DLL reads no config; exo_link.h holds the same two numbers.
     public const int CameraPort = 27184;
-    public const ushort CameraVersion = 1;
+    // 2 added IDLE. A version 1 DLL would skip it and freeze its last picture.
+    public const ushort CameraVersion = 2;
     public const byte TypeFrame = 1;
+    // The hub is alive and has no picture for the DLL, which shows its test
+    // card. Sent after a second with nothing written. The body is one byte,
+    // the reason, for the DLL's log.
+    public const byte TypeIdle = 2;
+    public const byte IdleNotWatching = 1, IdleNoFrame = 2;
 }

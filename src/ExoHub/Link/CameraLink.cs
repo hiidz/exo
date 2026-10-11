@@ -18,6 +18,12 @@
 // free list, and the producer takes from that list before allocating. So
 // the pool settles at about clients + 2 buffers. All of it under gate.
 //
+// Frames go out only while someone watches, which the virtual camera's
+// SOURCE_START and SOURCE_STOP report (SetWatching). With nothing written
+// for a second, a client gets IDLE instead: the hub is alive and has no
+// picture for it, so the DLL shows its test card, and its no-message
+// timeout only fires on a hub that has hung (DECISIONS 5.9).
+//
 // One thread accepts and one thread serves each client, as DeviceListener.
 
 using System.Buffers.Binary;
@@ -32,6 +38,13 @@ namespace ExoHub.Link;
 sealed class CameraLink : IDisposable
 {
     const int HelloTimeoutMs = 2000;
+    // A third of the DLL's 3s no-message timeout, so one late IDLE is no loss.
+    const int IdleMs = 1000;
+    // How often an idle client is checked for having gone. The DLL's Stop
+    // shuts its socket down, but its reader's blocked recv does not wake for
+    // that; it wakes when this side closes. Checked once a second, Stop
+    // waited 778ms of its 1000 (2026-10-11).
+    const int CloseCheckMs = 100;
     // seq u32, generated-at i64, width, height, stride u32 each.
     const int BodyPrefix = 4 + 8 + 3 * 4;
 
@@ -52,6 +65,9 @@ sealed class CameraLink : IDisposable
     uint seq;          // the producer's alone
     bool disposed;     // under gate
     int allocated;     // under gate: buffers ever made, for the log
+    // Under gate. True until a virtual camera says otherwise, so a hub that
+    // registered none sends frames to any client, as before.
+    bool watching = true;
 
     public int Allocated { get { lock (gate) return allocated; } }
 
@@ -131,6 +147,21 @@ sealed class CameraLink : IDisposable
             latest = null;
         }
         Log("slot cleared: the stream ended, so the last frame is not sent again");
+    }
+
+    // Whether anyone is streaming from the camera. Frames are sent only
+    // while true; the slot keeps filling either way, so the newest frame
+    // goes out the moment it turns true.
+    public void SetWatching(bool on, string why)
+    {
+        lock (gate)
+        {
+            if (watching == on)
+                return;
+            watching = on;
+            Monitor.PulseAll(gate);
+        }
+        Log(on ? $"frames resume: {why}" : $"frames held: {why}");
     }
 
     // Under gate. The last reference puts the buffer back for reuse.
@@ -242,34 +273,69 @@ sealed class CameraLink : IDisposable
         return null;
     }
 
-    // Sends the newest frame each time one is published, until a write
-    // fails, the client goes, or the link is disposed. With no frames being
-    // published nothing is written, so a client that went would never be
-    // noticed by a failed write: the wait wakes once a second to look. Seen
-    // 2026-10-11 with the camera phone gone, when each DLL gave up after 3s
-    // without frames and reconnected, and ten such clients piled up.
+    // Sends the newest frame each time one is published while someone
+    // watches, until a write fails, the client goes, or the link is
+    // disposed. After IdleMs with nothing written it sends IDLE, so the DLL
+    // knows the hub is alive. Before that it looks for a client that went:
+    // the DLL never sends after HELLO, so readable means closed, EOF or a
+    // reset. Seen 2026-10-11, before IDLE, with the camera phone gone: each
+    // DLL gave up after 3s without frames and reconnected, and ten such
+    // clients piled up.
     void SendFrames(NetworkStream net, string name, ref int sent)
     {
         Socket s = net.Socket;
         uint lastSeq = 0;
-        long windowStart = Stopwatch.GetTimestamp();
+        long lastWrite = Stopwatch.GetTimestamp();
+        byte idleReason = 0;  // the reason last sent; 0 once a frame follows
+        byte[] idle = new byte[Wire.HeaderSize + 1];
+        idle[0] = Wire.TypeIdle;
+        BinaryPrimitives.WriteUInt32BigEndian(idle.AsSpan(4), 1);
+        long windowStart = lastWrite;
         int windowFrames = 0, windowSkipped = 0;
         double windowMaxMs = 0;
         while (true)
         {
-            Frame f;
+            Frame f = null;
+            byte reason = 0;
             lock (gate)
             {
-                while (!disposed && (latest == null || latest.Seq == lastSeq))
-                    // The DLL never sends after HELLO, so readable means
-                    // closed: EOF, or a reset.
-                    if (!Monitor.Wait(gate, 1000) && s.Poll(0, SelectMode.SelectRead))
+                while (true)
+                {
+                    if (disposed)
+                        return;
+                    if (watching && latest != null && latest.Seq != lastSeq)
+                    {
+                        f = latest;
+                        f.Refs++;  // ours while we write it
+                        break;
+                    }
+                    // Until the IDLE is due, not a fixed second: while frames
+                    // are held, pulses come at the frame rate.
+                    int dueMs = IdleMs - (int)Stopwatch.GetElapsedTime(lastWrite).TotalMilliseconds;
+                    if (dueMs <= 0)
+                    {
+                        reason = watching ? Wire.IdleNoFrame : Wire.IdleNotWatching;
+                        break;
+                    }
+                    if (!Monitor.Wait(gate, Math.Min(dueMs, CloseCheckMs)) && s.Poll(0, SelectMode.SelectRead))
                         throw new EndOfStreamException("client closed while no frames were coming");
-                if (disposed)
-                    return;
-                f = latest;
-                f.Refs++;  // ours while we write it
+                }
             }
+
+            if (f == null)
+            {
+                if (s.Poll(0, SelectMode.SelectRead))
+                    throw new EndOfStreamException("client closed while no frames were coming");
+                idle[Wire.HeaderSize] = reason;
+                net.Write(idle);
+                lastWrite = Stopwatch.GetTimestamp();
+                if (reason != idleReason)
+                    Log($"{name} IDLE sent, {(reason == Wire.IdleNotWatching ? "nobody watching" : "no new frame")}; " +
+                        "repeated each second, logged on change");
+                idleReason = reason;
+                continue;
+            }
+
             byte[] m = f.Data;
             uint mSeq = f.Seq;
             // Read while the reference is held: once released, the producer
@@ -278,8 +344,17 @@ sealed class CameraLink : IDisposable
                 ? $"{BinaryPrimitives.ReadUInt32BigEndian(m.AsSpan(20))}x{BinaryPrimitives.ReadUInt32BigEndian(m.AsSpan(24))} " +
                   $"stride {BinaryPrimitives.ReadUInt32BigEndian(m.AsSpan(28))}, {m.Length} bytes"
                 : null;
-            if (lastSeq != 0)
+            // Frames published while held were never due, so not counted.
+            if (lastSeq != 0 && idleReason == 0)
                 windowSkipped += (int)(mSeq - lastSeq - 1);
+            if (idleReason != 0)
+            {
+                Log($"{name} frames again after IDLE, seq {mSeq}");
+                windowStart = Stopwatch.GetTimestamp();  // so "last 5s" means it
+                windowFrames = windowSkipped = 0;
+                windowMaxMs = 0;
+            }
+            idleReason = 0;
             lastSeq = mSeq;
 
             long now = Stopwatch.GetTimestamp();
@@ -292,7 +367,8 @@ sealed class CameraLink : IDisposable
                 lock (gate)
                     ReleaseLocked(f);
             }
-            double ms = (Stopwatch.GetTimestamp() - now) * 1000.0 / Stopwatch.Frequency;
+            lastWrite = Stopwatch.GetTimestamp();
+            double ms = (lastWrite - now) * 1000.0 / Stopwatch.Frequency;
             sent++;
             windowFrames++;
             windowMaxMs = Math.Max(windowMaxMs, ms);

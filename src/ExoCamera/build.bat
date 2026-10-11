@@ -25,9 +25,4 @@ cl /nologo /EHsc /W4 /WX /Fo:out\ /Fe:out\fmttest.exe test\fmttest.cpp exo_forma
    /link ole32.lib mfplat.lib mfuuid.lib
 if errorlevel 1 exit /b 1
 
-echo --- regcam.exe ---
-cl /nologo /EHsc /W4 /WX /Fo:out\ /Fe:out\regcam.exe test\regcam.cpp ^
-   /link ole32.lib mfplat.lib mfuuid.lib mfsensorgroup.lib
-if errorlevel 1 exit /b 1
-
 echo --- build ok ---

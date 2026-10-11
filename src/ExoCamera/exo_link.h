@@ -1,7 +1,7 @@
 // The DLL's end of L7, the link from the hub (DECISIONS 5.9). One reader
 // thread per stream connects to the hub over loopback and hands each frame
-// to the stream as its new picture. With no link, the stream serves the test
-// card.
+// to the stream as its new picture. With no link, or while the hub sends
+// IDLE, the stream serves the test card.
 //
 // It connects on the stream's first Start, not when the source is created:
 // creation happens inside the registering process and in svchost long
@@ -14,7 +14,8 @@
 // The same two numbers as ExoHub's Wire.cs. The port is a constant because
 // the DLL reads no config, so it has no way to learn a port Windows chose.
 const USHORT EXO_LINK_PORT = 27184;
-const USHORT EXO_LINK_VERSION = 1;
+// 2 added IDLE: the hub has no picture for us, so the test card goes back.
+const USHORT EXO_LINK_VERSION = 2;
 
 class ExoStream;
 

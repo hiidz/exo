@@ -27,6 +27,8 @@
 // --camera-geometry W H S  the test pattern's width, height and stride,
 //             1280 720 1344 by default. Anything but 1280x720 is for
 //             watching ExoCamera.dll refuse it (TECHNICAL_DESIGN 3.3).
+// Whatever the flags, the hub registers the virtual camera for as long as
+// it runs and removes it on exit.
 
 using System.Diagnostics;
 using System.Net.Sockets;
@@ -130,6 +132,10 @@ catch (SocketException ex)
                       "Another hub, or an orphan of one, holds it.");
     return 2;
 }
+// The virtual camera, held for the hub's lifetime (DECISIONS 10 item 4).
+// After L7, so an orphaned hub fails on the port before registering a
+// second camera. Null if registration failed; the hub runs on without it.
+using VirtualCamera vcam = VirtualCamera.Register(clock, camera);
 // The one producer for L7: the decoder, fed by the camera connection or a
 // file, or else the test pattern.
 CameraDecoder decoder = null;
@@ -508,6 +514,9 @@ Console.WriteLine($"blt->out        ms {Spread(bltToOut)}");
 Console.WriteLine($"gate timer late ms {Spread(timerLate)}");
 pattern?.Dispose();
 decoder?.Dispose();
+// Before L7 closes, so the DLL in the Frame Server gets Shutdown with its
+// link still up, rather than a reset and a reconnect first (DECISIONS 5.9).
+vcam?.Dispose();
 camera.Dispose();
 devices.Dispose();  // closes the display connection, so the sender's counts stop moving
 display.Dispose();

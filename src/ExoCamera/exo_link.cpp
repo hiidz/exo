@@ -17,9 +17,12 @@ using Microsoft::WRL::ComPtr;
 // 5.7's limits and timeouts, which 5.9 applies to this link.
 static const DWORD kMaxBody = 4u << 20;
 static const DWORD kWelcomeTimeoutMs = 2000;
-// No frame for this long is a dead hub, or an orphan that accepts and never
-// sends (CLAUDE.md, Process handling): back to the card, and reconnect.
+// No message for this long is a dead hub, or an orphan that accepts and
+// never sends (CLAUDE.md, Process handling): back to the card, and
+// reconnect. A live hub with no frame to send sends IDLE every second.
 static const DWORD kFrameTimeoutMs = 3000;
+// Message types after the handshake.
+static const BYTE kTypeFrame = 1, kTypeIdle = 2;
 static const DWORD kRetryMs = 1000;
 static const DWORD kStopWaitMs = 1000;
 // seq u32, generated-at i64, width, height, stride u32 each.
@@ -309,6 +312,7 @@ void ExoLink::ReadFrames()
     LONGLONG latencySum = 0, latencyMax = 0;
     DWORD lastSeq = 0;
     bool haveSeq = false;
+    bool idle = false;  // the hub's last word was IDLE; logged on change only
     // The last rejected geometry, so each new kind is logged once.
     DWORD badW = 0, badH = 0, badStride = 0, badLength = 0;
 
@@ -323,7 +327,18 @@ void ExoLink::ReadFrames()
             break;
         }
         if (!RecvAll(m_scratch, length)) break;
-        if (type != 1) {
+        if (type == kTypeIdle) {
+            // The hub is alive with no picture for us: nobody is watching,
+            // or no new frame came. Either way the card says so.
+            if (!idle) {
+                ExoLog("link: IDLE, reason %u (1 nobody watching, 2 no new frame), after %d frames; serving the test card",
+                       length >= 1 ? m_scratch[0] : 0, total);
+                m_stream->SetPicture(nullptr, 0);
+                idle = true;
+            }
+            continue;
+        }
+        if (type != kTypeFrame) {
             if (skipped++ == 0) ExoLog("link: skipping message type %u, %lu bytes; logged once", type, length);
             continue;
         }
@@ -357,6 +372,16 @@ void ExoLink::ReadFrames()
             if (!Accept(m_scratch)) break;
             if (total++ == 0) {
                 ExoLog("link: first frame, seq %lu, %lux%lu stride %lu, now the picture", seq, w, h, stride);
+            } else if (idle) {
+                ExoLog("link: frames again after IDLE, seq %lu", seq);
+            }
+            if (idle) {
+                // Frames held while idle were never due: not a gap.
+                haveSeq = false;
+                windowStart = nowUs;
+                frames = rejected = skipped = gaps = 0;
+                latencySum = latencyMax = 0;
+                idle = false;
             }
             frames++;
             gaps += haveSeq && seq != lastSeq + 1 ? 1 : 0;
@@ -375,7 +400,7 @@ void ExoLink::ReadFrames()
             latencySum = latencyMax = 0;
         }
     }
-    ExoLog("link: closed, WSA %d (0 EOF, 10058 Stop, 10060 no frame for %lums, 10053/10054 aborted or reset), after %d frames; "
+    ExoLog("link: closed, WSA %d (0 EOF, 10058 Stop, 10060 no message for %lums, 10053/10054 aborted or reset), after %d frames; "
            "serving the test card", m_lastError, kFrameTimeoutMs, total);
 }
 

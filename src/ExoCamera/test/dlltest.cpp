@@ -423,7 +423,10 @@ static Seen Classify(const BYTE* d, int* markerX)
 
 // --link N: the source started as the Frame Server starts it, then pulled
 // for N seconds, for a run against a live hub. Prints what each second's
-// samples showed. The DLL's own log has the link's side.
+// samples showed. The DLL's own log has the link's side. The hub sends
+// frames only while its registered camera streams (DECISIONS 5.9), so
+// something must stream it through the Frame Server meanwhile, readcam
+// for one; alone, this gets IDLE and the test card, and fails.
 static void LinkRun(IMFActivate* activate, int seconds)
 {
     IMFMediaSourceEx* source = NULL;
