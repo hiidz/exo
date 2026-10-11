@@ -1,0 +1,22 @@
+// The only file Gradle reads to discover this build.
+
+pluginManagement {
+    // Where the Android Gradle Plugin itself is downloaded from.
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+dependencyResolutionManagement {
+    // Modules may not declare their own repositories.
+    repositoriesMode = RepositoriesMode.FAIL_ON_PROJECT_REPOS
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.name = 'ExoPhone'
+include ':app'

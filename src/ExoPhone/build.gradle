@@ -1,0 +1,9 @@
+// Root build file. Declares the plugin version for the whole build but does
+// not apply it, because the root project is not an Android app.
+//
+// No local.properties: build with ANDROID_HOME set to the SDK, so nothing
+// machine-specific is checked in.
+
+plugins {
+    id 'com.android.application' version '9.4.0' apply false
+}

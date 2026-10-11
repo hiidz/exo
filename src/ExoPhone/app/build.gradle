@@ -1,0 +1,29 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace = 'exo.phone'
+
+    // AGP 9 DSL: compileSdk is a block (spike 4 FINDINGS, toolchain).
+    compileSdk {
+        version = release(37)
+    }
+
+    defaultConfig {
+        applicationId = 'exo.phone'
+        // 29 as TECHNICAL_DESIGN 4.5 records. KEY_LOW_LATENCY is API 30 and
+        // is guarded at runtime (DECISIONS 11.5).
+        minSdk = 29
+        targetSdk = 37
+        versionCode = 1
+        versionName = '0.1'
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
+    }
+}
+
+// No dependencies on purpose: framework classes only, no AndroidX.
