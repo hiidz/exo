@@ -17,10 +17,13 @@
     <application
         android:label="Exo"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+        <!-- sensorLandscape: either landscape, whichever way up the device
+             is held. A 180 degree turn keeps the size and orientation, so
+             the activity is not recreated and the link stays up. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:screenOrientation="landscape">
+            android:screenOrientation="sensorLandscape">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

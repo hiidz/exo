@@ -1,7 +1,9 @@
 # Fills the VDD with static text plus motion, repainting as fast
 # as possible, then closes itself after $Seconds. -Static paints the
 # text once, with no motion, so DWM presents nothing more (DECISIONS 5.4).
-param([int]$Seconds = 150, [switch]$Static)
+# -Screen picks a display by name (\\.\DISPLAYn) when more than one is not
+# primary, as when SuperDisplay's monitor is attached beside the VDD.
+param([int]$Seconds = 150, [switch]$Static, [string]$Screen)
 
 Add-Type @"
 using System;
@@ -15,7 +17,8 @@ $ok = [Dpi]::SetProcessDpiAwarenessContext([IntPtr](-4))
 Write-Output "per-monitor aware: $ok"
 
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-$vdd = [System.Windows.Forms.Screen]::AllScreens | Where-Object { -not $_.Primary } | Select-Object -First 1
+[System.Windows.Forms.Screen]::AllScreens | ForEach-Object { Write-Output "screen $($_.DeviceName) $($_.Bounds) primary=$($_.Primary)" }
+$vdd = [System.Windows.Forms.Screen]::AllScreens | Where-Object { if ($Screen) { $_.DeviceName -eq $Screen } else { -not $_.Primary } } | Select-Object -First 1
 Write-Output "vdd $($vdd.DeviceName) $($vdd.Bounds)"
 
 $form = New-Object System.Windows.Forms.Form
