@@ -54,6 +54,13 @@ sealed class Nv12Converter : IDisposable
     // The frame the last Convert wrote, for DumpLast.
     Nv12Frame last;
 
+    // A copy of the last new desktop image, for resends (DECISIONS 5.4).
+    // BGRA rather than NV12 so a pointer can later be drawn on a copy of a
+    // pointer-free image before the Blt (11.1). Only ever a copy source:
+    // a resend writes a fresh pool frame. Sized with the processor.
+    ID3D11Texture2D kept;
+    bool keptFilled;
+
     // The input size the processor was built for.
     public uint Width { get; private set; }
     public uint Height { get; private set; }
@@ -63,6 +70,7 @@ sealed class Nv12Converter : IDisposable
 
     // CPU time to create the input view, submit the Blt and flush it.
     public double LastSubmitMs { get; private set; }
+    public double LastResendMs { get; private set; }
 
     public Nv12Converter(ID3D11Device device, ID3D11DeviceContext context)
     {
@@ -96,11 +104,49 @@ sealed class Nv12Converter : IDisposable
             LastRebuildMs = Stopwatch.GetElapsedTime(r0).TotalMilliseconds;
         }
 
+        long t0 = Stopwatch.GetTimestamp();
+        Nv12Frame frame = pool.Take();
+        if (frame != null)
+            Blt(bgra, frame, t0);
+
+        // After the Blt, so it queues behind it on the GPU rather than
+        // delaying it. Kept even when the pool was empty: the image is new.
+        context.CopyResource(kept, bgra);
+        keptFilled = true;
+
+        // Flush sends the queued commands to the GPU now rather than when
+        // the driver chooses, and does not wait for them. Nothing here waits
+        // for the GPU: ReleaseFrame follows at once, and the duplication
+        // texture's keyed mutex is what keeps DWM's next write behind this
+        // read (not yet observed; the tear test checks it). The encoder
+        // reads the NV12 texture on the same device, which orders it after
+        // the Blt.
+        context.Flush();
+        LastSubmitMs = Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
+        return frame;
+    }
+
+    // The kept image converted into a fresh pool frame (DECISIONS 5.4).
+    // Null before any new image at this size, or when every pool frame is
+    // in use. Called on the capture thread, like Convert, but outside any
+    // frame hold: the kept texture is the hub's own.
+    public Nv12Frame Resend()
+    {
+        if (!keptFilled)
+            return null;
         Nv12Frame frame = pool.Take();
         if (frame == null)
             return null;
-
         long t0 = Stopwatch.GetTimestamp();
+        Blt(kept, frame, t0);
+        context.Flush();
+        LastResendMs = Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
+        return frame;
+    }
+
+    // Converts input into frame, timed by the query ring.
+    void Blt(ID3D11Texture2D bgra, Nv12Frame frame, long t0)
+    {
         frame.BltQpc = t0;
 
         // One view per frame, released before the frame is. A cached view
@@ -123,19 +169,7 @@ sealed class Nv12Converter : IDisposable
         context.End(end[slot]);
         context.End(disjoint[slot]);
         issued[slot] = true;
-
-        // Flush sends the queued commands to the GPU now rather than when
-        // the driver chooses, and does not wait for them. Nothing here waits
-        // for the GPU: ReleaseFrame follows at once, and the duplication
-        // texture's keyed mutex is what keeps DWM's next write behind this
-        // read (not yet observed; the tear test checks it). The encoder
-        // reads the NV12 texture on the same device, which orders it after
-        // the Blt.
-        context.Flush();
-        LastSubmitMs = Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
-
         last = frame;
-        return frame;
     }
 
     // Reads one ring slot without waiting. GetData returns false until the
@@ -194,6 +228,16 @@ sealed class Nv12Converter : IDisposable
             throw new InvalidOperationException("video processor cannot produce NV12");
 
         processor = videoDevice.CreateVideoProcessor(vpEnum, 0);
+
+        // The duplication texture's own description, so size and format
+        // match for CopyResource, and its bind flags, which an input view
+        // already accepts. Not its sharing flags: this copy is the hub's own.
+        kept = device.CreateTexture2D(d with
+        {
+            Usage = ResourceUsage.Default,
+            CPUAccessFlags = CpuAccessFlags.None,
+            MiscFlags = ResourceOptionFlags.None,
+        });
 
         // Colour spaces, DECISIONS 11.7. Both are set rather than left to
         // the driver, whose own getters misreport its defaults. In: the SDR
@@ -308,6 +352,9 @@ sealed class Nv12Converter : IDisposable
         pool?.Dispose();
         pool = null;
         last = null;
+        kept?.Dispose();
+        kept = null;
+        keptFilled = false;
         processor?.Dispose();
         processor = null;
         vpEnum?.Dispose();

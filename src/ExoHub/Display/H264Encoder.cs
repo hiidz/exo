@@ -48,6 +48,7 @@ sealed class H264Encoder : IDisposable
     Nv12Frame pending;    // the newest converted frame, waiting for a credit
     long pendingQpc;
     long firstQpc = -1;   // sample times count from this encoder's first frame
+    long lastSubmittedQpc;
     byte[] copy = new byte[1 << 20];
 
     // The rate gate: at most one submit per interval of wall time (QPC
@@ -91,6 +92,11 @@ sealed class H264Encoder : IDisposable
     public long OutputBytes { get; private set; }
     public Dictionary<MediaEventTypes, int> OtherEvents { get; } = new();
     public int GateWaits { get; private set; }     // times the timer was armed
+    public int Clamped { get; private set; }       // present times moved forward to stay increasing
+
+    // A frame waits for a credit, the gate or the sender. A resend is not
+    // offered then, so it never displaces a real frame (DECISIONS 5.4).
+    public bool HasPending { get { lock (gate) return pending != null; } }
 
     // One line per forced IDR once its output has come out: whether the
     // encoder honoured it. Filled on the event thread, so read through
@@ -175,6 +181,9 @@ sealed class H264Encoder : IDisposable
         codec = new CodecApi(mft.NativePointer);
         codec.Set(CodecApi.LowLatencyMode, 1, CodecApi.VT_BOOL);
         codec.Set(CodecApi.RateControlMode, 0, CodecApi.VT_UI4);  // eAVEncCommonRateControlMode_CBR
+        // DECISIONS 11.6: a keyframe a minute at the encoded rate. Every
+        // keyframe 5.3 needs is forced, and a forced one restarts the count.
+        codec.Set(CodecApi.GopSize, fps * 60, CodecApi.VT_UI4);
 
         // Output first: the encoder only knows what input it accepts once it
         // knows what it produces.
@@ -214,7 +223,7 @@ sealed class H264Encoder : IDisposable
                    $"output stream flags=0x{so.Flags:X} (PROVIDES_SAMPLES={(so.Flags & 0x100) != 0})");
         report.Add(codec.Describe("AVLowLatencyMode", CodecApi.LowLatencyMode));
         report.Add(codec.Describe("AVEncCommonRateControlMode", CodecApi.RateControlMode));
-        report.Add(codec.Describe("AVEncMPVGOPSize (default)", CodecApi.GopSize));
+        report.Add(codec.Describe($"AVEncMPVGOPSize (set {fps * 60})", CodecApi.GopSize));
         report.Add(codec.Describe("AVEncVideoForceKeyFrame", CodecApi.ForceKeyFrame));
         Report = string.Join("\n", report);
 
@@ -280,6 +289,17 @@ sealed class H264Encoder : IDisposable
 
         if (firstQpc < 0)
             firstQpc = pendingQpc;
+
+        // A resend is stamped when offered (DECISIONS 5.4), so an image
+        // presented just before that stamp but acquired after it would go
+        // backwards. The time keys inFlight here and the phone's pts there,
+        // so it must only increase.
+        if (pendingQpc <= lastSubmittedQpc)
+        {
+            pendingQpc = lastSubmittedQpc + 1;
+            Clamped++;
+        }
+        lastSubmittedQpc = pendingQpc;
 
         // Media Foundation time is 100ns units. QPC ticks are converted
         // through the counter's frequency, which is 10MHz on this machine

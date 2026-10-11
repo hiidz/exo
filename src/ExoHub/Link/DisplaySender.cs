@@ -85,6 +85,10 @@ sealed class DisplaySender : IDisposable
         }
     }
 
+    // The capture loop reads these to decide on a resend (DECISIONS 5.4).
+    public bool HasDevice { get { lock (gate) return stream != null; } }
+    public bool KeyframeWanted { get { lock (gate) return keyframeWanted; } }
+
     // The encoder's TrySubmit calls these under its own lock.
     public bool Busy { get { lock (gate) return stream != null && waiting.Count > 0; } }
     public bool TakeKeyframeRequest()

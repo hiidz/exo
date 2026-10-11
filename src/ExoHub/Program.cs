@@ -34,9 +34,9 @@ using Vortice.MediaFoundation;
 // Measured 2026-10-09: Get-PnpDevice shows DISPLAY\MTT1337\..., "VDD by MTT".
 const string VddMonitorId = "MTT1337";
 
-// Matches the 500ms heartbeat interval proposed in DECISIONS 5.4, so the log
-// shows exactly the gaps the heartbeat will have to fill.
-const uint TimeoutMs = 500;
+// The longest the capture loop waits in AcquireNextFrame, which can wait on
+// nothing else. A new connection is noticed within this (DECISIONS 5.4).
+const double WakeMs = 100;
 
 // Retry waits double from the first to the cap and stay there. Keyed to
 // consecutive failed Reopen attempts, not to losses: one user action gives
@@ -44,6 +44,10 @@ const uint TimeoutMs = 500;
 // cap is the most a user waits after unlocking, so it stays short.
 const int FirstRetryMs = 100;
 const int MaxRetryMs = 1000;
+
+// DECISIONS 5.4: with nothing offered to the encoder for this long, the
+// kept image is offered again.
+const double HeartbeatMs = 500;
 
 // NFR-3: 30 to 50 Mbps, do not tune down.
 const uint Bitrate = 40_000_000;
@@ -106,7 +110,7 @@ var tracker = new DeviceTracker(adb, clock, (serial, state) => role?.OnState(ser
 int exitCode = 0;
 
 using var source = new DesktopDuplicationSource(wanted, debugLayer);
-Console.WriteLine($"target monitor {wanted}, timeout {TimeoutMs}ms, debug layer {(debugLayer ? "ON" : "off")}, " +
+Console.WriteLine($"target monitor {wanted}, heartbeat {HeartbeatMs}ms, wake {WakeMs}ms, debug layer {(debugLayer ? "ON" : "off")}, " +
                   $"{(seconds > 0 ? $"stopping after {seconds}s" : "Ctrl+C to stop")}");
 Console.WriteLine();
 
@@ -133,7 +137,7 @@ using FileStream sink = outPath != null ? File.Create(outPath) : null;
 
 // Totals of encoders already replaced, so the end of run covers them all.
 int encodersBuilt = 0, encSubmitted = 0, encReplaced = 0, encOutputs = 0, encKeyframes = 0;
-int encGateWaits = 0, encUnmatched = 0;
+int encGateWaits = 0, encUnmatched = 0, encClamped = 0;
 long encBytes = 0;
 var presentToBlt = new List<double>();
 var bltToSubmit = new List<double>();
@@ -146,7 +150,7 @@ void Retire(H264Encoder e)
     e.Dispose();
     encSubmitted += e.Submitted; encReplaced += e.Replaced; encOutputs += e.Outputs;
     encKeyframes += e.Keyframes; encBytes += e.OutputBytes;
-    encGateWaits += e.GateWaits; encUnmatched += e.UnmatchedOutputs;
+    encGateWaits += e.GateWaits; encUnmatched += e.UnmatchedOutputs; encClamped += e.Clamped;
     presentToBlt.AddRange(e.PresentToBltMs);
     bltToSubmit.AddRange(e.BltToSubmitMs);
     submitToOut.AddRange(e.SubmitToOutMs);
@@ -182,6 +186,8 @@ var sinceLoss = Stopwatch.StartNew();  // startup counts as the first loss
 int losses = 0, failedAttempts = 0;
 int timeouts = 0, newImages = 0, cursorOnly = 0, disagreements = 0;
 long prevPresent = 0, prevMouse = 0;
+long lastOfferQpc = 0;  // 0: never, so the first resend is due at once
+int resends = 0;
 
 while (!stop.IsCancellationRequested)
 {
@@ -221,6 +227,9 @@ while (!stop.IsCancellationRequested)
                           $"at ({o.Left},{o.Top}) {o.GdiName} isCurrent={source.FactoryIsCurrent} factories={source.FactoriesCreated}");
         failedAttempts = 0;
         prevPresent = prevMouse = 0;  // gaps are measured within one duplication only
+        // DECISIONS 5.4: the heartbeat is due at once after a recovery, and
+        // carries the forced IDR below if no new image comes first.
+        lastOfferQpc = 0;
         converter ??= new Nv12Converter(source.Device, source.Context);
 
         // DECISIONS 5.3 and 5.5 step 5. If the size changed, the encoder is
@@ -238,9 +247,16 @@ while (!stop.IsCancellationRequested)
     Result r;
     FrameKind kind;
     OutduplFrameInfo info;
+    // Until the heartbeat is due, capped so a new connection is noticed
+    // soon. At least 1ms: a 0 timeout returns at once and would spin. When
+    // no resend can happen, the cap alone, or an overdue heartbeat would
+    // spin the loop at 1ms.
+    bool canResend = encoder != null && display.HasDevice && !encoder.HasPending;
+    double untilDue = HeartbeatMs - Stopwatch.GetElapsedTime(lastOfferQpc).TotalMilliseconds;
+    uint acquireMs = (uint)(canResend ? Math.Clamp(untilDue, 1, WakeMs) : WakeMs);
     try
     {
-        r = source.Next(TimeoutMs, OnNewImage, out kind, out info);
+        r = source.Next(acquireMs, OnNewImage, out kind, out info);
     }
     catch when (debugLayer)
     {
@@ -294,6 +310,7 @@ while (!stop.IsCancellationRequested)
             dumpPath = null;
         }
         encoder.Offer(converted, info.LastPresentTime);
+        lastOfferQpc = Stopwatch.GetTimestamp();
         converted = null;
     }
     // Printed, not acted on: nothing yet says what recovery from a hung
@@ -319,10 +336,33 @@ while (!stop.IsCancellationRequested)
         continue;
     }
 
+    // DECISIONS 5.4. Only with a device to send to, and never while a real
+    // frame is pending, so a resend never displaces one. A connection
+    // waiting for its keyframe gets one now rather than at the heartbeat.
+    // Stamped now, not with the kept image's present time, so the encoder's
+    // sample time and the phone's pts keep increasing.
+    bool connect = display.KeyframeWanted;
+    if (kind != FrameKind.NewImage && encoder != null && display.HasDevice && !encoder.HasPending &&
+        (connect || Stopwatch.GetElapsedTime(lastOfferQpc).TotalMilliseconds >= HeartbeatMs))
+    {
+        long stamp = Stopwatch.GetTimestamp();
+        Nv12Frame again = converter.Resend();
+        // Restarted even when there was nothing to send (no image yet at
+        // this size, or the pool empty), so the next try is a heartbeat away.
+        lastOfferQpc = stamp;
+        if (again != null)
+        {
+            encoder.Offer(again, stamp);
+            resends++;
+            Console.WriteLine($"{clock.Elapsed.TotalSeconds,8:F3}s RESEND #{resends} {(connect ? "for connection" : "heartbeat")} " +
+                              $"present={DisplaySender.Micros(stamp)}us blt={converter.LastResendMs:F2}ms");
+        }
+    }
+
+    // Counted, not printed: up to ten a second now.
     if (kind == FrameKind.Timeout)
     {
         timeouts++;
-        Console.WriteLine($"{t} timeout");
         continue;
     }
 
@@ -400,6 +440,7 @@ Console.WriteLine($"encoders built={encodersBuilt} submitted={encSubmitted} repl
                   $"keyframes={encKeyframes} bytes={encBytes} " +
                   $"({encBytes * 8 / Math.Max(clock.Elapsed.TotalSeconds, 0.001) / 1e6:F1} Mbps over the whole run, " +
                   $"{(encOutputs > 0 ? encBytes / encOutputs / 1024 : 0)}KB a frame)");
+Console.WriteLine($"resends={resends} present times clamped={encClamped}");
 Console.WriteLine($"gate waits={encGateWaits} unmatched outputs={encUnmatched} " +
                   $"submit rate={encSubmitted / Math.Max(clock.Elapsed.TotalSeconds, 0.001):F1}/s");
 Console.WriteLine($"present->blt    ms {Spread(presentToBlt)}");

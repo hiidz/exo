@@ -1,6 +1,7 @@
 # Fills the VDD with static text plus motion, repainting as fast
-# as possible, then closes itself after $Seconds.
-param([int]$Seconds = 150)
+# as possible, then closes itself after $Seconds. -Static paints the
+# text once, with no motion, so DWM presents nothing more (DECISIONS 5.4).
+param([int]$Seconds = 150, [switch]$Static)
 
 Add-Type @"
 using System;
@@ -44,6 +45,8 @@ $form.Add_Paint({
         }
         $font.Dispose()
     }
+    $script:n++
+    if ($Static) { return }
     # Motion: a bar sweeping across the bottom, and a frame counter.
     $w = $s.ClientSize.Width
     $bx = [int](($sw.Elapsed.TotalSeconds * 600) % $w)
@@ -51,9 +54,16 @@ $form.Add_Paint({
     $big = New-Object System.Drawing.Font('Consolas', 36)
     [System.Windows.Forms.TextRenderer]::DrawText($g, "frame $($script:n)  t=$($sw.Elapsed.TotalSeconds.ToString('0.000'))", $big, (New-Object System.Drawing.Point(20, ($s.ClientSize.Height - 320))), [System.Drawing.Color]::Black)
     $big.Dispose()
-    $script:n++
     if ($sw.Elapsed.TotalSeconds -gt $Seconds) { $s.Close() } else { $s.Invalidate() }
 })
+
+# With no Invalidate loop, a timer closes the static window.
+if ($Static) {
+    $timer = New-Object System.Windows.Forms.Timer
+    $timer.Interval = $Seconds * 1000
+    $timer.Add_Tick({ $form.Close() })
+    $timer.Start()
+}
 
 [System.Windows.Forms.Application]::Run($form)
 Write-Output "painted $($script:n) frames in $($sw.Elapsed.TotalSeconds) s"
