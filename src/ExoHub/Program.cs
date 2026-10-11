@@ -1,12 +1,12 @@
-// ExoHub. Build order item 3, step 3: BGRA to NV12 on the GPU.
+// ExoHub. Build order item 3, step 4: hardware H.264 encode.
 //
 // Duplicates the virtual display and logs what every AcquireNextFrame
 // returns. Any failure drops the duplication and rebuilds it, forever, per
 // DECISIONS 5.5. Every new image is converted to NV12 by the video
-// processor while the frame is held. No encode, no network. Ctrl+C stops
-// it and prints totals.
+// processor while the frame is held, then offered to the hardware encoder
+// once it is released. No network. Ctrl+C stops it and prints totals.
 //
-// Usage: ExoHub [monitorId] [--debug] [--seconds N] [--dump F]
+// Usage: ExoHub [monitorId] [--debug] [--seconds N] [--dump F] [--fps N] [--out F]
 // monitorId is the EDID code Windows shows for the monitor, e.g. ACR0721.
 // Without one, the virtual display is used.
 // --debug     D3D11 debug layer on, messages printed as they arrive. Slow.
@@ -14,6 +14,8 @@
 // --dump F    write the first converted frame to F as raw NV12. The one
 //             debug readback DECISIONS 4.1 allows; nothing reads back
 //             without it.
+// --fps N     the encoded frame rate, 30 by default (DECISIONS 11.2).
+// --out F     write the encoded stream to F as Annex-B H.264.
 
 using System.Diagnostics;
 using ExoHub;
@@ -21,6 +23,7 @@ using ExoHub.Display;
 using SharpGen.Runtime;
 using Vortice.Direct3D11;
 using Vortice.DXGI;
+using Vortice.MediaFoundation;
 
 // EDID manufacturer and product code of the Virtual Display Driver monitor.
 // Measured 2026-10-09: Get-PnpDevice shows DISPLAY\MTT1337\..., "VDD by MTT".
@@ -37,6 +40,9 @@ const uint TimeoutMs = 500;
 const int FirstRetryMs = 100;
 const int MaxRetryMs = 1000;
 
+// NFR-3: 30 to 50 Mbps, do not tune down.
+const uint Bitrate = 40_000_000;
+
 // 2 is PROCESS_PER_MONITOR_DPI_AWARE. Anything else means the manifest did
 // not apply, and every rectangle printed below is suspect.
 int awareness = Win32.GetAwarenessFromDpiAwarenessContext(Win32.GetThreadDpiAwarenessContext());
@@ -50,13 +56,20 @@ string wanted = VddMonitorId;
 bool debugLayer = false;
 double seconds = 0;
 string dumpPath = null;
+// The encoded rate. DECISIONS 11.2 is open; 30 is PROJECT_SPEC's proposal
+// and the only rate encoded so far. It sets the per-frame bit budget and
+// the H.264 level, so it is a flag, not a constant.
+uint fps = 30;
+string outPath = null;
 for (int i = 0; i < args.Length; i++)
 {
     switch (args[i])
     {
         case "--debug": debugLayer = true; break;
+        case "--fps": fps = uint.Parse(args[++i]); break;
         case "--seconds": seconds = double.Parse(args[++i]); break;
         case "--dump": dumpPath = args[++i]; break;
+        case "--out": outPath = args[++i]; break;
         default: wanted = args[i]; break;
     }
 }
@@ -71,8 +84,44 @@ Console.CancelKeyPress += (_, e) => { e.Cancel = true; stop.Cancel(); };
 if (seconds > 0)
     stop.CancelAfter(TimeSpan.FromSeconds(seconds));
 
+// Once per process, before any other Media Foundation call.
+MediaFactory.MFStartup(false).CheckError();
+
+// 1ms timers for the encoder's rate gate. How late the timer actually fires
+// is measured and printed, rather than assumed from this call.
+Win32.timeBeginPeriod(1);
+
 // Created once the first Reopen has made the device, and kept with it.
 Nv12Converter converter = null;
+
+// Built for the converter's size, outside the frame hold, and rebuilt when
+// that size changes. Every encoder writes to the same file, so a size
+// change shows in it as a new SPS mid-stream.
+H264Encoder encoder = null;
+using FileStream sink = outPath != null ? File.Create(outPath) : null;
+
+// Totals of encoders already replaced, so the end of run covers them all.
+int encodersBuilt = 0, encSubmitted = 0, encReplaced = 0, encOutputs = 0, encKeyframes = 0;
+int encGateWaits = 0, encUnmatched = 0;
+long encBytes = 0;
+var presentToBlt = new List<double>();
+var bltToSubmit = new List<double>();
+var submitToOut = new List<double>();
+var bltToOut = new List<double>();
+var timerLate = new List<double>();
+void Retire(H264Encoder e)
+{
+    // Dispose first: until then events keep arriving and the counts move.
+    e.Dispose();
+    encSubmitted += e.Submitted; encReplaced += e.Replaced; encOutputs += e.Outputs;
+    encKeyframes += e.Keyframes; encBytes += e.OutputBytes;
+    encGateWaits += e.GateWaits; encUnmatched += e.UnmatchedOutputs;
+    presentToBlt.AddRange(e.PresentToBltMs);
+    bltToSubmit.AddRange(e.BltToSubmitMs);
+    submitToOut.AddRange(e.SubmitToOutMs);
+    bltToOut.AddRange(e.BltToOutMs);
+    timerLate.AddRange(e.TimerLateMs);
+}
 int debugMessages = 0;
 
 // Which texture objects duplication hands out. If it is one object
@@ -82,16 +131,18 @@ var textures = new HashSet<IntPtr>();
 
 // Per-frame Blt times, for the totals. The first NFR-1 data point.
 var submitMs = new List<double>();
-var doneMs = new List<double>();
 
 // Runs inside Next, between AcquireNextFrame and ReleaseFrame. Records
 // what to print and returns, so printing never lengthens the frame hold.
 bool rebuilt = false;
 Texture2DDescription rebuiltFor = default;
+Nv12Frame converted = null;  // handed to the encoder after the frame is released
+bool poolEmpty = false;
 void OnNewImage(ID3D11Texture2D texture)
 {
     textures.Add(texture.NativePointer);
-    rebuilt = converter.Convert(texture, source.RefreshRate);
+    converted = converter.Convert(texture, source.RefreshRate, out rebuilt);
+    poolEmpty = converted == null;
     if (rebuilt)
         rebuiltFor = texture.Description;
 }
@@ -134,6 +185,15 @@ while (!stop.IsCancellationRequested)
         failedAttempts = 0;
         prevPresent = prevMouse = 0;  // gaps are measured within one duplication only
         converter ??= new Nv12Converter(source.Device, source.Context);
+
+        // DECISIONS 5.3 and 5.5 step 5. If the size changed, the encoder is
+        // rebuilt on the first frame and starts with an IDR anyway, so this
+        // only matters when it is kept.
+        if (losses > 0 && encoder != null)
+        {
+            encoder.ForceKeyframe();
+            Console.WriteLine($"{t} force IDR requested for the next frame");
+        }
         continue;
     }
 
@@ -169,6 +229,48 @@ while (!stop.IsCancellationRequested)
             Console.WriteLine($"           {line}");
     }
 
+    // The converter has no size until it has converted a frame, and the
+    // first acquire after a Reopen is often a timeout or cursor-only.
+    // Building then gave the encoder a 0x0 type, which it refused.
+    if (converter.Width != 0 &&
+        (encoder == null || encoder.Width != converter.Width || encoder.Height != converter.Height))
+    {
+        if (encoder != null)
+            Retire(encoder);
+        long e0 = Stopwatch.GetTimestamp();
+        encoder = new H264Encoder(source.Device, converter.Width, converter.Height, fps, Bitrate, sink);
+        encodersBuilt++;
+        Console.WriteLine($"{t} encoder #{encodersBuilt} {encoder.Name} built for {encoder.Width}x{encoder.Height}@{fps} " +
+                          $"in {Stopwatch.GetElapsedTime(e0).TotalMilliseconds:F1}ms");
+        foreach (string line in encoder.Report.Split('\n'))
+            Console.WriteLine($"           {line}");
+    }
+
+    // After ReleaseFrame, so handing over never lengthens the frame hold.
+    // Even when ReleaseFrame reported a loss: the Blt ran while the frame
+    // was held, so the image is good.
+    if (converted != null)
+    {
+        if (dumpPath != null)
+        {
+            DumpAndDecode(converter, dumpPath, t);
+            dumpPath = null;
+        }
+        encoder.Offer(converted, info.LastPresentTime);
+        converted = null;
+    }
+    // Printed, not acted on: nothing yet says what recovery from a hung
+    // encoder should be, and none has been seen.
+    foreach (string line in encoder?.TakeForcedResults() ?? [])
+        Console.WriteLine($"{t} {line}");
+    double stalled = encoder?.StalledMs ?? 0;
+    if (stalled > 2000)
+        Console.WriteLine($"{t} ENCODER STALLED: input held {stalled:F0}ms with no output");
+    if (encoder?.Error != null)
+        throw new InvalidOperationException($"encoder failed on its event thread: {encoder.Error}");
+    if (converter.Pool?.Error != null)
+        throw new InvalidOperationException($"pool return callback failed: {converter.Pool.Error}");
+
     if (r.Failure)
     {
         losses++;
@@ -191,33 +293,14 @@ while (!stop.IsCancellationRequested)
     if (kind == FrameKind.NewImage)
     {
         newImages++;
-        submitMs.Add(converter.LastSubmitMs);
-        doneMs.Add(converter.LastDoneMs);
-        blt = $" blt={converter.LastSubmitMs:F2}/{converter.LastDoneMs:F2}ms";
-
-        // After Next returned, so the frame is already released.
-        if (dumpPath != null)
+        if (poolEmpty)
         {
-            Console.WriteLine($"{t} dump {converter.DumpLast(dumpPath)}");
-
-            // Throwaway inspection, so ffmpeg is fine here. BT.709 limited
-            // range is what the converter is set to write (DECISIONS 11.7).
-            // ffmpeg would assume BT.601 without being told, and the PNG
-            // colours would be off when the conversion is right.
-            string ffArgs = $"-v error -y -f rawvideo -pix_fmt nv12 -s {converter.Width}x{converter.Height} " +
-                            $"-i \"{dumpPath}\" -vf scale=in_range=limited:in_color_matrix=bt709:out_range=full,format=rgb24 " +
-                            $"\"{dumpPath}.png\"";
-            try
-            {
-                using var ff = Process.Start("ffmpeg", ffArgs);
-                ff.WaitForExit();
-                Console.WriteLine($"           ffmpeg exit {ff.ExitCode}: {dumpPath}.png");
-            }
-            catch (System.ComponentModel.Win32Exception)
-            {
-                Console.WriteLine($"           ffmpeg not found, run: ffmpeg {ffArgs}");
-            }
-            dumpPath = null;
+            blt = " DROPPED, every pool frame in use";
+        }
+        else
+        {
+            submitMs.Add(converter.LastSubmitMs);
+            blt = $" blt={converter.LastSubmitMs:F2}ms";
         }
     }
     else
@@ -267,9 +350,58 @@ if (debugLayer && source.Device != null)
     Console.WriteLine($"debug layer control: live object report gave {D3DDebug.Drain(source.Device, "control")} messages");
 }
 Console.WriteLine($"blt submit ms {Spread(submitMs)}");
-Console.WriteLine($"blt done   ms {Spread(doneMs)}");
+converter?.HarvestAll();
+Console.WriteLine($"blt gpu    ms {Spread(converter?.GpuMs ?? new())} unread={converter?.GpuUnread} disjoint={converter?.GpuDisjoint}");
+
+if (encoder != null)
+{
+    Retire(encoder);
+    string other = string.Join(" ", encoder.OtherEvents.Select(kv => $"{kv.Key}={kv.Value}"));
+    Console.WriteLine($"encoder (current) needInput={encoder.NeedInputs} other events: {(other == "" ? "none" : other)}");
+}
+Console.WriteLine($"encoders built={encodersBuilt} submitted={encSubmitted} replaced={encReplaced} outputs={encOutputs} " +
+                  $"keyframes={encKeyframes} bytes={encBytes} " +
+                  $"({encBytes * 8 / Math.Max(clock.Elapsed.TotalSeconds, 0.001) / 1e6:F1} Mbps over the whole run, " +
+                  $"{(encOutputs > 0 ? encBytes / encOutputs / 1024 : 0)}KB a frame)");
+Console.WriteLine($"gate waits={encGateWaits} unmatched outputs={encUnmatched} " +
+                  $"submit rate={encSubmitted / Math.Max(clock.Elapsed.TotalSeconds, 0.001):F1}/s");
+Console.WriteLine($"present->blt    ms {Spread(presentToBlt)}");
+Console.WriteLine($"blt->submit     ms {Spread(bltToSubmit)}");
+Console.WriteLine($"submit->out     ms {Spread(submitToOut)}");
+Console.WriteLine($"blt->out        ms {Spread(bltToOut)}");
+Console.WriteLine($"gate timer late ms {Spread(timerLate)}");
+if (converter?.Pool is Nv12Pool pool)
+    Console.WriteLine($"pool (current) allocated={pool.Allocated} maxInUse={pool.MaxInUse} inUse={pool.InUse} " +
+                      $"exhausted={pool.Exhausted} encoderReturns={pool.EncoderReturns}");
 converter?.Dispose();
+MediaFactory.MFShutdown();
+Win32.timeEndPeriod(1);
+if (outPath != null)
+    Console.WriteLine($"wrote {outPath}");
 return 0;
+
+// The one debug readback (DECISIONS 4.1). Writes the frame just converted
+// as raw NV12, then has ffmpeg make a PNG of it. Throwaway inspection, so
+// ffmpeg is fine here. BT.709 limited range is what the converter is set
+// to write (DECISIONS 11.7); ffmpeg would assume BT.601 without being
+// told, and the PNG colours would be off when the conversion is right.
+static void DumpAndDecode(Nv12Converter converter, string path, string t)
+{
+    Console.WriteLine($"{t} dump {converter.DumpLast(path)}");
+    string ffArgs = $"-v error -y -f rawvideo -pix_fmt nv12 -s {converter.Width}x{converter.Height} " +
+                    $"-i \"{path}\" -vf scale=in_range=limited:in_color_matrix=bt709:out_range=full,format=rgb24 " +
+                    $"\"{path}.png\"";
+    try
+    {
+        using var ff = Process.Start("ffmpeg", ffArgs);
+        ff.WaitForExit();
+        Console.WriteLine($"           ffmpeg exit {ff.ExitCode}: {path}.png");
+    }
+    catch (System.ComponentModel.Win32Exception)
+    {
+        Console.WriteLine($"           ffmpeg not found, run: ffmpeg {ffArgs}");
+    }
+}
 
 static string Spread(List<double> ms)
 {

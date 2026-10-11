@@ -36,4 +36,13 @@ static class Win32
 
     [DllImport("user32.dll")]
     public static extern int GetAwarenessFromDpiAwarenessContext(IntPtr value);
+
+    // Timer resolution for this process, in milliseconds. The default tick is
+    // about 15.6ms, half a frame at 30fps, and the encoder's rate gate waits
+    // on a timer. Paired: every Begin needs an End with the same value.
+    [DllImport("winmm.dll")]
+    public static extern uint timeBeginPeriod(uint ms);
+
+    [DllImport("winmm.dll")]
+    public static extern uint timeEndPeriod(uint ms);
 }

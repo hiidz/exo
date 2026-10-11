@@ -9,11 +9,14 @@
     <RootNamespace>ExoHub</RootNamespace>
     <!-- Declares per-monitor DPI awareness before any code runs. See app.manifest. -->
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- CodecApi.cs calls ICodecAPI through raw function pointers. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Vortice.DXGI" Version="3.8.3" />
     <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+    <PackageReference Include="Vortice.MediaFoundation" Version="3.8.3" />
   </ItemGroup>
 
 </Project>

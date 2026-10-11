@@ -26,29 +26,43 @@ sealed class Nv12Converter : IDisposable
     readonly ID3D11VideoDevice videoDevice;
     readonly ID3D11VideoContext videoContext;
 
-    // An event query is D3D11's fence: End() puts a marker in the command
-    // stream and GetData reports whether the GPU has passed it. Used only
-    // to time the Blt.
-    readonly ID3D11Query done;
+    // GPU timing of the Blt without the CPU ever waiting for it. A timestamp
+    // query records the GPU clock when the GPU reaches it in the command
+    // stream. A disjoint query around a pair gives that clock's frequency
+    // and says whether it stayed valid (a power state change can break it).
+    // Each Blt takes the next slot of a ring; a slot is read just before it
+    // is reused, frames later, with DoNotFlush, and counted as unread rather
+    // than waited for if the GPU has not got there.
+    const int Ring = 8;
+    readonly ID3D11Query[] disjoint = new ID3D11Query[Ring];
+    readonly ID3D11Query[] start = new ID3D11Query[Ring];
+    readonly ID3D11Query[] end = new ID3D11Query[Ring];
+    readonly bool[] issued = new bool[Ring];
+    int nextSlot;
+
+    public List<double> GpuMs { get; } = new();
+    public int GpuUnread { get; private set; }
+    public int GpuDisjoint { get; private set; }
 
     ID3D11VideoProcessorEnumerator vpEnum;  // null until the first frame
     ID3D11VideoProcessor processor;
 
-    // One NV12 target, overwritten every frame. The encoder holds input
-    // buffers (spike 5), so step 4 replaces this with a pool.
-    ID3D11Texture2D target;
-    ID3D11VideoProcessorOutputView targetView;
+    // The NV12 targets, sized with the processor. The encoder holds its
+    // inputs, so every frame goes to a texture of its own (Nv12Pool).
+    Nv12Pool pool;
+
+    // The frame the last Convert wrote, for DumpLast.
+    Nv12Frame last;
 
     // The input size the processor was built for.
     public uint Width { get; private set; }
     public uint Height { get; private set; }
     public int Rebuilds { get; private set; }
     public double LastRebuildMs { get; private set; }
+    public Nv12Pool Pool => pool;
 
-    // CPU time to create the input view and submit the Blt, and time from
-    // the start of that until the GPU has finished it.
+    // CPU time to create the input view, submit the Blt and flush it.
     public double LastSubmitMs { get; private set; }
-    public double LastDoneMs { get; private set; }
 
     public Nv12Converter(ID3D11Device device, ID3D11DeviceContext context)
     {
@@ -57,18 +71,24 @@ sealed class Nv12Converter : IDisposable
         // Both QIs fail unless the device was created with VideoSupport.
         videoDevice = device.QueryInterface<ID3D11VideoDevice>();
         videoContext = context.QueryInterface<ID3D11VideoContext>();
-        done = device.CreateQuery(QueryType.Event, QueryFlags.None);
+        for (int i = 0; i < Ring; i++)
+        {
+            disjoint[i] = device.CreateQuery(QueryType.TimestampDisjoint, QueryFlags.None);
+            start[i] = device.CreateQuery(QueryType.Timestamp, QueryFlags.None);
+            end[i] = device.CreateQuery(QueryType.Timestamp, QueryFlags.None);
+        }
     }
 
-    // Converts one frame. Must be called while the frame is acquired, which
-    // is what DesktopDuplicationSource.Next's callback guarantees. Returns
-    // true when this frame caused a rebuild.
-    public bool Convert(ID3D11Texture2D bgra, Rational frameRate)
+    // Converts one frame into a frame from the pool. Must be called while
+    // the frame is acquired, which is what DesktopDuplicationSource.Next's
+    // callback guarantees. rebuilt is true when this frame caused a rebuild.
+    // Returns null when every pool frame is in use, and the image is dropped.
+    public Nv12Frame Convert(ID3D11Texture2D bgra, Rational frameRate, out bool rebuilt)
     {
         // Geometry from the texture itself, read every frame. Reading a
         // description is a field copy, not a GPU round trip.
         Texture2DDescription d = bgra.Description;
-        bool rebuilt = processor == null || d.Width != Width || d.Height != Height;
+        rebuilt = processor == null || d.Width != Width || d.Height != Height;
         if (rebuilt)
         {
             long r0 = Stopwatch.GetTimestamp();
@@ -76,33 +96,70 @@ sealed class Nv12Converter : IDisposable
             LastRebuildMs = Stopwatch.GetElapsedTime(r0).TotalMilliseconds;
         }
 
+        Nv12Frame frame = pool.Take();
+        if (frame == null)
+            return null;
+
         long t0 = Stopwatch.GetTimestamp();
+        frame.BltQpc = t0;
 
         // One view per frame, released before the frame is. A cached view
         // would keep a reference to a texture DWM has taken back.
         using var input = videoDevice.CreateVideoProcessorInputView(bgra, vpEnum,
             new VideoProcessorInputViewDescription { ViewDimension = VideoProcessorInputViewDimension.Texture2D });
 
+        int slot = nextSlot;
+        nextSlot = (nextSlot + 1) % Ring;
+        if (issued[slot])
+            Harvest(slot);
+        context.Begin(disjoint[slot]);
+        context.End(start[slot]);
+
         // No source or destination rectangles: the whole input to the whole
         // output, which is the same size.
         var stream = new VideoProcessorStream { Enable = true, InputSurface = input };
-        videoContext.VideoProcessorBlt(processor, targetView, 0, new[] { stream }).CheckError();
+        videoContext.VideoProcessorBlt(processor, frame.View, 0, new[] { stream }).CheckError();
+
+        context.End(end[slot]);
+        context.End(disjoint[slot]);
+        issued[slot] = true;
+
+        // Flush sends the queued commands to the GPU now rather than when
+        // the driver chooses, and does not wait for them. Nothing here waits
+        // for the GPU: ReleaseFrame follows at once, and the duplication
+        // texture's keyed mutex is what keeps DWM's next write behind this
+        // read (not yet observed; the tear test checks it). The encoder
+        // reads the NV12 texture on the same device, which orders it after
+        // the Blt.
+        context.Flush();
         LastSubmitMs = Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
 
-        // Measurement only. Production does not wait here: the encoder takes
-        // the NV12 texture and the GPU orders the work. Flush sends the
-        // queued commands now rather than whenever the driver chooses.
-        // GetData with no buffer only reports status: S_FALSE until the GPU
-        // passes the marker, then S_OK.
-        context.End(done);
-        context.Flush();
-        Result status;
-        while ((status = context.GetData(done, IntPtr.Zero, 0, AsyncGetDataFlags.None)).Code == 1)
-            Thread.SpinWait(20);
-        status.CheckError();
-        LastDoneMs = Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
+        last = frame;
+        return frame;
+    }
 
-        return rebuilt;
+    // Reads one ring slot without waiting. GetData returns false until the
+    // GPU has passed the query.
+    void Harvest(int slot)
+    {
+        issued[slot] = false;
+        if (!context.GetData(disjoint[slot], AsyncGetDataFlags.DoNotFlush, out QueryDataTimestampDisjoint dj) ||
+            !context.GetData(start[slot], AsyncGetDataFlags.DoNotFlush, out ulong t0) ||
+            !context.GetData(end[slot], AsyncGetDataFlags.DoNotFlush, out ulong t1))
+            GpuUnread++;
+        else if (dj.Disjoint)
+            GpuDisjoint++;
+        else
+            GpuMs.Add((t1 - t0) * 1000.0 / dj.Frequency);
+    }
+
+    // The slots still outstanding, for end-of-run totals. Still no waiting:
+    // a slot the GPU has not finished counts as unread.
+    public void HarvestAll()
+    {
+        for (int i = 0; i < Ring; i++)
+            if (issued[i])
+                Harvest(i);
     }
 
     // A frame rate change alone does not rebuild: the rate is a hint to the
@@ -150,21 +207,12 @@ sealed class Nv12Converter : IDisposable
             vc1.VideoProcessorSetOutputColorSpace1(processor, ColorSpaceType.YcbcrStudioG22LeftP709);
         }
 
-        // RenderTarget is what CreateVideoProcessorOutputView requires
-        // (spike 5). Default usage: GPU only, no CPU access.
-        target = device.CreateTexture2D(new Texture2DDescription
-        {
-            Width = d.Width,
-            Height = d.Height,
-            MipLevels = 1,
-            ArraySize = 1,
-            Format = Format.NV12,
-            SampleDescription = new SampleDescription(1, 0),
-            Usage = ResourceUsage.Default,
-            BindFlags = BindFlags.RenderTarget,
-        });
-        targetView = videoDevice.CreateVideoProcessorOutputView(target, vpEnum,
-            new VideoProcessorOutputViewDescription { ViewDimension = VideoProcessorOutputViewDimension.Texture2D });
+        // The pool makes its textures on demand, and each one's output view
+        // through this processor's enumerator.
+        ID3D11VideoProcessorEnumerator e = vpEnum;
+        pool = new Nv12Pool(device, d.Width, d.Height, texture =>
+            videoDevice.CreateVideoProcessorOutputView(texture, e,
+                new VideoProcessorOutputViewDescription { ViewDimension = VideoProcessorOutputViewDimension.Texture2D }));
 
         Width = d.Width;
         Height = d.Height;
@@ -176,13 +224,14 @@ sealed class Nv12Converter : IDisposable
     // frame as tightly packed NV12 (the Y rows, then the interleaved UV
     // rows, each Width bytes) and returns what it saw.
     //
-    // Call it outside the frame hold: it reads our NV12 target, not the
-    // duplication texture, and file I/O must not delay ReleaseFrame.
+    // Call it outside the frame hold: it reads our NV12 texture, not the
+    // duplication texture, and file I/O must not delay ReleaseFrame. Call it
+    // before the frame goes to the encoder, so nothing else touches it.
     public string DumpLast(string path)
     {
         // The CPU can only read a staging texture. Same size and format,
         // no bind flags, CPU read access.
-        Texture2DDescription sd = target.Description;
+        Texture2DDescription sd = last.Texture.Description;
         sd.Usage = ResourceUsage.Staging;
         sd.BindFlags = BindFlags.None;
         sd.CPUAccessFlags = CpuAccessFlags.Read;
@@ -190,7 +239,7 @@ sealed class Nv12Converter : IDisposable
         using ID3D11Texture2D staging = device.CreateTexture2D(sd);
 
         // A GPU copy, then Map, which waits for that copy to finish.
-        context.CopyResource(staging, target);
+        context.CopyResource(staging, last.Texture);
         MappedSubresource m = context.Map(staging, 0, MapMode.Read, Vortice.Direct3D11.MapFlags.None);
         try
         {
@@ -255,10 +304,10 @@ sealed class Nv12Converter : IDisposable
 
     void DisposeSized()
     {
-        targetView?.Dispose();
-        targetView = null;
-        target?.Dispose();
-        target = null;
+        // Frames the encoder still holds are destroyed when they come back.
+        pool?.Dispose();
+        pool = null;
+        last = null;
         processor?.Dispose();
         processor = null;
         vpEnum?.Dispose();
@@ -268,7 +317,12 @@ sealed class Nv12Converter : IDisposable
     public void Dispose()
     {
         DisposeSized();
-        done.Dispose();
+        for (int i = 0; i < Ring; i++)
+        {
+            disjoint[i].Dispose();
+            start[i].Dispose();
+            end[i].Dispose();
+        }
         videoContext.Dispose();
         videoDevice.Dispose();
     }
