@@ -6,7 +6,7 @@
 // processor while the frame is held, then offered to the hardware encoder
 // once it is released. No network. Ctrl+C stops it and prints totals.
 //
-// Usage: ExoHub [monitorId] [--debug] [--seconds N] [--dump F] [--fps N] [--out F]
+// Usage: ExoHub [monitorId] [--debug] [--seconds N] [--dump F] [--fps N] [--out F] [--port N]
 // monitorId is the EDID code Windows shows for the monitor, e.g. ACR0721.
 // Without one, the virtual display is used.
 // --debug     D3D11 debug layer on, messages printed as they arrive. Slow.
@@ -16,10 +16,13 @@
 //             without it.
 // --fps N     the encoded frame rate, 30 by default (DECISIONS 11.2).
 // --out F     write the encoded stream to F as Annex-B H.264.
+// --port N    the loopback port devices reach through adb reverse, 27183 by
+//             default (DECISIONS 5.7). Set up by hand in this slice.
 
 using System.Diagnostics;
 using ExoHub;
 using ExoHub.Display;
+using ExoHub.Link;
 using SharpGen.Runtime;
 using Vortice.Direct3D11;
 using Vortice.DXGI;
@@ -61,6 +64,7 @@ string dumpPath = null;
 // the H.264 level, so it is a flag, not a constant.
 uint fps = 30;
 string outPath = null;
+int port = 27183;
 for (int i = 0; i < args.Length; i++)
 {
     switch (args[i])
@@ -70,6 +74,7 @@ for (int i = 0; i < args.Length; i++)
         case "--seconds": seconds = double.Parse(args[++i]); break;
         case "--dump": dumpPath = args[++i]; break;
         case "--out": outPath = args[++i]; break;
+        case "--port": port = int.Parse(args[++i]); break;
         default: wanted = args[i]; break;
     }
 }
@@ -148,6 +153,10 @@ void OnNewImage(ID3D11Texture2D texture)
 }
 
 var clock = Stopwatch.StartNew();
+using var display = new DisplaySender(clock);
+using var devices = new DeviceListener(port, clock, display);
+Console.WriteLine($"listening on 127.0.0.1:{devices.Port}, session {devices.SessionId:x16}; " +
+                  $"adb reverse localabstract:exo tcp:{devices.Port}");
 var sinceLoss = Stopwatch.StartNew();  // startup counts as the first loss
 int losses = 0, failedAttempts = 0;
 int timeouts = 0, newImages = 0, cursorOnly = 0, disagreements = 0;
@@ -238,7 +247,7 @@ while (!stop.IsCancellationRequested)
         if (encoder != null)
             Retire(encoder);
         long e0 = Stopwatch.GetTimestamp();
-        encoder = new H264Encoder(source.Device, converter.Width, converter.Height, fps, Bitrate, sink);
+        encoder = new H264Encoder(source.Device, converter.Width, converter.Height, fps, Bitrate, sink, display);
         encodersBuilt++;
         Console.WriteLine($"{t} encoder #{encodersBuilt} {encoder.Name} built for {encoder.Width}x{encoder.Height}@{fps} " +
                           $"in {Stopwatch.GetElapsedTime(e0).TotalMilliseconds:F1}ms");
@@ -370,6 +379,13 @@ Console.WriteLine($"blt->submit     ms {Spread(bltToSubmit)}");
 Console.WriteLine($"submit->out     ms {Spread(submitToOut)}");
 Console.WriteLine($"blt->out        ms {Spread(bltToOut)}");
 Console.WriteLine($"gate timer late ms {Spread(timerLate)}");
+devices.Dispose();  // closes the display connection, so the sender's counts stop moving
+display.Dispose();
+Console.WriteLine($"sender connections={display.Connections} sent={display.Sent} bytes={display.SentBytes} " +
+                  $"discarded: no device={display.DiscardedNoDevice} before keyframe={display.DiscardedBeforeKeyframe}; " +
+                  $"max waiting={display.MaxWaiting}");
+Console.WriteLine($"encoded->sent   ms {Spread(display.WaitMs)}");
+Console.WriteLine($"write blocked   ms {Spread(display.WriteMs)}");
 if (converter?.Pool is Nv12Pool pool)
     Console.WriteLine($"pool (current) allocated={pool.Allocated} maxInUse={pool.MaxInUse} inUse={pool.InUse} " +
                       $"exhausted={pool.Exhausted} encoderReturns={pool.EncoderReturns}");

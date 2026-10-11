@@ -2,23 +2,33 @@ package exo.phone;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.graphics.Color;
 import android.hardware.display.DisplayManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.Display;
 import android.view.Gravity;
+import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.widget.FrameLayout;
+import android.widget.TextView;
 
 import java.io.File;
 
 /**
- * The display role, fed from a file. Logs the decoder capabilities, then
- * decodes the file named by the "file" extra to a full-screen SurfaceView.
+ * The display role. Logs the decoder capabilities, then either decodes the
+ * file named by the "file" extra to a full-screen SurfaceView, or, without
+ * one, connects to the hub over localabstract:exo (DECISIONS 5.7):
+ *
+ *   adb shell am start -S -n exo.phone/.MainActivity --es serial TABLETSERIAL [--ei proto 2]
+ *
+ * serial is the adb serial, which the hub supplies because the app cannot
+ * read it. proto overrides the protocol version, only to prove a mismatch
+ * is refused. With a file:
  *
  *   adb shell am start -S -n exo.phone/.MainActivity -e file vdd30.h264
  *       --ef fps 30 --ei w 2944 --ei h 1840 [--ez paced false] [--ez lowlatency false]
@@ -31,7 +41,8 @@ import java.io.File;
 public class MainActivity extends Activity {
     private FrameLayout root;
     private SurfaceView view;
-    private FileDecoder decoder;
+    private Decoder decoder;
+    private Link link;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -59,20 +70,50 @@ public class MainActivity extends Activity {
 
         Intent in = getIntent();
         String name = in.getStringExtra("file");
-        if (name == null) return;
         File dir = getExternalFilesDir(null);
         boolean paced = in.getBooleanExtra("paced", true);
         boolean lowLatency = in.getBooleanExtra("lowlatency", true);
         String codec = in.getStringExtra("codec");
-        String run = name + "-" + (paced ? "paced" : "fast") + (lowLatency ? "-ll" : "-noll")
-                + (codec != null ? "-" + codec : "");
+        // Only a hint for choosing the decoder. Over the link the hub's
+        // virtual display is meant to match the panel (NFR-3).
+        int hintW = in.getIntExtra("w", name == null ? pw : 0), hintH = in.getIntExtra("h", name == null ? ph : 0);
+        if (name == null) logSerialAccess();
+        // Link runs from this start are told apart by the time it happened.
+        String linkRun = String.format("%tH%<tM%<tS", System.currentTimeMillis());
 
+        // Both inputs need the Surface, so both start once it exists and stop
+        // before it goes.
         view.getHolder().addCallback(new SurfaceHolder.Callback() {
             @Override
             public void surfaceCreated(SurfaceHolder holder) {
-                decoder = new FileDecoder(new File(dir, name), new File(dir, run + ".csv"),
-                        in.getFloatExtra("fps", 30), in.getIntExtra("w", 0), in.getIntExtra("h", 0),
-                        paced, lowLatency, codec, holder.getSurface(), MainActivity.this::fit);
+                Surface surface = holder.getSurface();
+                if (name == null) {
+                    link = new Link(in.getStringExtra("serial"), in.getIntExtra("proto", Link.VERSION),
+                            new Link.Listener() {
+                                @Override
+                                public void onRefused(String reason) {
+                                    showRefusal(reason);
+                                }
+
+                                @Override
+                                public Decoder newDecoder(String conn) {
+                                    return Decoder.ofLink(file(conn + ".csv"), hintW, hintH,
+                                            lowLatency, codec, surface, MainActivity.this::fit);
+                                }
+
+                                @Override
+                                public File file(String name) {
+                                    return new File(dir, linkRun + "-" + name);
+                                }
+                            });
+                    link.start();
+                    return;
+                }
+                String run = name + "-" + (paced ? "paced" : "fast") + (lowLatency ? "-ll" : "-noll")
+                        + (codec != null ? "-" + codec : "");
+                decoder = Decoder.ofFile(new File(dir, name), new File(dir, run + ".csv"),
+                        in.getFloatExtra("fps", 30), hintW, hintH, paced, lowLatency, codec, surface,
+                        MainActivity.this::fit);
                 decoder.start();
             }
 
@@ -82,9 +123,46 @@ public class MainActivity extends Activity {
 
             @Override
             public void surfaceDestroyed(SurfaceHolder holder) {
-                decoder.stop();
+                if (link != null) link.stop();
+                if (decoder != null) decoder.stop();
             }
         });
+    }
+
+    /** A refusal is shown over the video, not only logged. Any thread. */
+    private void showRefusal(String reason) {
+        runOnUiThread(() -> {
+            TextView t = new TextView(this);
+            t.setText(reason);
+            t.setTextSize(28);
+            t.setTextColor(Color.RED);
+            t.setBackgroundColor(Color.BLACK);
+            t.setPadding(48, 48, 48, 48);
+            root.addView(t, new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
+        });
+    }
+
+    /**
+     * Whether this app can read its own adb serial. DECISIONS 5.7 infers it
+     * cannot on API 29 and later, which is why the hub passes it in.
+     */
+    private void logSerialAccess() {
+        String api;
+        try {
+            api = Build.getSerial();
+        } catch (SecurityException e) {
+            api = "SecurityException: " + e.getMessage();
+        }
+        String prop;
+        try {
+            Process p = Runtime.getRuntime().exec(new String[] {"getprop", "ro.serialno"});
+            prop = new java.io.BufferedReader(new java.io.InputStreamReader(p.getInputStream())).readLine();
+            p.waitFor();
+        } catch (Exception e) {
+            prop = e.toString();
+        }
+        Log.i(Codecs.TAG, "serial: Build.getSerial() -> " + api + "; getprop ro.serialno -> \"" + prop + "\"");
     }
 
     /** Sizes the view to the picture's aspect ratio, as large as fits. Any thread. */

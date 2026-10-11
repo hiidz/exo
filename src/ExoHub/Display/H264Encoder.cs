@@ -39,6 +39,7 @@ sealed class H264Encoder : IDisposable
     readonly IMFMediaEventGenerator events;
     readonly EventPump pump;  // held so the GC never collects a callback MF can still call
     readonly Stream sink;
+    readonly ExoHub.Link.DisplaySender sender;  // null when nothing is sent
     readonly long duration;  // 100ns units, one frame at the declared rate
 
     readonly object gate = new();
@@ -118,11 +119,14 @@ sealed class H264Encoder : IDisposable
     // iteration, since an exception cannot propagate from there.
     public string Error { get; private set; }
 
-    public H264Encoder(ID3D11Device device, uint width, uint height, uint fps, uint bitrate, Stream sink)
+    public H264Encoder(ID3D11Device device, uint width, uint height, uint fps, uint bitrate, Stream sink,
+                       ExoHub.Link.DisplaySender sender = null)
     {
         Width = width;
         Height = height;
         this.sink = sink;
+        this.sender = sender;
+        sender?.SetKick(Kick);
         duration = 10_000_000 / fps;
         interval = Stopwatch.Frequency / fps;
         gateTimer = new Timer(_ => OnGateTimer());
@@ -255,7 +259,9 @@ sealed class H264Encoder : IDisposable
     // shut.
     void TrySubmit()
     {
-        if (credits == 0 || pending == null)
+        // DECISIONS 5.7: no new input while an encoded frame still waits
+        // for the sender. pending keeps being replaced meanwhile.
+        if (credits == 0 || pending == null || (sender?.Busy ?? false))
             return;
 
         long now = Stopwatch.GetTimestamp();
@@ -285,7 +291,9 @@ sealed class H264Encoder : IDisposable
         pending = null;
         credits--;
         inFlight[time] = (pendingQpc, f.BltQpc, now);
-        bool force = forceRequested;
+        // Asked for here, at submit, so the request is only taken when a
+        // frame is actually going in to carry it.
+        bool force = forceRequested | (sender?.TakeKeyframeRequest() ?? false);
         forceRequested = false;
         f.Owner.Submit(f, sample =>
         {
@@ -316,6 +324,15 @@ sealed class H264Encoder : IDisposable
     {
         lock (gate)
             forceRequested = true;
+    }
+
+    // The sender calls this when it takes a frame to write, which may be
+    // what TrySubmit was waiting for.
+    public void Kick()
+    {
+        lock (gate)
+            if (!disposed)
+                TrySubmit();
     }
 
     // On a thread pool thread, once the gate has opened.
@@ -378,8 +395,10 @@ sealed class H264Encoder : IDisposable
         long outQpc = Stopwatch.GetTimestamp();
         lastOutputQpc = outQpc;
 
+        long presentQpc = 0;
         if (inFlight.Remove(sample.SampleTime, out var times))
         {
+            presentQpc = times.present;
             PresentToBltMs.Add(Ms(times.blt - times.present));
             BltToSubmitMs.Add(Ms(times.submit - times.blt));
             SubmitToOutMs.Add(Ms(outQpc - times.submit));
@@ -415,6 +434,7 @@ sealed class H264Encoder : IDisposable
             buffer.Unlock();
         }
         sink?.Write(copy, 0, length);
+        sender?.Put(copy, length, keyframe, presentQpc, outQpc);
         Outputs++;
         OutputBytes += length;
     }

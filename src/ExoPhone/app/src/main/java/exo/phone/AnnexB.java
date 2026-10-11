@@ -63,6 +63,28 @@ final class AnnexB {
     }
 
     /**
+     * SPS and PPS ahead of the first slice, start codes included, or null.
+     * For a buffer already known to be one access unit, as each link
+     * message is (DECISIONS 5.7): reads NAL headers only up to the first
+     * slice, never the slice data, which is nearly all of the bytes.
+     */
+    ByteBuffer leadingParams() {
+        int paramsStart = -1, paramsEnd = -1;
+        while (pos < end) {
+            int header = headerIndex(pos);
+            int type = buf.get(header) & 0x1F;
+            if (type == SLICE || type == IDR) break;
+            int next = nalStart(header);
+            if (type == SPS || type == PPS) {
+                if (paramsStart < 0) paramsStart = pos;
+                paramsEnd = next;
+            }
+            pos = next;
+        }
+        return paramsStart >= 0 ? view(paramsStart, paramsEnd) : null;
+    }
+
+    /**
      * Index of the next start code at or after from, counting a 4-byte
      * 00 00 00 01 from its first zero; end if there is none.
      */
