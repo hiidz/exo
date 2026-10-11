@@ -18,4 +18,11 @@ static class Wire
     // Every message after the handshake: type, flags, reserved u16, body length u32.
     public const int HeaderSize = 8;
     public const int MaxBody = 4 << 20;
+
+    // L7, the hub to ExoCamera.dll link (DECISIONS 5.9). The same frozen
+    // prefix and framing, its own version. The port is a constant because
+    // the DLL reads no config; exo_link.h holds the same two numbers.
+    public const int CameraPort = 27184;
+    public const ushort CameraVersion = 1;
+    public const byte TypeFrame = 1;
 }

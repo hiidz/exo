@@ -19,8 +19,12 @@
 // --display S the adb serial of the device that holds the display role
 //             (DECISIONS 5.8). Without it every device is tracked and none
 //             is set up. The hub owns adb and issues the reverse itself.
+// --camera-geometry W H S  the synthetic camera frames' width, height and
+//             stride, 1280 720 1344 by default. Anything but 1280x720 is
+//             for watching ExoCamera.dll refuse it (TECHNICAL_DESIGN 3.3).
 
 using System.Diagnostics;
+using System.Net.Sockets;
 using ExoHub;
 using ExoHub.Adb;
 using ExoHub.Display;
@@ -72,6 +76,9 @@ uint fps = 30;
 string outPath = null;
 // The user's choice of display device, until a roles UI exists (FR-4.4).
 string displaySerial = null;
+// L7's synthetic frames (DECISIONS 10 item 4, increment B). The stride is
+// wider than the width on purpose: a reader that ignores it shows a shear.
+int camWidth = 1280, camHeight = 720, camStride = 1344;
 for (int i = 0; i < args.Length; i++)
 {
     switch (args[i])
@@ -82,6 +89,11 @@ for (int i = 0; i < args.Length; i++)
         case "--dump": dumpPath = args[++i]; break;
         case "--out": outPath = args[++i]; break;
         case "--display": displaySerial = args[++i]; break;
+        case "--camera-geometry":
+            camWidth = int.Parse(args[++i]);
+            camHeight = int.Parse(args[++i]);
+            camStride = int.Parse(args[++i]);
+            break;
         default: wanted = args[i]; break;
     }
 }
@@ -91,7 +103,20 @@ var clock = Stopwatch.StartNew();
 // The adb owner comes first, so a refusal exits before the display opens.
 // The job first of all: every process started after it is born inside.
 Job.JoinNew();
-var adb = new AdbServer(clock);
+// L7 next, independent of the display path and of --display. Its port is
+// fixed and held exclusively, so an orphaned hub fails this one here.
+CameraLink camera;
+try
+{
+    camera = new CameraLink(clock, camWidth, camHeight, camStride);
+}
+catch (SocketException ex)
+{
+    Console.WriteLine($"{clock.Elapsed.TotalSeconds,8:F3}s camera REFUSED: port {Wire.CameraPort}: {ex.SocketErrorCode}. " +
+                      "Another hub, or an orphan of one, holds it.");
+    return 2;
+}
+var adb =new AdbServer(clock);
 string refused = adb.CheckForeign() ?? adb.Start();
 if (refused != null)
 {
@@ -448,6 +473,7 @@ Console.WriteLine($"blt->submit     ms {Spread(bltToSubmit)}");
 Console.WriteLine($"submit->out     ms {Spread(submitToOut)}");
 Console.WriteLine($"blt->out        ms {Spread(bltToOut)}");
 Console.WriteLine($"gate timer late ms {Spread(timerLate)}");
+camera.Dispose();
 devices.Dispose();  // closes the display connection, so the sender's counts stop moving
 display.Dispose();
 Console.WriteLine($"sender connections={display.Connections} sent={display.Sent} bytes={display.SentBytes} " +

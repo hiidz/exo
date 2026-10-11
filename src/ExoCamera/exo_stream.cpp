@@ -46,7 +46,8 @@ HRESULT ExoStream::Create(IMFMediaSource* source, IMFStreamDescriptor* sd, ExoSt
     }
     HRESULT hr = MFCreateEventQueue(&s->m_events);
     if (SUCCEEDED(hr)) {
-        hr = ExoCreateCard(&s->m_current);
+        hr = ExoCreateCard(&s->m_card);
+        s->m_current = s->m_card;
     }
     if (SUCCEEDED(hr)) {
         // The frame clock. Its callback gets this stream as a raw pointer,
@@ -85,6 +86,11 @@ HRESULT ExoStream::Start()
     if (SUCCEEDED(hr)) {
         hr = m_events->QueueEventParamVar(MEStreamStarted, GUID_NULL, S_OK, nullptr);
     }
+    // Connect on the first Start, not at creation (TECHNICAL_DESIGN 3.2 (b)).
+    // Later Starts, from the source or from SetStreamState, find it started.
+    if (SUCCEEDED(hr)) {
+        m_link.Start(this);
+    }
     return hr;
 }
 
@@ -119,6 +125,8 @@ void ExoStream::StopLocked()
 
 void ExoStream::Shutdown()
 {
+    // First, and outside the lock: the reader takes it to set a picture.
+    m_link.Stop();
     ComPtr<IMFMediaSource> source;
     AcquireSRWLockExclusive(&m_lock);
     m_shutdown = true;
@@ -130,6 +138,18 @@ void ExoStream::Shutdown()
     // After this no tick is running or will run, so the stream may be freed.
     WaitForThreadpoolTimerCallbacks(m_timer, TRUE);
     m_events->Shutdown();
+}
+
+void ExoStream::SetPicture(IMFMediaBuffer* picture, LONGLONG stampUs)
+{
+    // Swapped in under the lock, released outside it. A tick copying the old
+    // picture took its own reference, so it finishes on the old one.
+    ComPtr<IMFMediaBuffer> old;
+    AcquireSRWLockExclusive(&m_lock);
+    old.Swap(m_current);
+    m_current = picture ? picture : m_card.Get();
+    m_currentStampUs = picture ? stampUs : 0;
+    ReleaseSRWLockExclusive(&m_lock);
 }
 
 // ---- IUnknown -------------------------------------------------------
@@ -246,6 +266,7 @@ void ExoStream::Tick()
     ComPtr<IUnknown> token;
     ComPtr<IMFVideoSampleAllocatorEx> allocator;
     ComPtr<IMFMediaBuffer> picture;
+    LONGLONG stampUs = 0;
     //
     // One tick at a time. When consumers hold every sample in the pool,
     // AllocateSample waits up to a second for one to come back (dlltest);
@@ -263,6 +284,7 @@ void ExoStream::Tick()
         m_pendingCount--;
         allocator = m_allocator;
         picture = m_current;
+        stampUs = m_currentStampUs;
     }
     ReleaseSRWLockExclusive(&m_lock);
     if (!serve) {
@@ -307,7 +329,10 @@ void ExoStream::Tick()
     ReleaseSRWLockExclusive(&m_lock);
     LARGE_INTEGER t1;
     QueryPerformanceCounter(&t1);
-    Report(Count(Served, t1.QuadPart - t0.QuadPart, hr));
+    // How old the hub's frame is when an app gets it. Frames arrive out of
+    // phase with this clock, so this is the cost of holding requests to it.
+    LONGLONG ageUs = stampUs ? ExoQpcMicros() - stampUs : -1;
+    Report(Count(Served, t1.QuadPart - t0.QuadPart, hr, ageUs));
 }
 
 // Copies src, NV12 in the advertised geometry with rows EXO_WIDTH bytes
@@ -387,7 +412,7 @@ void ExoStream::ReleasePoolLocked()
     }
 }
 
-ExoStream::Counts ExoStream::Count(Kind kind, LONGLONG serveTicks, HRESULT hr)
+ExoStream::Counts ExoStream::Count(Kind kind, LONGLONG serveTicks, HRESULT hr, LONGLONG ageUs)
 {
     LARGE_INTEGER now, freq;
     QueryPerformanceCounter(&now);
@@ -404,6 +429,11 @@ ExoStream::Counts ExoStream::Count(Kind kind, LONGLONG serveTicks, HRESULT hr)
         m_ticksTotal += serveTicks;
         if (serveTicks > m_ticksMax) {
             m_ticksMax = serveTicks;
+        }
+        if (ageUs >= 0 && SUCCEEDED(hr)) {
+            m_fromHub++;
+            m_ageTotal += ageUs;
+            m_ageMax = ageUs > m_ageMax ? ageUs : m_ageMax;
         }
     } else {
         m_requests++;
@@ -425,6 +455,12 @@ ExoStream::Counts ExoStream::Count(Kind kind, LONGLONG serveTicks, HRESULT hr)
         c.served = m_served;
         c.meanUs = m_served ? m_ticksTotal * 1e6 / freq.QuadPart / m_served : 0;
         c.maxUs = m_ticksMax * 1e6 / freq.QuadPart;
+        c.fromHub = m_fromHub;
+        c.ageMeanMs = m_fromHub ? m_ageTotal / 1000.0 / m_fromHub : 0;
+        c.ageMaxMs = m_ageMax / 1000.0;
+        m_fromHub = 0;
+        m_ageTotal = 0;
+        m_ageMax = 0;
         m_windowStart = now.QuadPart;
         m_requests = 0;
         m_refused = 0;
@@ -448,8 +484,9 @@ void ExoStream::Report(const Counts& c)
                (unsigned long)c.hr);
     }
     if (c.report) {
-        ExoLog("last second: %ld requests, %ld refused, %ld served, %.1fus mean to serve, %.1fus max",
-               c.requests, c.refused, c.served, c.meanUs, c.maxUs);
+        ExoLog("last second: %ld requests, %ld refused, %ld served, %.1fus mean to serve, %.1fus max; "
+               "%ld from the hub, aged %.1fms mean %.1fms max when served",
+               c.requests, c.refused, c.served, c.meanUs, c.maxUs, c.fromHub, c.ageMeanMs, c.ageMaxMs);
     }
 }
 

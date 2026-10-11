@@ -3,6 +3,7 @@
 #pragma once
 
 #include "exo_ks.h"
+#include "exo_link.h"
 
 #include <windows.h>
 #include <mfidl.h>
@@ -20,9 +21,12 @@ public:
     static HRESULT Create(IMFMediaSource* source, IMFStreamDescriptor* sd, ExoStream** out);
 
     // Called by the source, not through COM.
-    HRESULT Start();   // queues MEStreamStarted; samples may be requested
-    HRESULT Stop();    // queues MEStreamStopped
-    void Shutdown();   // refuses everything after, and drops the source
+    HRESULT Start();   // queues MEStreamStarted, and starts the link once
+    HRESULT Stop();    // queues MEStreamStopped; the link stays up
+    void Shutdown();   // stops the link, refuses everything after, drops the source
+    // Called by the link's reader: a new picture, NV12 at EXO_WIDTH, and
+    // the hub's QPC microsecond stamp for it. Null puts the test card back.
+    void SetPicture(IMFMediaBuffer* picture, LONGLONG stampUs);
     // The Frame Server's sample allocator, passed on by the source's
     // IMFSampleAllocatorControl::SetDefaultAllocator.
     HRESULT SetAllocator(IUnknown* allocator);
@@ -64,11 +68,14 @@ private:
         bool report;        // a second has passed; the totals below are set
         LONG requests, refused, served;
         double meanUs, maxUs;  // time to serve one sample
+        LONG fromHub;          // samples served from a hub frame, not the card
+        double ageMeanMs, ageMaxMs;  // their age when served: now minus the hub's stamp
     };
 
-    // Counts requests, refusals and samples served, and the time to serve.
+    // Counts requests, refusals and samples served, the time to serve, and
+    // for a hub frame its age when served (ageUs, -1 for the card).
     // Under the lock; the logging happens in Report, outside it.
-    Counts Count(Kind kind, LONGLONG serveTicks, HRESULT hr);
+    Counts Count(Kind kind, LONGLONG serveTicks, HRESULT hr, LONGLONG ageUs = -1);
     void Report(const Counts& c);
 
     // The frame clock: a thread-pool timer that fires once a frame while the
@@ -87,6 +94,9 @@ private:
     Microsoft::WRL::ComPtr<IMFMediaEventQueue> m_events;
     Microsoft::WRL::ComPtr<IMFStreamDescriptor> m_sd;
     PTP_TIMER m_timer = nullptr;
+    Microsoft::WRL::ComPtr<IMFMediaBuffer> m_card;  // the test card, "not connected"
+    // L7. Has its own lock; called outside this stream's.
+    ExoLink m_link;
 
     SRWLOCK m_lock = SRWLOCK_INIT;  // guards everything below
     bool m_shutdown = false;
@@ -96,6 +106,7 @@ private:
     // The picture every request is served, copied into a sample from the
     // Frame Server's pool. Only ever replaced, never written.
     Microsoft::WRL::ComPtr<IMFMediaBuffer> m_current;
+    LONGLONG m_currentStampUs = 0;  // the hub's stamp for it; 0 for the card
     // Its pool of samples exists while the stream runs.
     Microsoft::WRL::ComPtr<IMFVideoSampleAllocatorEx> m_allocator;
     bool m_poolReady = false;
@@ -113,6 +124,9 @@ private:
     LONG m_served = 0;
     LONGLONG m_ticksTotal = 0;
     LONGLONG m_ticksMax = 0;
+    LONG m_fromHub = 0;
+    LONGLONG m_ageTotal = 0;
+    LONGLONG m_ageMax = 0;
     bool m_everServed = false;
     bool m_loggedNoSample = false;
     HRESULT m_lastFailure = S_OK;

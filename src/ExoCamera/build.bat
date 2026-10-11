@@ -12,8 +12,8 @@ cl /nologo /EHsc /W4 /WX /Fo:out\ /Fe:out\logtest.exe test\logtest.cpp exo_log.c
 if errorlevel 1 exit /b 1
 
 echo --- exocam.dll ---
-cl /nologo /EHsc /W4 /WX /LD /Fo:out\ /Fe:out\exocam.dll exo_dll.cpp exo_log.cpp exo_activate.cpp exo_source.cpp exo_stream.cpp exo_card.cpp exo_format.cpp ^
-   /link /DEF:exocam.def advapi32.lib ole32.lib mfplat.lib mfuuid.lib
+cl /nologo /EHsc /W4 /WX /LD /Fo:out\ /Fe:out\exocam.dll exo_dll.cpp exo_log.cpp exo_activate.cpp exo_source.cpp exo_stream.cpp exo_link.cpp exo_card.cpp exo_format.cpp ^
+   /link /DEF:exocam.def advapi32.lib ole32.lib mfplat.lib mfuuid.lib ws2_32.lib
 if errorlevel 1 exit /b 1
 
 echo --- dlltest.exe ---

@@ -164,7 +164,7 @@ sealed class DeviceListener : IDisposable
 
         Span<byte> session = stackalloc byte[8];
         BinaryPrimitives.WriteUInt64BigEndian(session, SessionId);
-        SendWelcome(net, Wire.Accepted, session);
+        SendWelcome(net, Wire.Version, Wire.Accepted, session);
         Log($"{name} accepted: protocol {version}, role display, session {SessionId:x16}");
         return conn;
     }
@@ -172,15 +172,16 @@ sealed class DeviceListener : IDisposable
     Connection Refuse(NetworkStream net, string who, byte status, string reason)
     {
         Log($"{who} REFUSED status {status}: {reason}");
-        SendWelcome(net, status, Encoding.UTF8.GetBytes(reason));
+        SendWelcome(net, Wire.Version, status, Encoding.UTF8.GetBytes(reason));
         return null;
     }
 
-    static void SendWelcome(NetworkStream net, byte status, ReadOnlySpan<byte> body)
+    // Also L7's WELCOME, which has the same layout at its own version.
+    internal static void SendWelcome(NetworkStream net, ushort version, byte status, ReadOnlySpan<byte> body)
     {
         Span<byte> head = stackalloc byte[9];
         Wire.Magic.CopyTo(head);
-        BinaryPrimitives.WriteUInt16BigEndian(head[4..], Wire.Version);
+        BinaryPrimitives.WriteUInt16BigEndian(head[4..], version);
         head[6] = status;
         BinaryPrimitives.WriteUInt16BigEndian(head[7..], (ushort)body.Length);
         net.Write(head);
