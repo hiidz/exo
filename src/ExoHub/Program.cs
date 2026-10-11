@@ -7,6 +7,7 @@
 // once it is released. No network. Ctrl+C stops it and prints totals.
 //
 // Usage: ExoHub [monitorId] [--debug] [--seconds N] [--dump F] [--fps N] [--out F] [--display SERIAL]
+//               [--camera SERIAL | --camera-file F] [--camera-geometry W H S]
 // monitorId is the EDID code Windows shows for the monitor, e.g. ACR0721.
 // Without one, the virtual display is used.
 // --debug     D3D11 debug layer on, messages printed as they arrive. Slow.
@@ -19,6 +20,8 @@
 // --display S the adb serial of the device that holds the display role
 //             (DECISIONS 5.8). Without it every device is tracked and none
 //             is set up. The hub owns adb and issues the reverse itself.
+// --camera S  the adb serial of the device that holds the camera role. Its
+//             stream is decoded into L7 (DECISIONS 10 item 4, increment D).
 // --camera-file F  decode the recorded H.264 stream F into L7, looping it,
 //             in place of the test pattern (DECISIONS 10 item 4, increment C).
 // --camera-geometry W H S  the test pattern's width, height and stride,
@@ -83,6 +86,8 @@ string displaySerial = null;
 // than the width on purpose: a reader that ignores it shows a shear.
 int camWidth = 1280, camHeight = 720, camStride = 1344;
 string cameraFile = null;
+// The user's choice of camera device, as displaySerial is for the display.
+string cameraSerial = null;
 for (int i = 0; i < args.Length; i++)
 {
     switch (args[i])
@@ -99,6 +104,7 @@ for (int i = 0; i < args.Length; i++)
             camStride = int.Parse(args[++i]);
             break;
         case "--camera-file": cameraFile = args[++i]; break;
+        case "--camera": cameraSerial = args[++i]; break;
         default: wanted = args[i]; break;
     }
 }
@@ -108,6 +114,9 @@ var clock = Stopwatch.StartNew();
 // The adb owner comes first, so a refusal exits before the display opens.
 // The job first of all: every process started after it is born inside.
 Job.JoinNew();
+// Once per process, before any other Media Foundation call. This early so
+// the camera decoder exists before the device listener can accept a camera.
+MediaFactory.MFStartup(false).CheckError();
 // L7 next, independent of the display path and of --display. Its port is
 // fixed and held exclusively, so an orphaned hub fails this one here.
 CameraLink camera;
@@ -121,10 +130,20 @@ catch (SocketException ex)
                       "Another hub, or an orphan of one, holds it.");
     return 2;
 }
-// The one producer for L7: the test pattern now, or the decoder once Media
-// Foundation is started, below.
-TestPattern pattern = cameraFile == null ? new TestPattern(camera, clock, camWidth, camHeight, camStride) : null;
+// The one producer for L7: the decoder, fed by the camera connection or a
+// file, or else the test pattern.
 CameraDecoder decoder = null;
+TestPattern pattern = null;
+if (cameraSerial != null || cameraFile != null)
+{
+    decoder = new CameraDecoder(camera, clock);
+    if (cameraFile != null)
+        decoder.PlayFile(cameraFile);
+}
+else
+{
+    pattern = new TestPattern(camera, clock, camWidth, camHeight, camStride);
+}
 var adb = new AdbServer(clock);
 string refused = adb.CheckForeign() ?? adb.Start();
 if (refused != null)
@@ -135,12 +154,19 @@ if (refused != null)
 // Port 0: Windows picks it, and this instance holds it exclusively. With
 // the session ID in WELCOME it is the per-session identifier (5.7, 5.8).
 using var display = new DisplaySender(clock);
-using var devices = new DeviceListener(0, clock, display);
+using var devices = new DeviceListener(0, clock, display, cameraSerial != null ? decoder : null);
 Console.WriteLine($"listening on 127.0.0.1:{devices.Port}, session {devices.SessionId:x16}");
-var role = displaySerial != null ? new DisplayRole(displaySerial, devices.Port, clock) : null;
-Console.WriteLine(role != null ? $"display role: {displaySerial}"
-                               : "display role: none chosen; every device is tracked and none is set up. Pass --display <serial>");
-var tracker = new DeviceTracker(adb, clock, (serial, state) => role?.OnState(serial, state));
+var displayRole = displaySerial != null ? new RoleSetup(displaySerial, false, devices.Port, clock) : null;
+var cameraRole = cameraSerial != null ? new RoleSetup(cameraSerial, true, devices.Port, clock) : null;
+Console.WriteLine(displayRole != null ? $"display role: {displaySerial}"
+                                      : "display role: none chosen; pass --display <serial>");
+Console.WriteLine(cameraRole != null ? $"camera role: {cameraSerial}"
+                                     : "camera role: none chosen; pass --camera <serial>");
+var tracker = new DeviceTracker(adb, clock, (serial, state) =>
+{
+    displayRole?.OnState(serial, state);
+    cameraRole?.OnState(serial, state);
+});
 int exitCode = 0;
 
 using var source = new DesktopDuplicationSource(wanted, debugLayer);
@@ -153,10 +179,6 @@ Console.CancelKeyPress += (_, e) => { e.Cancel = true; stop.Cancel(); };
 if (seconds > 0)
     stop.CancelAfter(TimeSpan.FromSeconds(seconds));
 
-// Once per process, before any other Media Foundation call.
-MediaFactory.MFStartup(false).CheckError();
-if (cameraFile != null)
-    decoder = new CameraDecoder(camera, clock, cameraFile);
 
 // 1ms timers for the encoder's rate gate. How late the timer actually fires
 // is measured and printed, rather than assumed from this call.

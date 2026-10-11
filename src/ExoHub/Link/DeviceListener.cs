@@ -1,6 +1,7 @@
 // The one loopback port every device's localabstract:exo reaches through
 // adb reverse (PROJECT_SPEC FR-4.3). Accepts, runs the handshake in
-// DECISIONS 5.7, and holds the display connection.
+// DECISIONS 5.7, and holds the display connection and the camera
+// connection, whose frames go to the camera decoder.
 //
 // One thread accepts and one thread serves each connection. There are only
 // ever a few connections, and a blocking thread each reads top to bottom.
@@ -11,6 +12,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
+using ExoHub.Camera;
 
 namespace ExoHub.Link;
 
@@ -24,24 +26,28 @@ sealed class DeviceListener : IDisposable
     readonly TcpListener listener;
     readonly Stopwatch clock;
     readonly DisplaySender sender;
+    readonly CameraDecoder camera;  // null: the camera role is refused
     readonly object gate = new();
-    Connection display;  // under gate
+    Connection display;     // under gate
+    Connection cameraConn;  // under gate
 
     // Random per hub start, sent in every WELCOME. A phone that logs a new
     // value is talking to a new hub instance (DECISIONS 5.7).
     public ulong SessionId { get; } = BinaryPrimitives.ReadUInt64BigEndian(RandomNumberGenerator.GetBytes(8));
     public int Port => ((IPEndPoint)listener.LocalEndpoint).Port;
 
-    sealed class Connection(Socket socket, string serial)
+    sealed class Connection(Socket socket, string serial, byte role)
     {
         public readonly Socket Socket = socket;
         public readonly string Serial = serial;
+        public readonly byte Role = role;
     }
 
-    public DeviceListener(int port, Stopwatch clock, DisplaySender sender)
+    public DeviceListener(int port, Stopwatch clock, DisplaySender sender, CameraDecoder camera)
     {
         this.clock = clock;
         this.sender = sender;
+        this.camera = camera;
         // Loopback only, so nothing on the LAN can connect. Exclusive, so a
         // second hub fails here instead of sharing the port with this one.
         listener = new TcpListener(IPAddress.Loopback, port) { ExclusiveAddressUse = true };
@@ -84,6 +90,18 @@ sealed class DeviceListener : IDisposable
             // Small messages such as PONG go out at once rather than waiting
             // for Nagle's algorithm to batch them.
             s.NoDelay = true;
+            if (conn.Role == Wire.RoleCamera)
+            {
+                try
+                {
+                    ReadCamera(net, conn);
+                }
+                finally
+                {
+                    camera.EndStream(conn.Serial);
+                }
+                return;
+            }
             s.SendBufferSize = SendBufferBytes;
             Log($"{conn.Serial} send buffer {s.SendBufferSize} bytes, nodelay {s.NoDelay}");
             sender.Attach(net, conn.Serial);
@@ -105,8 +123,12 @@ sealed class DeviceListener : IDisposable
         finally
         {
             lock (gate)
+            {
                 if (display == conn)
                     display = null;
+                if (cameraConn == conn)
+                    cameraConn = null;
+            }
         }
     }
 
@@ -140,32 +162,40 @@ sealed class DeviceListener : IDisposable
         byte role = body[0], direction = body[1];
         string serial = Encoding.ASCII.GetString(body, 3, body[2]);
         string name = serial == "" ? $"{who} (serial not supplied)" : serial;
-        if (role != Wire.RoleDisplay)
-            return Refuse(net, name, Wire.BadHello, $"role {role} not served, only display ({Wire.RoleDisplay})");
-        if (direction != Wire.Down)
-            return Refuse(net, name, Wire.BadHello, $"display role must be direction down ({Wire.Down}), got {direction}");
+        if (role != Wire.RoleDisplay && role != Wire.RoleCamera)
+            return Refuse(net, name, Wire.BadHello, $"role {role} unknown");
+        string roleName = role == Wire.RoleCamera ? "camera" : "display";
+        byte want = role == Wire.RoleCamera ? Wire.Up : Wire.Down;
+        if (direction != want)
+            return Refuse(net, name, Wire.BadHello, $"{roleName} role must be direction {want}, got {direction}");
+        if (role == Wire.RoleCamera && camera == null)
+            return Refuse(net, name, Wire.BadHello, "this hub has no camera role; start it with --camera");
 
-        var conn = new Connection(s, serial);
+        var conn = new Connection(s, serial, role);
         Connection replaced;
         lock (gate)
         {
-            if (display != null && display.Serial != serial)
-                return Refuse(net, name, Wire.RoleTaken, $"display role held by {display.Serial}");
+            Connection held = role == Wire.RoleCamera ? cameraConn : display;
+            if (held != null && held.Serial != serial)
+                return Refuse(net, name, Wire.RoleTaken, $"{roleName} role held by {held.Serial}");
             // Same serial: the app restarted before this end saw the old
             // connection go. The new one wins (DECISIONS 5.7).
-            replaced = display;
-            display = conn;
+            replaced = held;
+            if (role == Wire.RoleCamera)
+                cameraConn = conn;
+            else
+                display = conn;
         }
         if (replaced != null)
         {
-            Log($"{name} replaces its previous display connection");
+            Log($"{name} replaces its previous {roleName} connection");
             replaced.Socket.Close();
         }
 
         Span<byte> session = stackalloc byte[8];
         BinaryPrimitives.WriteUInt64BigEndian(session, SessionId);
         SendWelcome(net, Wire.Version, Wire.Accepted, session);
-        Log($"{name} accepted: protocol {version}, role display, session {SessionId:x16}");
+        Log($"{name} accepted: protocol {version}, role {roleName}, session {SessionId:x16}");
         return conn;
     }
 
@@ -219,10 +249,91 @@ sealed class DeviceListener : IDisposable
         }
     }
 
+    // The camera role's connection: each FRAME into the decoder, on this
+    // thread, and each PING answered with a PONG, written here since this is
+    // the only thread writing this socket. Nothing from the phone is dropped
+    // here (5.7): a decoder that falls behind slows this read, and TCP
+    // carries that back to the phone's queue.
+    void ReadCamera(NetworkStream net, Connection conn)
+    {
+        const int FrameFields = 4 + 3 * 8;  // seq; present, encoded, sent
+        camera.BeginStream(conn.Serial);
+        Span<byte> head = stackalloc byte[Wire.HeaderSize];
+        Span<byte> pong = stackalloc byte[Wire.HeaderSize + 24];
+        byte[] body = new byte[256 * 1024];  // grows to the largest keyframe, once
+        long windowStart = Stopwatch.GetTimestamp();
+        int total = 0, frames = 0, keyframes = 0, gaps = 0, skipped = 0;
+        long bytes = 0;
+        uint lastSeq = 0;
+        while (true)
+        {
+            net.ReadExactly(head);
+            byte type = head[0], flags = head[1];
+            uint length = BinaryPrimitives.ReadUInt32BigEndian(head[4..]);
+            if (length > Wire.MaxBody)
+            {
+                Log($"{conn.Serial} protocol error: message type {type} claims {length} bytes, dropping");
+                return;
+            }
+            if (body.Length < length)
+                body = new byte[length];
+            net.ReadExactly(body.AsSpan(0, (int)length));
+
+            if (type == 2 && length == 8)  // PING
+            {
+                long t2 = DisplaySender.Micros(Stopwatch.GetTimestamp());
+                pong.Clear();
+                pong[0] = 3;  // PONG
+                BinaryPrimitives.WriteUInt32BigEndian(pong[4..], 24);
+                body.AsSpan(0, 8).CopyTo(pong[8..]);
+                BinaryPrimitives.WriteInt64BigEndian(pong[16..], t2);
+                BinaryPrimitives.WriteInt64BigEndian(pong[24..], DisplaySender.Micros(Stopwatch.GetTimestamp()));
+                net.Write(pong);
+                continue;
+            }
+            if (type != Wire.TypeFrame || length < FrameFields)
+            {
+                if (skipped++ == 0)
+                    Log($"{conn.Serial} skipping message type {type}, {length} bytes; logged once per connection");
+                continue;
+            }
+
+            uint seq = BinaryPrimitives.ReadUInt32BigEndian(body);
+            bool key = (flags & DisplaySender.FlagKeyframe) != 0, config = (flags & DisplaySender.FlagConfig) != 0;
+            if (total++ == 0)
+                Log($"{conn.Serial} camera first frame: seq {seq}, {length - FrameFields} bytes, " +
+                    $"{(key ? "KEYFRAME" : "not a keyframe")}, {(config ? "CONFIG" : "no config")}");
+            gaps += lastSeq != 0 && seq != lastSeq + 1 ? 1 : 0;
+            lastSeq = seq;
+            frames++;
+            keyframes += key ? 1 : 0;
+            bytes += length;
+            if (!camera.Submit(body.AsSpan(FrameFields, (int)length - FrameFields), key, config))
+            {
+                Log($"{conn.Serial} camera decoder has failed ({camera.Error}); closing");
+                return;
+            }
+
+            long now = Stopwatch.GetTimestamp();
+            if (now - windowStart >= Stopwatch.Frequency * 5)
+            {
+                double s = (now - windowStart) / (double)Stopwatch.Frequency;
+                Log($"{conn.Serial} camera last 5s: {frames} frames, {frames / s:F1}fps, {keyframes} keyframes, " +
+                    $"{bytes * 8 / s / 1e6:F2} Mbps, {gaps} seq gaps");
+                windowStart = now;
+                frames = keyframes = gaps = 0;
+                bytes = 0;
+            }
+        }
+    }
+
     public void Dispose()
     {
         listener.Stop();
         lock (gate)
+        {
             display?.Socket.Close();
+            cameraConn?.Socket.Close();
+        }
     }
 }

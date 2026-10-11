@@ -118,6 +118,21 @@ sealed class CameraLink : IDisposable
         }
     }
 
+    // The producer's stream ended. The newest frame is now stale, so it goes:
+    // a client connecting after this waits for a new one rather than
+    // showing a picture from a camera that has gone.
+    public void Clear()
+    {
+        lock (gate)
+        {
+            if (latest == null)
+                return;
+            ReleaseLocked(latest);
+            latest = null;
+        }
+        Log("slot cleared: the stream ended, so the last frame is not sent again");
+    }
+
     // Under gate. The last reference puts the buffer back for reuse.
     void ReleaseLocked(Frame f)
     {
@@ -163,7 +178,7 @@ sealed class CameraLink : IDisposable
         {
             // IOException wraps the SocketException for a reset or a timeout.
             string why = ex.InnerException is SocketException se ? se.SocketErrorCode.ToString() : ex.GetType().Name;
-            Log($"{name ?? who} closed: {why}, after {sent} frames");
+            Log($"{name ?? who} closed: {(ex is EndOfStreamException ? ex.Message : why)}, after {sent} frames");
         }
         finally
         {
@@ -228,9 +243,14 @@ sealed class CameraLink : IDisposable
     }
 
     // Sends the newest frame each time one is published, until a write
-    // fails or the link is disposed.
+    // fails, the client goes, or the link is disposed. With no frames being
+    // published nothing is written, so a client that went would never be
+    // noticed by a failed write: the wait wakes once a second to look. Seen
+    // 2026-10-11 with the camera phone gone, when each DLL gave up after 3s
+    // without frames and reconnected, and ten such clients piled up.
     void SendFrames(NetworkStream net, string name, ref int sent)
     {
+        Socket s = net.Socket;
         uint lastSeq = 0;
         long windowStart = Stopwatch.GetTimestamp();
         int windowFrames = 0, windowSkipped = 0;
@@ -241,7 +261,10 @@ sealed class CameraLink : IDisposable
             lock (gate)
             {
                 while (!disposed && (latest == null || latest.Seq == lastSeq))
-                    Monitor.Wait(gate);
+                    // The DLL never sends after HELLO, so readable means
+                    // closed: EOF, or a reset.
+                    if (!Monitor.Wait(gate, 1000) && s.Poll(0, SelectMode.SelectRead))
+                        throw new EndOfStreamException("client closed while no frames were coming");
                 if (disposed)
                     return;
                 f = latest;

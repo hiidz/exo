@@ -1,6 +1,12 @@
-// Decodes a recorded camera stream into L7 (DECISIONS 10 item 4, increment
-// C), once for every client (FR-1.3). Stands in for the camera connection
-// until ExoPhone's camera role exists (increment D).
+// Decodes the camera stream into L7, once for every client (FR-1.3). Its
+// frames come from the camera connection (DECISIONS 10 item 4, increment
+// D), through Submit on that connection's reader thread, so a decoder that
+// falls behind slows the reader and, over TCP, the phone. Or from a recorded
+// file, through PlayFile (increment C).
+//
+// Each stream, a connection or the file, begins with BeginStream: the
+// decoder is flushed, and every frame is discarded until one carries codec
+// config and a keyframe (DECISIONS 5.3).
 //
 // Microsoft's software H.264 decoder, a synchronous MFT: one thread hands it
 // a compressed frame with ProcessInput, then asks for decoded ones with
@@ -32,11 +38,14 @@ sealed unsafe class CameraDecoder : IDisposable
 
     readonly CameraLink link;
     readonly Stopwatch clock;
-    readonly byte[] file;
-    readonly List<AccessUnit> units;
     readonly IMFTransform mft;
-    readonly Thread thread;
+    // One stream at a time: a replaced connection's reader may still be
+    // submitting while the new one begins.
+    readonly object gate = new();
+    Thread fileThread;
     volatile bool stop;
+    bool waitForKeyframe = true;  // under gate
+    long time;                    // under gate: the next input's sample time
 
     // Set from the decoder's output type by SelectOutput.
     int width, height, stride;
@@ -46,22 +55,19 @@ sealed unsafe class CameraDecoder : IDisposable
 
     // Input time of each frame inside the decoder, by sample time.
     readonly Dictionary<long, long> inFlight = new();
-    int windowIn, windowOut, windowUnmatched;
+    int windowIn, windowOut, windowUnmatched, windowDiscarded;
     double windowSumMs, windowMaxMs;
+    long windowStart = Stopwatch.GetTimestamp();
+    int gen2Before = GC.CollectionCount(2);
 
+    // Set when the decoder fails; it then takes no more frames.
     public string Error { get; private set; }
 
     // After MFStartup. Throws if no decoder is found or it refuses NV12.
-    public CameraDecoder(CameraLink link, Stopwatch clock, string path)
+    public CameraDecoder(CameraLink link, Stopwatch clock)
     {
         this.link = link;
         this.clock = clock;
-        file = File.ReadAllBytes(path);
-        units = AccessUnits.Split(file);
-        Log($"file {path}: {file.Length} bytes, {units.Count} frames, {units.Count(u => u.Keyframe)} keyframes, " +
-            $"first frame {(units.Count > 0 && units[0].Config && units[0].Keyframe ? "carries SPS, PPS and an IDR" : "DOES NOT START WITH SPS, PPS AND AN IDR")}");
-        if (units.Count == 0)
-            throw new InvalidDataException($"{path}: no H.264 frames found");
 
         // Synchronous decoders only, so hardware ones, which are async and
         // want a D3D device, stay out of the list.
@@ -112,9 +118,6 @@ sealed unsafe class CameraDecoder : IDisposable
         SelectOutput("before the first frame");
         mft.ProcessMessage(TMessageType.MessageNotifyBeginStreaming, UIntPtr.Zero);
         mft.ProcessMessage(TMessageType.MessageNotifyStartOfStream, UIntPtr.Zero);
-
-        thread = new Thread(Run) { IsBackground = true, Name = "camera decoder" };
-        thread.Start();
     }
 
     void Log(string line) => Console.WriteLine($"{clock.Elapsed.TotalSeconds,8:F3}s camera {line}");
@@ -165,32 +168,52 @@ sealed unsafe class CameraDecoder : IDisposable
             $"aperture {aperture}, sample {info.Size} bytes, {(providesSamples ? "decoder's samples" : "our samples, a new one per frame")}");
     }
 
-    // Feeds one frame per 1/30s against a deadline, looping the file. Each
-    // pass restarts at SPS, PPS and an IDR, so the decoder runs straight on.
-    void Run()
+    // A new stream: whatever the decoder holds from the last one is flushed,
+    // and nothing is decoded until codec config and a keyframe arrive.
+    public void BeginStream(string who)
     {
-        try
+        lock (gate)
         {
-            long interval = Stopwatch.Frequency / Fps;
-            long due = Stopwatch.GetTimestamp();
-            long windowStart = due;
-            long time = 0;
-            int gen2Before = GC.CollectionCount(2);
-            for (int i = 0; !stop; i = (i + 1) % units.Count)
-            {
-                long wait = (due - Stopwatch.GetTimestamp()) * 1000 / Stopwatch.Frequency;
-                if (wait > 0)
-                    Thread.Sleep((int)wait);
-                due += interval;
+            if (Error != null)
+                return;
+            mft.ProcessMessage(TMessageType.MessageCommandFlush, UIntPtr.Zero);
+            int dropped = inFlight.Count;
+            inFlight.Clear();
+            waitForKeyframe = true;
+            Log($"decode stream from {who}: decoder flushed ({dropped} frames inside), waiting for config and a keyframe");
+        }
+    }
 
-                AccessUnit u = units[i];
+    // The stream ended: L7 stops offering its last frame.
+    public void EndStream(string who)
+    {
+        Log($"decode stream from {who} ended");
+        link.Clear();
+    }
+
+    // One access unit, on the caller's thread. False once the decoder has
+    // failed, so the caller can stop feeding it.
+    public bool Submit(ReadOnlySpan<byte> unit, bool keyframe, bool config)
+    {
+        lock (gate)
+        {
+            if (Error != null)
+                return false;
+            if (waitForKeyframe && !(keyframe && config))
+            {
+                windowDiscarded++;
+                return true;
+            }
+            waitForKeyframe = false;
+            try
+            {
                 using (IMFSample sample = MediaFactory.MFCreateSample())
-                using (IMFMediaBuffer buffer = MediaFactory.MFCreateMemoryBuffer(u.Length))
+                using (IMFMediaBuffer buffer = MediaFactory.MFCreateMemoryBuffer(unit.Length))
                 {
                     buffer.Lock(out IntPtr p, out _, out _);
-                    file.AsSpan(u.Offset, u.Length).CopyTo(new Span<byte>((void*)p, u.Length));
+                    unit.CopyTo(new Span<byte>((void*)p, unit.Length));
                     buffer.Unlock();
-                    buffer.CurrentLength = u.Length;
+                    buffer.CurrentLength = unit.Length;
                     sample.AddBuffer(buffer);
                     sample.SampleTime = time;
                     sample.SampleDuration = Duration;
@@ -200,26 +223,58 @@ sealed unsafe class CameraDecoder : IDisposable
                 time += Duration;
                 windowIn++;
                 Drain();
-
-                long now = Stopwatch.GetTimestamp();
-                if (now - windowStart >= Stopwatch.Frequency * 5)
-                {
-                    int gen2 = GC.CollectionCount(2);
-                    Log($"decode last 5s: {windowIn} in, {windowOut} out, " +
-                        $"in to out {(windowOut > 0 ? windowSumMs / windowOut : 0):F2}ms mean {windowMaxMs:F2}ms max, " +
-                        $"{windowUnmatched} unmatched, {inFlight.Count} held, {gen2 - gen2Before} gen-2 GCs");
-                    windowStart = now;
-                    gen2Before = gen2;
-                    windowIn = windowOut = windowUnmatched = 0;
-                    windowSumMs = windowMaxMs = 0;
-                }
             }
+            catch (Exception ex) when (ex is SharpGenException or InvalidOperationException)
+            {
+                Error = ex.Message;
+                Log($"decoder STOPPED: {ex.Message.Trim()} at {ex.StackTrace?.Replace(Environment.NewLine, " | ")}");
+                return false;
+            }
+
+            long now = Stopwatch.GetTimestamp();
+            if (now - windowStart >= Stopwatch.Frequency * 5)
+            {
+                int gen2 = GC.CollectionCount(2);
+                Log($"decode last 5s: {windowIn} in, {windowOut} out, {windowDiscarded} discarded before a keyframe, " +
+                    $"in to out {(windowOut > 0 ? windowSumMs / windowOut : 0):F2}ms mean {windowMaxMs:F2}ms max, " +
+                    $"{windowUnmatched} unmatched, {inFlight.Count} held, {gen2 - gen2Before} gen-2 GCs");
+                windowStart = now;
+                gen2Before = gen2;
+                windowIn = windowOut = windowUnmatched = windowDiscarded = 0;
+                windowSumMs = windowMaxMs = 0;
+            }
+            return true;
         }
-        catch (Exception ex) when (ex is SharpGenException or InvalidOperationException)
+    }
+
+    // Increment C's source: a recorded Annex-B file, looped, one frame per
+    // 1/30s against a deadline, since the file has no timestamps. Each pass
+    // restarts at SPS, PPS and an IDR, so the decoder runs straight on.
+    public void PlayFile(string path)
+    {
+        byte[] file = File.ReadAllBytes(path);
+        List<AccessUnit> units = AccessUnits.Split(file);
+        Log($"file {path}: {file.Length} bytes, {units.Count} frames, {units.Count(u => u.Keyframe)} keyframes, " +
+            $"first frame {(units.Count > 0 && units[0].Config && units[0].Keyframe ? "carries SPS, PPS and an IDR" : "DOES NOT START WITH SPS, PPS AND AN IDR")}");
+        if (units.Count == 0)
+            throw new InvalidDataException($"{path}: no H.264 frames found");
+        BeginStream(path);
+        fileThread = new Thread(() =>
         {
-            Error = ex.Message;
-            Log($"decoder STOPPED: {ex.Message.Trim()} at {ex.StackTrace?.Replace(Environment.NewLine, " | ")}");
-        }
+            long interval = Stopwatch.Frequency / Fps;
+            long due = Stopwatch.GetTimestamp();
+            for (int i = 0; !stop; i = (i + 1) % units.Count)
+            {
+                long wait = (due - Stopwatch.GetTimestamp()) * 1000 / Stopwatch.Frequency;
+                if (wait > 0)
+                    Thread.Sleep((int)wait);
+                due += interval;
+                AccessUnit u = units[i];
+                if (!Submit(file.AsSpan(u.Offset, u.Length), u.Keyframe, u.Config))
+                    return;
+            }
+        }) { IsBackground = true, Name = "camera file" };
+        fileThread.Start();
     }
 
     // Takes every frame the decoder has ready.
@@ -301,8 +356,12 @@ sealed unsafe class CameraDecoder : IDisposable
     public void Dispose()
     {
         stop = true;
-        thread.Join();
-        output?.Dispose();
-        mft.Dispose();
+        fileThread?.Join();
+        lock (gate)
+        {
+            Error ??= "disposed";
+            output?.Dispose();
+            mft.Dispose();
+        }
     }
 }

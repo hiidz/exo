@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- The camera role. Granted by the hub over adb before launch
+         (pm grant), so nothing asks on screen. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
     <!-- NoActionBar: the default theme draws an ActionBar over the content
          (spike 4 FINDINGS, traps). -->
     <application

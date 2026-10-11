@@ -19,11 +19,15 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 /**
- * The display connection to the hub: localabstract:exo, which adb reverse
- * carries to the hub's port. Connects, runs the handshake in DECISIONS 5.7,
- * then reads messages until the connection ends, and starts again a second
- * later, forever. The one exception is a version refusal, which does not
- * fix itself, so the loop stops and says so on screen.
+ * A connection to the hub: localabstract:exo, which adb reverse carries to
+ * the hub's port. Connects, runs the handshake in DECISIONS 5.7, then serves
+ * its role until the connection ends, and starts again a second later,
+ * forever. The one exception is a version refusal, which does not fix
+ * itself, so the loop stops and says so on screen.
+ *
+ * Display role: reads FRAMEs into a decoder. Camera role: a CameraRole per
+ * connection, whose frames this thread writes up, while a second thread
+ * reads the PONGs coming down.
  *
  * Everything here blocks, so it runs on its own thread. stop() closes the
  * socket from another thread, which makes the blocked read throw.
@@ -36,13 +40,16 @@ final class Link implements Runnable {
         /** A decoder for one accepted connection, not yet started. name tells runs apart. */
         Decoder newDecoder(String name);
 
+        /** The camera for one accepted connection, not yet started. */
+        CameraRole newCamera(String name);
+
         /** Where to write a per-connection log file called name. */
         File file(String name);
     }
 
     static final byte[] MAGIC = {'E', 'X', 'O', 0};
     static final int VERSION = 1;
-    static final int ROLE_DISPLAY = 2, DOWN = 2;
+    static final int ROLE_CAMERA = 1, ROLE_DISPLAY = 2, UP = 1, DOWN = 2;
     static final int ACCEPTED = 0, VERSION_MISMATCH = 1;
     static final int FRAME = 1, PING = 2, PONG = 3, FLAG_KEYFRAME = 1, FLAG_CONFIG = 2;
     private static final int PING_MS = 1000, SILENCE_MS = 3000;
@@ -52,6 +59,7 @@ final class Link implements Runnable {
 
     private final String serial;
     private final int version;
+    private final int role;
     private final Listener listener;
     private final Thread thread = new Thread(this, "link");
     private volatile boolean stopped;
@@ -61,10 +69,11 @@ final class Link implements Runnable {
     private String lastFailure;
     private int connections;
 
-    /** version is VERSION except to prove a mismatch is refused. */
-    Link(String serial, int version, Listener listener) {
+    /** version is VERSION except to prove a mismatch is refused. role is ROLE_CAMERA or ROLE_DISPLAY. */
+    Link(String serial, int version, int role, Listener listener) {
         this.serial = serial == null ? "" : serial;
         this.version = version;
+        this.role = role;
         this.listener = listener;
     }
 
@@ -137,8 +146,8 @@ final class Link implements Runnable {
             out.write(MAGIC);
             out.writeShort(version);
             out.writeShort(3 + id.length);
-            out.writeByte(ROLE_DISPLAY);
-            out.writeByte(DOWN);
+            out.writeByte(role);
+            out.writeByte(role == ROLE_CAMERA ? UP : DOWN);
             out.writeByte(id.length);
             out.write(id);
             out.flush();
@@ -185,6 +194,10 @@ final class Link implements Runnable {
             // arrive every second, so a static screen does not trip it.
             s.setSoTimeout(SILENCE_MS);
             String name = "link-" + (++connections);
+            if (role == ROLE_CAMERA) {
+                cameraSession(s, in, out, name);
+                return;
+            }
             Decoder decoder = listener.newDecoder(name);
             decoder.start();
             Counts counts = new Counts();
@@ -199,6 +212,89 @@ final class Link implements Runnable {
                 decoder.stop();
                 writePongs(listener.file(name + "-pongs.csv"), pongs);
             }
+        }
+    }
+
+    /**
+     * The camera role's connection. This thread writes the camera's frames
+     * up; a reader thread takes the PONGs, and its silence timeout or a read
+     * error closes the socket, which ends the writing too. A camera failure
+     * ends the connection, and the next one starts a new camera.
+     */
+    private void cameraSession(LocalSocket s, DataInputStream in, DataOutputStream out, String name)
+            throws IOException {
+        CameraRole camera = listener.newCamera(name);
+        ArrayList<long[]> pongs = new ArrayList<>();
+        Thread reader = new Thread(() -> {
+            try {
+                readMessages(in, null, new Counts(), pongs);
+            } catch (IOException e) {
+                Log.i(Codecs.TAG, "link camera reader ended: " + e);
+            } finally {
+                try {
+                    s.close();
+                } catch (IOException ignored) {
+                }
+            }
+        }, "link reader");
+        ScheduledExecutorService pinger = Executors.newSingleThreadScheduledExecutor();
+        long seq = 0, sent = 0, bytes = 0;
+        double waitMaxMs = 0, writeMaxMs = 0, waitSumMs = 0;
+        long windowStart = System.nanoTime();
+        try {
+            camera.start();
+            reader.start();
+            pinger.scheduleAtFixedRate(() -> ping(out), 0, PING_MS, TimeUnit.MILLISECONDS);
+            while (!stopped) {
+                if (camera.failure() != null) throw new IOException("camera: " + camera.failure());
+                CameraRole.Frame f;
+                try {
+                    f = camera.take(100);
+                } catch (InterruptedException e) {
+                    throw new IOException("interrupted");
+                }
+                if (f == null) continue;
+                long t0 = System.nanoTime();
+                synchronized (out) {
+                    out.writeByte(FRAME);
+                    out.writeByte(f.flags);
+                    out.writeShort(0);
+                    out.writeInt(FRAME_FIELDS + f.data.length);
+                    out.writeInt((int) ++seq);
+                    out.writeLong(f.presentUs);
+                    out.writeLong(f.encodedUs);
+                    out.writeLong(System.nanoTime() / 1000);
+                    out.write(f.data);
+                    out.flush();
+                }
+                long t1 = System.nanoTime();
+                double waitMs = (t0 / 1000 - f.encodedUs) / 1000.0;
+                waitSumMs += waitMs;
+                waitMaxMs = Math.max(waitMaxMs, waitMs);
+                writeMaxMs = Math.max(writeMaxMs, (t1 - t0) / 1e6);
+                sent++;
+                bytes += f.data.length;
+                if (t1 - windowStart >= 5_000_000_000L) {
+                    Log.i(Codecs.TAG, String.format("link camera last 5s: %d frames sent, %.2f Mbps, encoded to sent "
+                                    + "%.2fms mean %.2fms max, write max %.2fms", sent, bytes * 8 / ((t1 - windowStart) / 1e3),
+                            waitSumMs / sent, waitMaxMs, writeMaxMs));
+                    windowStart = t1;
+                    sent = bytes = 0;
+                    waitSumMs = waitMaxMs = writeMaxMs = 0;
+                }
+            }
+        } finally {
+            pinger.shutdownNow();
+            camera.stop();
+            s.close();
+            try {
+                reader.join(1000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            Log.i(Codecs.TAG, "link camera connection " + connections + " ended after " + seq + " frames, pongs "
+                    + pongs.size());
+            writePongs(listener.file(name + "-pongs.csv"), pongs);
         }
     }
 
@@ -269,8 +365,9 @@ final class Link implements Runnable {
                 pongs.add(new long[] {t1, t2, t3, System.nanoTime()});
                 continue;
             }
-            if (type != FRAME || length < FRAME_FIELDS) {
-                // Unknown types are skipped by their length (DECISIONS 5.7).
+            if (type != FRAME || length < FRAME_FIELDS || decoder == null) {
+                // Unknown types are skipped by their length (DECISIONS 5.7),
+                // and so is any FRAME on a camera connection, which has no decoder.
                 if (skip.length < length) skip = new byte[length];
                 in.readFully(skip, 0, length);
                 counts.skipped++;
