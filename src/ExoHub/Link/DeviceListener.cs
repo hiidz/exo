@@ -13,6 +13,7 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using ExoHub.Camera;
+using ExoHub.Touch;
 
 namespace ExoHub.Link;
 
@@ -26,6 +27,7 @@ sealed class DeviceListener : IDisposable
     readonly TcpListener listener;
     readonly Stopwatch clock;
     readonly DisplaySender sender;
+    readonly TouchInjector touch;   // TOUCH from the display connection (FR-3.3)
     readonly CameraDecoder camera;  // null: the camera role is refused
     readonly object gate = new();
     Connection display;     // under gate
@@ -43,10 +45,11 @@ sealed class DeviceListener : IDisposable
         public readonly byte Role = role;
     }
 
-    public DeviceListener(int port, Stopwatch clock, DisplaySender sender, CameraDecoder camera)
+    public DeviceListener(int port, Stopwatch clock, DisplaySender sender, TouchInjector touch, CameraDecoder camera)
     {
         this.clock = clock;
         this.sender = sender;
+        this.touch = touch;
         this.camera = camera;
         // Loopback only, so nothing on the LAN can connect. Exclusive, so a
         // second hub fails here instead of sharing the port with this one.
@@ -112,6 +115,7 @@ sealed class DeviceListener : IDisposable
             finally
             {
                 sender.Detach(net);
+                touch.ConnectionEnded();
             }
         }
         catch (Exception ex) when (ex is IOException or EndOfStreamException or ObjectDisposedException)
@@ -242,6 +246,15 @@ sealed class DeviceListener : IDisposable
             {
                 long t2 = DisplaySender.Micros(Stopwatch.GetTimestamp());
                 sender.Pong(net, BinaryPrimitives.ReadInt64BigEndian(body), t2);
+                continue;
+            }
+            if (type == Wire.TypeTouch)
+            {
+                if (!touch.Post(body.AsSpan(0, (int)length)))
+                {
+                    Log($"{conn.Serial} protocol error: malformed TOUCH, {length} bytes, dropping");
+                    return;
+                }
                 continue;
             }
             if (skipped++ == 0)

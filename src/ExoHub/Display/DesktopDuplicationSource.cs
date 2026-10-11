@@ -170,6 +170,15 @@ sealed class DesktopDuplicationSource : IDisposable
 
     static string Hex(Luid l) => $"{l.HighPart:X8}:{l.LowPart:X8}";
 
+    // The pointer shape from the last Next, raw as DXGI gave it. Valid only
+    // until the next call; ShapeNew says whether that call brought one.
+    // DXGI hands a shape over only when it changes, on either kind of frame.
+    byte[] shapeBuffer = new byte[4096];
+    public bool ShapeNew { get; private set; }
+    public OutduplPointerShapeInfo ShapeInfo { get; private set; }
+    public ReadOnlySpan<byte> ShapeBytes => shapeBuffer.AsSpan(0, shapeLength);
+    int shapeLength;
+
     // Waits up to timeoutMs for the next frame, classifies it, hands a
     // NewImage texture to onNewImage, and releases it.
     //
@@ -184,6 +193,7 @@ sealed class DesktopDuplicationSource : IDisposable
     public Result Next(uint timeoutMs, Action<ID3D11Texture2D> onNewImage,
                        out FrameKind kind, out OutduplFrameInfo info)
     {
+        ShapeNew = false;
         Result r = dup.AcquireNextFrame(timeoutMs, out info, out IDXGIResource resource);
         kind = FrameKind.Timeout;
 
@@ -195,6 +205,10 @@ sealed class DesktopDuplicationSource : IDisposable
         kind = info.LastPresentTime > 0 ? FrameKind.NewImage : FrameKind.CursorOnly;
         try
         {
+            // Only while the frame is held. A raw copy and nothing else:
+            // converting it waits until after ReleaseFrame.
+            if (info.PointerShapeBufferSize > 0)
+                CopyShape(info.PointerShapeBufferSize);
             if (kind == FrameKind.NewImage)
             {
                 using var texture = resource.QueryInterface<ID3D11Texture2D>();
@@ -212,6 +226,35 @@ sealed class DesktopDuplicationSource : IDisposable
             r = dup.ReleaseFrame();
         }
         return r;
+    }
+
+    // Failed GetFramePointerShape calls, and the last one's result. Not
+    // thrown: an ACCESS_LOST here comes back from ReleaseFrame as well, and
+    // the loop's recovery handles it there.
+    public int ShapeFailures { get; private set; }
+    public Result LastShapeFailure { get; private set; }
+
+    // fixed pins the array, so the GC cannot move it while DXGI writes into
+    // it. The size DXGI asks for comes from the frame info, never a constant:
+    // a 256x256 colour pointer is 256KB.
+    unsafe void CopyShape(uint size)
+    {
+        if (shapeBuffer.Length < size)
+            shapeBuffer = new byte[size];
+        fixed (byte* p = shapeBuffer)
+        {
+            Result r = dup.GetFramePointerShape((uint)shapeBuffer.Length, (IntPtr)p, out uint used,
+                                                out OutduplPointerShapeInfo shape);
+            if (r.Failure)
+            {
+                ShapeFailures++;
+                LastShapeFailure = r;
+                return;
+            }
+            shapeLength = (int)used;
+            ShapeInfo = shape;
+        }
+        ShapeNew = true;
     }
 
     public void Dispose()

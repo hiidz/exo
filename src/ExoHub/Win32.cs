@@ -30,6 +30,45 @@ static class Win32
     public static extern bool EnumDisplayDevicesW(string lpDevice, uint iDevNum,
                                                   ref DISPLAY_DEVICEW lpDisplayDevice, uint dwFlags);
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct POINT
+    {
+        public int X, Y;
+    }
+
+    // The hotspot in virtual-desktop pixels, physical because the manifest
+    // makes this process per-monitor aware. Only to check DXGI's pointer
+    // position against an independent source.
+    [DllImport("user32.dll")]
+    public static extern bool GetCursorPos(out POINT point);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RECT
+    {
+        public int Left, Top, Right, Bottom;
+    }
+
+    // cbSize must be set to this struct's size (40) before the call: it is
+    // how Windows tells MONITORINFO from the larger MONITORINFOEX.
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MONITORINFO
+    {
+        public int cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public uint dwFlags;
+    }
+
+    public const uint MONITOR_DEFAULTTONULL = 0;
+
+    // The monitor rectangle touch is injected into (CLAUDE.md, Touch), in
+    // physical pixels because this process is per-monitor aware.
+    [DllImport("user32.dll")]
+    public static extern IntPtr MonitorFromPoint(POINT point, uint flags);
+
+    [DllImport("user32.dll")]
+    public static extern bool GetMonitorInfoW(IntPtr monitor, ref MONITORINFO info);
+
     // Used only to print which DPI awareness the manifest actually gave us.
     [DllImport("user32.dll")]
     public static extern IntPtr GetThreadDpiAwarenessContext();

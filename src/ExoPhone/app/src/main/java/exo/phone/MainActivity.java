@@ -2,6 +2,7 @@ package exo.phone;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.hardware.display.DisplayManager;
 import android.os.Build;
@@ -9,15 +10,20 @@ import android.os.Bundle;
 import android.util.Log;
 import android.view.Display;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
+import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.TextView;
 
 import java.io.File;
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -56,6 +62,20 @@ public class MainActivity extends Activity {
     private Decoder decoder;
     private Link link;
 
+    // The hub's pointer, drawn over the video (DECISIONS 11.1). The link
+    // thread writes the latest state under cursorLock and posts one apply to
+    // the UI thread; cursorPosted keeps it to one waiting at a time, so a
+    // burst of positions comes to one move, with the newest.
+    private ImageView cursorView;
+    private final Object cursorLock = new Object();
+    private Bitmap cursorShape;
+    private int cursorHotX, cursorHotY, cursorX, cursorY;
+    private boolean cursorVisible, cursorPosted;
+    // UI thread only. The picture's size from the decoder; 0 until known.
+    private int pictureW, pictureH;
+    private boolean cursorShown;
+    private Bitmap cursorApplied;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -81,6 +101,25 @@ public class MainActivity extends Activity {
         if (!display) {
             return;
         }
+
+        // Above the video, at the root's top-left, moved by translation.
+        cursorView = new ImageView(this);
+        cursorView.setScaleType(ImageView.ScaleType.FIT_XY);
+        cursorView.setVisibility(View.GONE);
+        root.addView(cursorView, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP | Gravity.LEFT));
+        // fit() changes the video's size and place; the mapping follows the
+        // view as laid out, so it is logged and the cursor re-placed here.
+        view.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
+            if (pictureW == 0) return;
+            Log.i(Codecs.TAG, String.format("map: picture %dx%d, view %dx%d at (%d,%d), sx %.4f sy %.4f",
+                    pictureW, pictureH, v.getWidth(), v.getHeight(), l, t,
+                    (double) v.getWidth() / pictureW, (double) v.getHeight() / pictureH));
+            applyCursor();
+        });
+        // Touch on the video goes up the display connection (FR-3.3).
+        view.setOnTouchListener(this::onTouch);
 
         if (Build.VERSION.SDK_INT >= 30) {
             WindowInsetsController c = getWindow().getInsetsController();
@@ -137,6 +176,26 @@ public class MainActivity extends Activity {
                                 @Override
                                 public File file(String name) {
                                     return new File(dir, linkRun + "-" + name);
+                                }
+
+                                @Override
+                                public void onCursorShape(Bitmap shape, int hotX, int hotY) {
+                                    synchronized (cursorLock) {
+                                        cursorShape = shape;
+                                        cursorHotX = hotX;
+                                        cursorHotY = hotY;
+                                    }
+                                    postCursor();
+                                }
+
+                                @Override
+                                public void onCursorPos(boolean visible, int x, int y) {
+                                    synchronized (cursorLock) {
+                                        cursorVisible = visible;
+                                        cursorX = x;
+                                        cursorY = y;
+                                    }
+                                    postCursor();
                                 }
                             });
                     link.start();
@@ -234,9 +293,141 @@ public class MainActivity extends Activity {
         Log.i(Codecs.TAG, "serial: Build.getSerial() -> " + api + "; getprop ro.serialno -> \"" + prop + "\"");
     }
 
+    // TOUCH phases, as on the wire.
+    private static final int DOWN = 1, MOVE = 2, UP = 3, CANCEL = 4;
+
+    // One gesture, first finger down to last finger up, for its log line.
+    // The gaps between events are the panel's touch report rate (R11).
+    private long gestureStartNs, lastTouchNs;
+    private final ArrayList<Long> touchGapsNs = new ArrayList<>();
+    private int gestureEvents, gestureMaxPointers, gestureUnsent;
+
+    /**
+     * UI thread. One TOUCH per MotionEvent, carrying every finger. View to
+     * picture: the listener is on the video view, so the event's x and y are
+     * already relative to it; divide by the view's scale over the picture,
+     * and clamp, so a drag that leaves the picture stays on its edge rather
+     * than landing on another monitor. Historical samples are ignored: the
+     * hub keeps only the latest position per finger anyway.
+     */
+    private boolean onTouch(View v, MotionEvent e) {
+        int action = e.getActionMasked();
+        if (pictureW == 0 || link == null) return true;
+        double sx = (double) v.getWidth() / pictureW, sy = (double) v.getHeight() / pictureH;
+        int n = e.getPointerCount();
+        ByteBuffer b = ByteBuffer.allocate(8 + 2 + 2 + 1 + n * 10); // big-endian, as everything on the wire
+        long now = System.nanoTime();
+        b.putLong(now / 1000).putShort((short) pictureW).putShort((short) pictureH).put((byte) n);
+        for (int i = 0; i < n; i++) {
+            int phase = MOVE;
+            if (action == MotionEvent.ACTION_CANCEL) {
+                phase = CANCEL;
+            } else if (i == e.getActionIndex()) {
+                if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN) phase = DOWN;
+                if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_POINTER_UP) phase = UP;
+            }
+            int px = Math.max(0, Math.min(pictureW - 1, (int) Math.round(e.getX(i) / sx)));
+            int py = Math.max(0, Math.min(pictureH - 1, (int) Math.round(e.getY(i) / sy)));
+            b.put((byte) e.getPointerId(i)).put((byte) phase).putInt(px).putInt(py);
+            if (phase == DOWN) {
+                Log.i(Codecs.TAG, String.format("touch DOWN id %d at view (%.1f,%.1f) -> picture (%d,%d)",
+                        e.getPointerId(i), e.getX(i), e.getY(i), px, py));
+            }
+        }
+        boolean sent = link.sendTouch(b.array());
+
+        if (action == MotionEvent.ACTION_DOWN) {
+            gestureStartNs = now;
+            touchGapsNs.clear();
+            gestureEvents = gestureMaxPointers = gestureUnsent = 0;
+        } else {
+            touchGapsNs.add(now - lastTouchNs);
+        }
+        lastTouchNs = now;
+        gestureEvents++;
+        gestureMaxPointers = Math.max(gestureMaxPointers, n);
+        if (!sent) gestureUnsent++;
+        if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+            long[] g = new long[touchGapsNs.size()];
+            for (int i = 0; i < g.length; i++) g[i] = touchGapsNs.get(i);
+            Arrays.sort(g);
+            Log.i(Codecs.TAG, String.format("touch gesture %s: %d events in %.0fms, up to %d fingers, not sent %d,"
+                            + " gaps ms min %.1f median %.1f max %.1f", action == MotionEvent.ACTION_UP ? "ended" : "CANCELLED",
+                    gestureEvents, (now - gestureStartNs) / 1e6, gestureMaxPointers, gestureUnsent,
+                    g.length > 0 ? g[0] / 1e6 : 0, g.length > 0 ? g[g.length / 2] / 1e6 : 0,
+                    g.length > 0 ? g[g.length - 1] / 1e6 : 0));
+        }
+        return true;
+    }
+
+    /** Any thread. Queues one apply unless one is already waiting. */
+    private void postCursor() {
+        synchronized (cursorLock) {
+            if (cursorPosted) return;
+            cursorPosted = true;
+        }
+        runOnUiThread(this::applyCursor);
+    }
+
+    /**
+     * UI thread. Picture to view: the cursor's top-left is the hotspot less
+     * the shape's hotspot, scaled by the video view's laid-out size over the
+     * picture's, plus the video view's offset in the root.
+     */
+    private void applyCursor() {
+        Bitmap shape;
+        int hotX, hotY, x, y;
+        boolean visible;
+        synchronized (cursorLock) {
+            cursorPosted = false;
+            shape = cursorShape;
+            hotX = cursorHotX;
+            hotY = cursorHotY;
+            x = cursorX;
+            y = cursorY;
+            visible = cursorVisible;
+        }
+        boolean show = visible && shape != null && pictureW != 0 && view.getWidth() != 0;
+        if (!show) {
+            cursorView.setVisibility(View.GONE);
+            if (cursorShown) Log.i(Codecs.TAG, "cursor hidden");
+            cursorShown = false;
+            return;
+        }
+        double sx = (double) view.getWidth() / pictureW, sy = (double) view.getHeight() / pictureH;
+        int w = (int) Math.round(shape.getWidth() * sx), h = (int) Math.round(shape.getHeight() * sy);
+        int tx = (int) Math.round(view.getLeft() + (x - hotX) * sx), ty = (int) Math.round(view.getTop() + (y - hotY) * sy);
+        // Placed by layout, not by translation. The window works out which
+        // parts of it are see-through over the SurfaceView during layout
+        // only, and SurfaceFlinger leaves those parts out. A view moved by
+        // translation alone stays where the last layout put it as far as
+        // that goes, and vanished once it moved (measured 2026-10-12).
+        FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) cursorView.getLayoutParams();
+        if (lp.width != w || lp.height != h || lp.leftMargin != tx || lp.topMargin != ty) {
+            lp.width = w;
+            lp.height = h;
+            lp.leftMargin = tx;
+            lp.topMargin = ty;
+            cursorView.setLayoutParams(lp);
+        }
+        if (shape != cursorApplied) {
+            cursorView.setImageBitmap(shape);
+            cursorApplied = shape;
+        }
+        cursorView.setVisibility(View.VISIBLE);
+        if (!cursorShown) {
+            Log.i(Codecs.TAG, String.format("cursor shown: hotspot at picture (%d,%d), shape %dx%d hot (%d,%d),"
+                    + " drawn at view (%d,%d) size %dx%d", x, y, shape.getWidth(), shape.getHeight(), hotX, hotY,
+                    tx, ty, w, h));
+        }
+        cursorShown = true;
+    }
+
     /** Sizes the view to the picture's aspect ratio, as large as fits. Any thread. */
     private void fit(int w, int h) {
         runOnUiThread(() -> {
+            pictureW = w;
+            pictureH = h;
             double scale = Math.min((double) root.getWidth() / w, (double) root.getHeight() / h);
             int vw = (int) Math.round(w * scale), vh = (int) Math.round(h * scale);
             Log.i(Codecs.TAG, String.format("picture %dx%d shown at %dx%d in %dx%d, scale %.3f",

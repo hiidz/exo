@@ -11,6 +11,7 @@
 using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Net.Sockets;
+using ExoHub.Display;
 
 namespace ExoHub.Link;
 
@@ -42,6 +43,18 @@ sealed class DisplaySender : IDisposable
     bool firstOfConnection;
     Action kick;  // under gate
 
+    // The cursor (DECISIONS 11.1): state, not a queue. Each slot holds the
+    // latest value and whether this connection still needs it, so a slow
+    // phone gets the newest position, never a backlog. Kept across
+    // connections and replayed on Attach, since a shape changes rarely and a
+    // phone that connects later would otherwise never get one. All under gate.
+    CursorImage shape;
+    bool shapePending;
+    bool cursorKnown, cursorVisible, posPending;
+    int cursorX, cursorY;
+    long cursorMouseQpc;
+    public int ShapesSent, PositionsGiven, PositionsSent, PositionsReplaced;
+
     uint seq;
     // Totals for the whole run, read at the end.
     public int Sent, DiscardedNoDevice, DiscardedBeforeKeyframe, MaxWaiting, Connections;
@@ -69,8 +82,40 @@ sealed class DisplaySender : IDisposable
             keyframeWanted = waitForKeyframe = true;
             Connections++;
             ReturnAll();
+            shapePending = shape != null;
+            posPending = cursorKnown;
         }
         Log($"{who} attached, waiting for a forced IDR");
+    }
+
+    // From the capture loop, whenever the shape or the position changed.
+    // Never blocks on the socket: the write thread sends them, ahead of any
+    // frame, and they never count towards Busy.
+    public void CursorShape(CursorImage s)
+    {
+        lock (gate)
+        {
+            shape = s;
+            shapePending = true;
+            Monitor.PulseAll(gate);
+        }
+    }
+
+    public void CursorPos(bool visible, int x, int y, long mouseQpc)
+    {
+        lock (gate)
+        {
+            PositionsGiven++;
+            if (posPending && stream != null)
+                PositionsReplaced++;
+            cursorKnown = true;
+            cursorVisible = visible;
+            cursorX = x;
+            cursorY = y;
+            cursorMouseQpc = mouseQpc;
+            posPending = true;
+            Monitor.PulseAll(gate);
+        }
     }
 
     public void Detach(NetworkStream net)
@@ -149,19 +194,38 @@ sealed class DisplaySender : IDisposable
             NetworkStream net;
             Action k = null;
             bool first = false;
+            bool isPong = false, isPos = false;
+            CursorImage s = null;
             (long t1, long t2) pong = default;
+            (bool visible, int x, int y, long mouse) pos = default;
             lock (gate)
             {
-                while (!disposed && (stream == null || (waiting.Count == 0 && pongs.Count == 0)))
+                while (!disposed && (stream == null ||
+                                     (waiting.Count == 0 && pongs.Count == 0 && !shapePending && !posPending)))
                     Monitor.Wait(gate);
                 if (disposed)
                     return;
                 net = stream;
                 // A PONG goes first: it is 32 bytes, and holding it behind a
                 // frame would put that frame's write time into the clock
-                // measurement.
+                // measurement. The cursor next, for the same reason: a
+                // position held behind a 166KB frame arrives late.
                 if (pongs.Count > 0)
+                {
                     pong = pongs.Dequeue();
+                    isPong = true;
+                }
+                else if (shapePending)
+                {
+                    s = shape;
+                    shapePending = false;
+                }
+                else if (posPending)
+                {
+                    pos = (cursorVisible, cursorX, cursorY, cursorMouseQpc);
+                    posPending = false;
+                    isPos = true;
+                }
                 else
                 {
                     f = waiting.Dequeue();
@@ -170,9 +234,19 @@ sealed class DisplaySender : IDisposable
                     firstOfConnection = false;
                 }
             }
-            if (f == null)
+            if (isPong)
             {
                 WritePong(net, pong.t1, pong.t2);
+                continue;
+            }
+            if (s != null)
+            {
+                WriteCursorShape(net, s);
+                continue;
+            }
+            if (isPos)
+            {
+                WriteCursorPos(net, pos.visible, pos.x, pos.y, pos.mouse);
                 continue;
             }
             // Outside this lock: Kick takes the encoder's lock, and the
@@ -239,6 +313,49 @@ sealed class DisplaySender : IDisposable
         try
         {
             net.Write(m);
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException)
+        {
+            net.Close();
+        }
+    }
+
+    void WriteCursorShape(NetworkStream net, CursorImage s)
+    {
+        Span<byte> m = stackalloc byte[Wire.HeaderSize + 8];
+        m.Clear();
+        m[0] = Wire.TypeCursorShape;
+        BinaryPrimitives.WriteUInt32BigEndian(m[4..], (uint)(8 + s.Bgra.Length));
+        BinaryPrimitives.WriteUInt16BigEndian(m[8..], (ushort)s.Width);
+        BinaryPrimitives.WriteUInt16BigEndian(m[10..], (ushort)s.Height);
+        BinaryPrimitives.WriteUInt16BigEndian(m[12..], (ushort)s.HotX);
+        BinaryPrimitives.WriteUInt16BigEndian(m[14..], (ushort)s.HotY);
+        try
+        {
+            net.Write(m);
+            net.Write(s.Bgra);
+            lock (gate) ShapesSent++;
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException)
+        {
+            net.Close();
+        }
+    }
+
+    void WriteCursorPos(NetworkStream net, bool visible, int x, int y, long mouseQpc)
+    {
+        Span<byte> m = stackalloc byte[Wire.HeaderSize + 16];
+        m.Clear();
+        m[0] = Wire.TypeCursorPos;
+        m[1] = visible ? Wire.FlagVisible : (byte)0;
+        BinaryPrimitives.WriteUInt32BigEndian(m[4..], 16);
+        BinaryPrimitives.WriteInt32BigEndian(m[8..], x);
+        BinaryPrimitives.WriteInt32BigEndian(m[12..], y);
+        BinaryPrimitives.WriteInt64BigEndian(m[16..], Micros(mouseQpc));
+        try
+        {
+            net.Write(m);
+            lock (gate) PositionsSent++;
         }
         catch (Exception ex) when (ex is IOException or ObjectDisposedException)
         {

@@ -1,5 +1,6 @@
 package exo.phone;
 
+import android.graphics.Bitmap;
 import android.net.LocalSocket;
 import android.net.LocalSocketAddress;
 import android.util.Log;
@@ -45,13 +46,27 @@ final class Link implements Runnable {
 
         /** Where to write a per-connection log file called name. */
         File file(String name);
+
+        /**
+         * The hub's pointer shape (DECISIONS 11.1). hotX and hotY are the
+         * hotspot within the bitmap. Link thread. A default method: the
+         * camera role has no cursor and need not implement it.
+         */
+        default void onCursorShape(Bitmap shape, int hotX, int hotY) {
+        }
+
+        /** The hotspot in picture pixels, or hidden. Link thread. */
+        default void onCursorPos(boolean visible, int x, int y) {
+        }
     }
 
     static final byte[] MAGIC = {'E', 'X', 'O', 0};
-    static final int VERSION = 1;
+    // 2 added CURSOR_SHAPE, CURSOR_POS and TOUCH on the display connection.
+    static final int VERSION = 2;
     static final int ROLE_CAMERA = 1, ROLE_DISPLAY = 2, UP = 1, DOWN = 2;
     static final int ACCEPTED = 0, VERSION_MISMATCH = 1;
     static final int FRAME = 1, PING = 2, PONG = 3, FLAG_KEYFRAME = 1, FLAG_CONFIG = 2;
+    static final int CURSOR_SHAPE = 4, CURSOR_POS = 5, TOUCH = 6, FLAG_VISIBLE = 1;
     private static final int PING_MS = 1000, SILENCE_MS = 3000;
     static final int FRAME_FIELDS = 4 + 3 * 8; // seq, present, encoded, sent
     static final int HEADER_SIZE = 8, MAX_BODY = 4 << 20;
@@ -204,10 +219,14 @@ final class Link implements Runnable {
             ArrayList<long[]> pongs = new ArrayList<>();
             ScheduledExecutorService pinger = Executors.newSingleThreadScheduledExecutor();
             pinger.scheduleAtFixedRate(() -> ping(out), 0, PING_MS, TimeUnit.MILLISECONDS);
+            upward = new Upward(pinger, out);
             try {
                 readMessages(in, decoder, counts, pongs);
             } finally {
+                upward = null;
                 pinger.shutdownNow();
+                // The next connection replays the shape and position.
+                listener.onCursorPos(false, 0, 0);
                 Log.i(Codecs.TAG, "link connection " + connections + " ended: " + counts + ", pongs " + pongs.size());
                 decoder.stop();
                 writePongs(listener.file(name + "-pongs.csv"), pongs);
@@ -298,6 +317,51 @@ final class Link implements Runnable {
         }
     }
 
+    /**
+     * The display connection's writer thread and stream, together, so the UI
+     * thread reads both or neither. Null with no display connection.
+     */
+    private static final class Upward {
+        final ScheduledExecutorService writer;
+        final DataOutputStream out;
+
+        Upward(ScheduledExecutorService writer, DataOutputStream out) {
+            this.writer = writer;
+            this.out = out;
+        }
+    }
+
+    private volatile Upward upward;
+
+    /**
+     * Any thread, never blocks: the write happens on the connection's writer
+     * thread, the one PING uses. False when there is no display connection
+     * to send it on (FR-3.3).
+     */
+    boolean sendTouch(byte[] body) {
+        Upward u = upward;
+        if (u == null) return false;
+        try {
+            u.writer.execute(() -> {
+                try {
+                    synchronized (u.out) {
+                        u.out.writeByte(TOUCH);
+                        u.out.writeByte(0);
+                        u.out.writeShort(0);
+                        u.out.writeInt(body.length);
+                        u.out.write(body);
+                        u.out.flush();
+                    }
+                } catch (IOException e) {
+                    // The reader sees the same failure and ends the connection.
+                }
+            });
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            return false; // the connection ended between the read and the call
+        }
+        return true;
+    }
+
     /** On the pinger's thread. t1 is System.nanoTime, the clock every phone time here uses. */
     private void ping(DataOutputStream out) {
         try {
@@ -327,6 +391,7 @@ final class Link implements Runnable {
     /** Per connection. Read by the log line when the connection ends. */
     private static final class Counts {
         int received, discardedBeforeKeyframe, flagMismatch, paramChanges, skipped;
+        int cursorShapes, cursorPositions;
         long seqGaps, lastSeq = -1;
         final ArrayList<Long> scanNs = new ArrayList<>();
 
@@ -334,8 +399,9 @@ final class Link implements Runnable {
         public String toString() {
             return String.format("received %d, discarded before keyframe %d, seq gaps %d,"
                             + " CONFIG flag disagreeing with the bytes %d, SPS/PPS changes %d,"
-                            + " other messages skipped %d", received, discardedBeforeKeyframe, seqGaps,
-                    flagMismatch, paramChanges, skipped) + ", header scan ms " + scanStats();
+                            + " other messages skipped %d, cursor shapes %d, cursor positions %d", received,
+                    discardedBeforeKeyframe, seqGaps, flagMismatch, paramChanges, skipped, cursorShapes,
+                    cursorPositions) + ", header scan ms " + scanStats();
         }
 
         String scanStats() {
@@ -346,6 +412,28 @@ final class Link implements Runnable {
             return String.format("median=%.2f p95=%.2f max=%.2f", s[s.length / 2] / 1e6, s[(int) (s.length * 0.95)] / 1e6,
                     s[s.length - 1] / 1e6);
         }
+    }
+
+    /**
+     * Width, height, hotX, hotY, then pixels in byte order B, G, R, A with
+     * straight alpha. createBitmap takes unpremultiplied ARGB ints, which is
+     * straight alpha, so each pixel only needs its bytes reordered.
+     */
+    private void readCursorShape(DataInputStream in, int length) throws IOException {
+        int w = in.readUnsignedShort(), h = in.readUnsignedShort();
+        int hotX = in.readUnsignedShort(), hotY = in.readUnsignedShort();
+        if (w == 0 || h == 0 || length != 8 + w * h * 4) {
+            throw new IOException("protocol error: cursor shape " + w + "x" + h + " in " + length + " bytes");
+        }
+        byte[] px = new byte[w * h * 4];
+        in.readFully(px);
+        int[] argb = new int[w * h];
+        for (int i = 0; i < argb.length; i++) {
+            int b = px[i * 4] & 0xFF, g = px[i * 4 + 1] & 0xFF, r = px[i * 4 + 2] & 0xFF, a = px[i * 4 + 3] & 0xFF;
+            argb[i] = a << 24 | r << 16 | g << 8 | b;
+        }
+        Log.i(Codecs.TAG, "cursor shape " + w + "x" + h + " hot (" + hotX + "," + hotY + ")");
+        listener.onCursorShape(Bitmap.createBitmap(argb, w, h, Bitmap.Config.ARGB_8888), hotX, hotY);
     }
 
     private void readMessages(DataInputStream in, Decoder decoder, Counts counts, ArrayList<long[]> pongs)
@@ -363,6 +451,18 @@ final class Link implements Runnable {
             if (type == PONG && length == 24) {
                 long t1 = in.readLong(), t2 = in.readLong(), t3 = in.readLong();
                 pongs.add(new long[] {t1, t2, t3, System.nanoTime()});
+                continue;
+            }
+            if (type == CURSOR_SHAPE && decoder != null) {
+                readCursorShape(in, length);
+                counts.cursorShapes++;
+                continue;
+            }
+            if (type == CURSOR_POS && length == 16 && decoder != null) {
+                int x = in.readInt(), y = in.readInt();
+                in.readLong(); // the hub's mouse update time, unused yet
+                counts.cursorPositions++;
+                listener.onCursorPos((flags & FLAG_VISIBLE) != 0, x, y);
                 continue;
             }
             if (type != FRAME || length < FRAME_FIELDS || decoder == null) {

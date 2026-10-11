@@ -6,7 +6,9 @@ namespace ExoHub.Link;
 static class Wire
 {
     public static ReadOnlySpan<byte> Magic => "EXO\0"u8;
-    public const ushort Version = 1;
+    // 2 added CURSOR_SHAPE, CURSOR_POS and TOUCH. Both roles share it, so a
+    // version 1 app is refused on either connection.
+    public const ushort Version = 2;
 
     public const int MaxHelloBody = 256, MaxSerial = 64;
     public const byte RoleCamera = 1, RoleDisplay = 2;
@@ -18,6 +20,16 @@ static class Wire
     // Every message after the handshake: type, flags, reserved u16, body length u32.
     public const int HeaderSize = 8;
     public const int MaxBody = 4 << 20;
+
+    // The display connection's cursor, hub to device (DECISIONS 11.1).
+    // CURSOR_SHAPE: width, height, hotX, hotY as u16, then width * height
+    // pixels, rows tight, each in byte order B, G, R, A, straight alpha.
+    // CURSOR_POS: flags bit 0 visible; x, y i32, the hotspot in picture
+    // pixels; the mouse update time i64, hub microseconds.
+    public const byte TypeCursorShape = 4, TypeCursorPos = 5;
+    public const byte FlagVisible = 1;
+    // TOUCH, device to hub, on the display connection (FR-3.3).
+    public const byte TypeTouch = 6;
 
     // L7, the hub to ExoCamera.dll link (DECISIONS 5.9). The same frozen
     // prefix and framing, its own version. The port is a constant because

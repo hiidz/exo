@@ -37,6 +37,7 @@ using ExoHub.Adb;
 using ExoHub.Camera;
 using ExoHub.Display;
 using ExoHub.Link;
+using ExoHub.Touch;
 using SharpGen.Runtime;
 using Vortice.Direct3D11;
 using Vortice.DXGI;
@@ -160,7 +161,8 @@ if (refused != null)
 // Port 0: Windows picks it, and this instance holds it exclusively. With
 // the session ID in WELCOME it is the per-session identifier (5.7, 5.8).
 using var display = new DisplaySender(clock);
-using var devices = new DeviceListener(0, clock, display, cameraSerial != null ? decoder : null);
+var touch = new TouchInjector(clock);
+using var devices = new DeviceListener(0, clock, display, touch, cameraSerial != null ? decoder : null);
 Console.WriteLine($"listening on 127.0.0.1:{devices.Port}, session {devices.SessionId:x16}");
 // One setup per device, holding every role it was given, so a phone with
 // both is launched once (DECISIONS 10 item 4, D2b).
@@ -259,6 +261,11 @@ int timeouts = 0, newImages = 0, cursorOnly = 0, disagreements = 0;
 long prevPresent = 0, prevMouse = 0;
 long lastOfferQpc = 0;  // 0: never, so the first resend is due at once
 int resends = 0;
+// The pointer the phone draws (DECISIONS 11.1). Fed from every acquired
+// frame, after the frame is released.
+var cursor = new CursorTracker();
+bool shapeSinceOpen = false;  // whether this duplication has given a shape yet
+int cursorDisagreements = 0;
 
 while (!stop.IsCancellationRequested)
 {
@@ -298,6 +305,8 @@ while (!stop.IsCancellationRequested)
                           $"at ({o.Left},{o.Top}) {o.GdiName} isCurrent={source.FactoryIsCurrent} factories={source.FactoriesCreated}");
         failedAttempts = 0;
         prevPresent = prevMouse = 0;  // gaps are measured within one duplication only
+        shapeSinceOpen = false;
+        touch.Target = CheckTouchTarget(o, t);
         // DECISIONS 5.4: the heartbeat is due at once after a recovery, and
         // carries the forced IDR below if no new image comes first.
         lastOfferQpc = 0;
@@ -402,6 +411,9 @@ while (!stop.IsCancellationRequested)
         string what = r == Vortice.DXGI.ResultCode.AccessLost ? "ACCESS_LOST" : "acquire failed";
         Console.WriteLine($"{t} LOST #{losses} {what} 0x{r.Code:X8} isCurrent={source.FactoryIsCurrent} " +
                           $"removed=0x{source.DeviceRemovedReason.Code:X8}");
+        // A resolution change or a move arrives as a loss, so no touch lands
+        // on a stale rectangle; Reopen publishes the new one.
+        touch.Target = null;
         source.Drop();
         sinceLoss.Restart();
         continue;
@@ -435,6 +447,48 @@ while (!stop.IsCancellationRequested)
     {
         timeouts++;
         continue;
+    }
+
+    // The pointer, from either kind of frame. The shape first, since its
+    // hotspot applies to a position in the same frame.
+    if (source.ShapeNew)
+    {
+        bool first = !shapeSinceOpen;
+        shapeSinceOpen = true;
+        if (cursor.TakeShape(source.ShapeInfo, source.ShapeBytes))
+        {
+            display.CursorShape(cursor.Shape);
+            Console.WriteLine($"{t} CURSOR SHAPE #{cursor.ShapeChanges} {cursor.Shape}, " +
+                              $"{source.ShapeBytes.Length} bytes raw{(first ? ", first from this duplication" : "")}");
+        }
+    }
+    if (info.LastMouseUpdateTime != 0)
+    {
+        bool wasVisible = cursor.Known && cursor.Visible;
+        bool moved = cursor.TakePosition(info.PointerPosition);
+        if (moved)
+            display.CursorPos(cursor.Visible, cursor.X, cursor.Y, info.LastMouseUpdateTime);
+        if (moved && cursor.Visible != wasVisible)
+        {
+            if (cursor.Visible)
+            {
+                // GetCursorPos is the hotspot in virtual-desktop pixels. With
+                // the mouse still, it minus the output's origin must equal
+                // what DXGI's top-left plus the shape's hotspot gave.
+                Win32.GetCursorPos(out Win32.POINT cp);
+                OutputInfo o = source.Output;
+                int gx = cp.X - o.Left, gy = cp.Y - o.Top;
+                bool agree = gx == cursor.X && gy == cursor.Y;
+                if (!agree) cursorDisagreements++;
+                Console.WriteLine($"{t} CURSOR ENTERED at picture ({cursor.X},{cursor.Y}); GetCursorPos ({cp.X},{cp.Y}) " +
+                                  $"is picture ({gx},{gy}), {(agree ? "agrees" : "DIFFERS")}" +
+                                  (cursor.Shape == null ? "; no shape yet" : ""));
+            }
+            else
+            {
+                Console.WriteLine($"{t} CURSOR LEFT");
+            }
+        }
     }
 
     string blt = "";
@@ -473,6 +527,11 @@ while (!stop.IsCancellationRequested)
     // PointerPosition is only filled in when the mouse updated in this
     // frame (LastMouseUpdateTime nonzero). Otherwise it reads as hidden at
     // (0,0), which would be a lie.
+    // Cursor-only frames come every 1ms while the mouse moves on the VDD
+    // (a 1000Hz mouse, measured 2026-10-12), so they are counted, and printed
+    // only when they bring a shape.
+    if (kind == FrameKind.CursorOnly && !source.ShapeNew)
+        continue;
     var p = info.PointerPosition;
     string pointer = info.LastMouseUpdateTime == 0 ? "-"
         : p.Visible ? $"visible({p.Position.X},{p.Position.Y})" : "hidden";
@@ -512,6 +571,10 @@ Console.WriteLine($"encoders built={encodersBuilt} submitted={encSubmitted} repl
                   $"({encBytes * 8 / Math.Max(clock.Elapsed.TotalSeconds, 0.001) / 1e6:F1} Mbps over the whole run, " +
                   $"{(encOutputs > 0 ? encBytes / encOutputs / 1024 : 0)}KB a frame)");
 Console.WriteLine($"resends={resends} present times clamped={encClamped}");
+Console.WriteLine($"cursor shape changes={cursor.ShapeChanges} position changes={cursor.PositionChanges} " +
+                  $"visible without a shape={cursor.PositionsWithoutShape} GetCursorPos disagreements={cursorDisagreements} " +
+                  $"shape read failures={source.ShapeFailures}" +
+                  (source.ShapeFailures > 0 ? $" last 0x{source.LastShapeFailure.Code:X8}" : ""));
 Console.WriteLine($"gate waits={encGateWaits} unmatched outputs={encUnmatched} " +
                   $"submit rate={encSubmitted / Math.Max(clock.Elapsed.TotalSeconds, 0.001):F1}/s");
 Console.WriteLine($"present->blt    ms {Spread(presentToBlt)}");
@@ -530,6 +593,15 @@ display.Dispose();
 Console.WriteLine($"sender connections={display.Connections} sent={display.Sent} bytes={display.SentBytes} " +
                   $"discarded: no device={display.DiscardedNoDevice} before keyframe={display.DiscardedBeforeKeyframe}; " +
                   $"max waiting={display.MaxWaiting}");
+touch.Dispose();
+Console.WriteLine($"touch received: messages={touch.Messages} gestures={touch.Gestures} dropped={touch.Dropped} " +
+                  $"refused fingers={touch.Refused} events for no finger={touch.Unknown}");
+Console.WriteLine($"touch injected: frames={touch.Frames} gestures={touch.InjectedGestures} moves coalesced={touch.Coalesced} " +
+                  $"retried={touch.Retried} failures={(touch.Failures.Count == 0 ? "none" : string.Join(" ", touch.Failures.Select(kv => $"error {kv.Key}={kv.Value}")))}");
+Console.WriteLine($"touch interval  ms {Spread(touch.IntervalMs)}");
+Console.WriteLine($"recv->inject    ms {Spread(touch.RecvToInjectMs)}");
+Console.WriteLine($"sender cursor: shapes sent={display.ShapesSent} positions given={display.PositionsGiven} " +
+                  $"sent={display.PositionsSent} replaced before sending={display.PositionsReplaced}");
 Console.WriteLine($"encoded->sent   ms {Spread(display.WaitMs)}");
 Console.WriteLine($"write blocked   ms {Spread(display.WriteMs)}");
 if (converter?.Pool is Nv12Pool pool)
@@ -563,6 +635,24 @@ static void DumpAndDecode(Nv12Converter converter, string path, string t)
     {
         Console.WriteLine($"           ffmpeg not found, run: ffmpeg {ffArgs}");
     }
+}
+
+// Where touch lands: DXGI's rectangle for the duplicated output, checked
+// against the monitor rectangle Windows gives for its centre (CLAUDE.md,
+// Touch). Null, so touch is refused, if the two disagree.
+static OutputInfo CheckTouchTarget(OutputInfo o, string t)
+{
+    var centre = new Win32.POINT { X = o.Left + o.Width / 2, Y = o.Top + o.Height / 2 };
+    var mi = new Win32.MONITORINFO { cbSize = System.Runtime.InteropServices.Marshal.SizeOf<Win32.MONITORINFO>() };
+    IntPtr monitor = Win32.MonitorFromPoint(centre, Win32.MONITOR_DEFAULTTONULL);
+    bool got = monitor != IntPtr.Zero && Win32.GetMonitorInfoW(monitor, ref mi);
+    var m = mi.rcMonitor;
+    bool agree = got && m.Left == o.Left && m.Top == o.Top &&
+                 m.Right - m.Left == o.Width && m.Bottom - m.Top == o.Height;
+    Console.WriteLine($"{t} touch target: DXGI ({o.Left},{o.Top}) {o.Width}x{o.Height}, " +
+                      (got ? $"GetMonitorInfo ({m.Left},{m.Top})-({m.Right},{m.Bottom})" : "no monitor at its centre") +
+                      $", {(agree ? "agree" : "DISAGREE, touch refused")}");
+    return agree ? o : null;
 }
 
 static string Spread(List<double> ms)
