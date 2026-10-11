@@ -37,6 +37,9 @@ sealed class DisplaySender : IDisposable
     NetworkStream stream;  // under gate; null with no device
     string serial;
     bool keyframeWanted, waitForKeyframe, disposed;
+    // The next frame written is the first of its connection. For the replug
+    // timings in DECISIONS 5.8.
+    bool firstOfConnection;
     Action kick;  // under gate
 
     uint seq;
@@ -116,6 +119,7 @@ sealed class DisplaySender : IDisposable
                     return;
                 }
                 waitForKeyframe = false;
+                firstOfConnection = true;
             }
             Frame f = free.Count > 0 ? free.Pop() : new Frame();
             if (f.Data.Length < length)
@@ -140,6 +144,7 @@ sealed class DisplaySender : IDisposable
             Frame f = null;
             NetworkStream net;
             Action k = null;
+            bool first = false;
             (long t1, long t2) pong = default;
             lock (gate)
             {
@@ -157,6 +162,8 @@ sealed class DisplaySender : IDisposable
                 {
                     f = waiting.Dequeue();
                     k = kick;
+                    first = firstOfConnection;
+                    firstOfConnection = false;
                 }
             }
             if (f == null)
@@ -189,6 +196,8 @@ sealed class DisplaySender : IDisposable
                 net.Close();
             }
             long doneQpc = Stopwatch.GetTimestamp();
+            if (first)
+                Log($"{serial} first frame sent, seq {f.Seq}, {f.Length} bytes");
             lock (gate)
             {
                 Sent++;

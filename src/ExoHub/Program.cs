@@ -6,7 +6,7 @@
 // processor while the frame is held, then offered to the hardware encoder
 // once it is released. No network. Ctrl+C stops it and prints totals.
 //
-// Usage: ExoHub [monitorId] [--debug] [--seconds N] [--dump F] [--fps N] [--out F] [--port N]
+// Usage: ExoHub [monitorId] [--debug] [--seconds N] [--dump F] [--fps N] [--out F] [--display SERIAL]
 // monitorId is the EDID code Windows shows for the monitor, e.g. ACR0721.
 // Without one, the virtual display is used.
 // --debug     D3D11 debug layer on, messages printed as they arrive. Slow.
@@ -16,11 +16,13 @@
 //             without it.
 // --fps N     the encoded frame rate, 30 by default (DECISIONS 11.2).
 // --out F     write the encoded stream to F as Annex-B H.264.
-// --port N    the loopback port devices reach through adb reverse, 27183 by
-//             default (DECISIONS 5.7). Set up by hand in this slice.
+// --display S the adb serial of the device that holds the display role
+//             (DECISIONS 5.8). Without it every device is tracked and none
+//             is set up. The hub owns adb and issues the reverse itself.
 
 using System.Diagnostics;
 using ExoHub;
+using ExoHub.Adb;
 using ExoHub.Display;
 using ExoHub.Link;
 using SharpGen.Runtime;
@@ -64,7 +66,8 @@ string dumpPath = null;
 // the H.264 level, so it is a flag, not a constant.
 uint fps = 30;
 string outPath = null;
-int port = 27183;
+// The user's choice of display device, until a roles UI exists (FR-4.4).
+string displaySerial = null;
 for (int i = 0; i < args.Length; i++)
 {
     switch (args[i])
@@ -74,10 +77,33 @@ for (int i = 0; i < args.Length; i++)
         case "--seconds": seconds = double.Parse(args[++i]); break;
         case "--dump": dumpPath = args[++i]; break;
         case "--out": outPath = args[++i]; break;
-        case "--port": port = int.Parse(args[++i]); break;
+        case "--display": displaySerial = args[++i]; break;
         default: wanted = args[i]; break;
     }
 }
+
+var clock = Stopwatch.StartNew();
+
+// The adb owner comes first, so a refusal exits before the display opens.
+// The job first of all: every process started after it is born inside.
+Job.JoinNew();
+var adb = new AdbServer(clock);
+string refused = adb.CheckForeign() ?? adb.Start();
+if (refused != null)
+{
+    Console.WriteLine($"{clock.Elapsed.TotalSeconds,8:F3}s adb REFUSED: {refused}");
+    return 2;
+}
+// Port 0: Windows picks it, and this instance holds it exclusively. With
+// the session ID in WELCOME it is the per-session identifier (5.7, 5.8).
+using var display = new DisplaySender(clock);
+using var devices = new DeviceListener(0, clock, display);
+Console.WriteLine($"listening on 127.0.0.1:{devices.Port}, session {devices.SessionId:x16}");
+var role = displaySerial != null ? new DisplayRole(displaySerial, devices.Port, clock) : null;
+Console.WriteLine(role != null ? $"display role: {displaySerial}"
+                               : "display role: none chosen; every device is tracked and none is set up. Pass --display <serial>");
+var tracker = new DeviceTracker(adb, clock, (serial, state) => role?.OnState(serial, state));
+int exitCode = 0;
 
 using var source = new DesktopDuplicationSource(wanted, debugLayer);
 Console.WriteLine($"target monitor {wanted}, timeout {TimeoutMs}ms, debug layer {(debugLayer ? "ON" : "off")}, " +
@@ -152,11 +178,6 @@ void OnNewImage(ID3D11Texture2D texture)
         rebuiltFor = texture.Description;
 }
 
-var clock = Stopwatch.StartNew();
-using var display = new DisplaySender(clock);
-using var devices = new DeviceListener(port, clock, display);
-Console.WriteLine($"listening on 127.0.0.1:{devices.Port}, session {devices.SessionId:x16}; " +
-                  $"adb reverse localabstract:exo tcp:{devices.Port}");
 var sinceLoss = Stopwatch.StartNew();  // startup counts as the first loss
 int losses = 0, failedAttempts = 0;
 int timeouts = 0, newImages = 0, cursorOnly = 0, disagreements = 0;
@@ -165,6 +186,13 @@ long prevPresent = 0, prevMouse = 0;
 while (!stop.IsCancellationRequested)
 {
     string t = $"{clock.Elapsed.TotalSeconds,8:F3}s";
+
+    if (tracker.Fatal != null)
+    {
+        Console.WriteLine($"{t} adb REFUSED: {tracker.Fatal}");
+        exitCode = 2;
+        break;
+    }
 
     if (!source.IsOpen)
     {
@@ -394,7 +422,7 @@ MediaFactory.MFShutdown();
 Win32.timeEndPeriod(1);
 if (outPath != null)
     Console.WriteLine($"wrote {outPath}");
-return 0;
+return exitCode;
 
 // The one debug readback (DECISIONS 4.1). Writes the frame just converted
 // as raw NV12, then has ffmpeg make a PNG of it. Throwaway inspection, so

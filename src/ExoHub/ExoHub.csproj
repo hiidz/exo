@@ -13,6 +13,28 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
+  <!-- The pinned adb (PROJECT_SPEC FR-5.3, DECISIONS 5.8). Three files, copied
+       into adb\ beside ExoHub.exe: adb.exe imports AdbWinApi.dll, which loads
+       AdbWinUsbApi.dll by name. Not committed; .gitignore excludes them. -->
+  <PropertyGroup>
+    <AdbSource Condition="'$(AdbSource)' == ''">$(LOCALAPPDATA)\Android\Sdk\platform-tools</AdbSource>
+    <AdbRevision>37.0.1</AdbRevision>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="$(AdbSource)\adb.exe;$(AdbSource)\AdbWinApi.dll;$(AdbSource)\AdbWinUsbApi.dll"
+          Link="adb\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" Visible="false" />
+  </ItemGroup>
+  <Target Name="CheckPinnedAdb" BeforeTargets="BeforeBuild">
+    <ReadLinesFromFile File="$(AdbSource)\source.properties">
+      <Output TaskParameter="Lines" ItemName="AdbSourceProperties" />
+    </ReadLinesFromFile>
+    <PropertyGroup>
+      <AdbSourcePropertiesText>;@(AdbSourceProperties);</AdbSourcePropertiesText>
+    </PropertyGroup>
+    <Error Condition="!$(AdbSourcePropertiesText.Contains(';Pkg.Revision=$(AdbRevision);'))"
+           Text="adb in $(AdbSource) is not platform-tools $(AdbRevision), the pinned revision. Set AdbSource to a $(AdbRevision) copy." />
+  </Target>
+
   <ItemGroup>
     <PackageReference Include="Vortice.DXGI" Version="3.8.3" />
     <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
