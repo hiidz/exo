@@ -1,0 +1,8 @@
+; The four COM entry points, exported by their plain names. COM and regsvr32
+; look them up by exact name, and C++ name mangling would hide them.
+LIBRARY exocam
+EXPORTS
+    DllGetClassObject   PRIVATE
+    DllCanUnloadNow     PRIVATE
+    DllRegisterServer   PRIVATE
+    DllUnregisterServer PRIVATE

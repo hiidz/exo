@@ -1,0 +1,119 @@
+// The media stream: the object the Frame Server pulls samples from, with
+// RequestSample. One stream, serving every app (DECISIONS 7.5).
+#pragma once
+
+#include "exo_ks.h"
+
+#include <windows.h>
+#include <mfidl.h>
+#include <wrl/client.h>
+
+// IMFMediaStream2 adds the stream state the Frame Server sets directly. It
+// asked for it when an app stopped and reopened the camera, and pulled
+// nothing more without it (A4, 2026-10-11).
+class ExoStream : public IMFMediaStream2, public IMFGetService, public ExoNoKsControl
+{
+public:
+    // The stream holds its source strongly, and the source holds the stream:
+    // a cycle, broken by Shutdown. A missed Shutdown therefore leaks rather
+    // than leaving a dangling pointer inside a host process.
+    static HRESULT Create(IMFMediaSource* source, IMFStreamDescriptor* sd, ExoStream** out);
+
+    // Called by the source, not through COM.
+    HRESULT Start();   // queues MEStreamStarted; samples may be requested
+    HRESULT Stop();    // queues MEStreamStopped
+    void Shutdown();   // refuses everything after, and drops the source
+    // The Frame Server's sample allocator, passed on by the source's
+    // IMFSampleAllocatorControl::SetDefaultAllocator.
+    HRESULT SetAllocator(IUnknown* allocator);
+
+    // IUnknown
+    STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override;
+    STDMETHODIMP_(ULONG) AddRef() override;
+    STDMETHODIMP_(ULONG) Release() override;
+
+    // IMFMediaEventGenerator, forwarded to m_events
+    STDMETHODIMP BeginGetEvent(IMFAsyncCallback* cb, IUnknown* state) override;
+    STDMETHODIMP EndGetEvent(IMFAsyncResult* result, IMFMediaEvent** ev) override;
+    STDMETHODIMP GetEvent(DWORD flags, IMFMediaEvent** ev) override;
+    STDMETHODIMP QueueEvent(MediaEventType type, REFGUID ext, HRESULT status, const PROPVARIANT* value) override;
+
+    // IMFMediaStream
+    STDMETHODIMP GetMediaSource(IMFMediaSource** source) override;
+    STDMETHODIMP GetStreamDescriptor(IMFStreamDescriptor** sd) override;
+    STDMETHODIMP RequestSample(IUnknown* token) override;
+
+    // IMFMediaStream2
+    STDMETHODIMP SetStreamState(MF_STREAM_STATE value) override;
+    STDMETHODIMP GetStreamState(MF_STREAM_STATE* value) override;
+
+    // IMFGetService
+    STDMETHODIMP GetService(REFGUID service, REFIID riid, LPVOID* ppv) override;
+
+private:
+    ExoStream();
+    ~ExoStream();
+
+    // What one event's bookkeeping found worth logging.
+    enum Kind { Requested, Refused, Served };
+    struct Counts
+    {
+        HRESULT hr;
+        bool firstServed;   // the first sample ever served
+        bool firstFailure;  // a failure of a kind not seen just before
+        bool report;        // a second has passed; the totals below are set
+        LONG requests, refused, served;
+        double meanUs, maxUs;  // time to serve one sample
+    };
+
+    // Counts requests, refusals and samples served, and the time to serve.
+    // Under the lock; the logging happens in Report, outside it.
+    Counts Count(Kind kind, LONGLONG serveTicks, HRESULT hr);
+    void Report(const Counts& c);
+
+    // The frame clock: a thread-pool timer that fires once a frame while the
+    // stream runs, and answers one waiting request each time.
+    static VOID CALLBACK OnTimer(PTP_CALLBACK_INSTANCE, PVOID context, PTP_TIMER);
+    void Tick();
+    void StopLocked();
+
+    static HRESULT CopyPicture(IMFMediaBuffer* src, IMFSample* dst);
+    HRESULT CreatePoolLocked();
+    void ReleasePoolLocked();
+
+    LONG m_ref = 1;
+
+    // Set in Create and never replaced, so read without the lock.
+    Microsoft::WRL::ComPtr<IMFMediaEventQueue> m_events;
+    Microsoft::WRL::ComPtr<IMFStreamDescriptor> m_sd;
+    PTP_TIMER m_timer = nullptr;
+
+    SRWLOCK m_lock = SRWLOCK_INIT;  // guards everything below
+    bool m_shutdown = false;
+    // Samples are served only while RUNNING.
+    MF_STREAM_STATE m_state = MF_STREAM_STATE_STOPPED;
+    Microsoft::WRL::ComPtr<IMFMediaSource> m_source;  // dropped by Shutdown
+    // The picture every request is served, copied into a sample from the
+    // Frame Server's pool. Only ever replaced, never written.
+    Microsoft::WRL::ComPtr<IMFMediaBuffer> m_current;
+    // Its pool of samples exists while the stream runs.
+    Microsoft::WRL::ComPtr<IMFVideoSampleAllocatorEx> m_allocator;
+    bool m_poolReady = false;
+    // Requests waiting for the frame clock, oldest first, by token (which
+    // may be null). Dropped when the stream stops.
+    static const int kMaxPending = 64;
+    Microsoft::WRL::ComPtr<IUnknown> m_pending[kMaxPending];
+    int m_pendingCount = 0;
+    bool m_ticking = false;  // a tick is serving; others skip
+
+    // Statistics, for the once-a-second log line.
+    LONGLONG m_windowStart = 0;
+    LONG m_requests = 0;
+    LONG m_refused = 0;
+    LONG m_served = 0;
+    LONGLONG m_ticksTotal = 0;
+    LONGLONG m_ticksMax = 0;
+    bool m_everServed = false;
+    bool m_loggedNoSample = false;
+    HRESULT m_lastFailure = S_OK;
+};
