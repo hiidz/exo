@@ -67,9 +67,13 @@ sealed class RoleSetup
                     return;
                 if (camera)
                 {
-                    // Silent on success; anything printed is the failure.
-                    string granted = AdbWire.Shell(serial, $"pm grant {Package} android.permission.CAMERA").Trim();
-                    Log($"{serial} camera permission granted{(granted == "" ? "" : ": " + granted.Replace("\n", " | "))}");
+                    // Silent on success; anything printed is the failure. The
+                    // notification lets CameraService's ongoing notice show.
+                    foreach (string p in new[] { "CAMERA", "POST_NOTIFICATIONS" })
+                    {
+                        string granted = AdbWire.Shell(serial, $"pm grant {Package} android.permission.{p}").Trim();
+                        Log($"{serial} {p} granted{(granted == "" ? "" : ": " + granted.Replace("\n", " | "))}");
+                    }
                 }
 
                 if (Volatile.Read(ref generation) != g)

@@ -4,6 +4,13 @@
     <!-- The camera role. Granted by the hub over adb before launch
          (pm grant), so nothing asks on screen. -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- CameraService, so capture goes on with the screen off (D2a). The
+         camera type needs its own permission from Android 14. The
+         notification permission is granted by the hub too. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- NoActionBar: the default theme draws an ActionBar over the content
          (spike 4 FINDINGS, traps). -->
@@ -19,6 +26,10 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <service
+            android:name=".CameraService"
+            android:exported="false"
+            android:foregroundServiceType="camera" />
     </application>
 
 </manifest>

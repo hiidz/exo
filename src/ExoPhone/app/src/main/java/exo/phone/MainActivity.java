@@ -21,9 +21,9 @@ import java.io.File;
 
 /**
  * The camera role, with --es role camera: the back camera to the hub over
- * localabstract:exo, for as long as this activity is in front with the
- * screen on (DECISIONS 10 item 4, increment D). The hub grants the camera
- * permission over adb before it launches this, so nothing asks on screen:
+ * localabstract:exo, from CameraService, which keeps going with the screen
+ * off (DECISIONS 10 item 4, D2a). The hub grants the camera permission over
+ * adb before it launches this, so nothing asks on screen:
  *
  *   adb shell am start -S -n exo.phone/.MainActivity --es serial PHONESERIAL --es role camera
  *
@@ -147,48 +147,36 @@ public class MainActivity extends Activity {
         });
     }
 
-    /** The camera role: the link, which makes a new camera for each connection. */
+    /**
+     * The camera role runs in CameraService, a foreground service, so it goes
+     * on with the screen off. Android lets that service use the camera only
+     * if the app was visible when it started, so this activity shows itself
+     * over the lock screen and wakes it first. It stays behind the lock
+     * screen afterwards rather than finishing, so the start never races it.
+     */
     private void startCamera(Intent in) {
+        setShowWhenLocked(true);
+        setTurnScreenOn(true);
         view.setVisibility(android.view.View.GONE);
         TextView t = new TextView(this);
         t.setText("Exo camera");
         t.setTextSize(28);
         root.addView(t, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
-        // The view is gone, so the window holds the screen on instead.
-        getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        File dir = getExternalFilesDir(null);
-        String run = String.format("%tH%<tM%<tS-camera", System.currentTimeMillis());
-        link = new Link(in.getStringExtra("serial"), in.getIntExtra("proto", Link.VERSION), Link.ROLE_CAMERA,
-                new Link.Listener() {
-                    @Override
-                    public void onRefused(String reason) {
-                        showRefusal(reason);
-                    }
-
-                    @Override
-                    public Decoder newDecoder(String conn) {
-                        throw new IllegalStateException("camera role has no decoder");
-                    }
-
-                    @Override
-                    public CameraRole newCamera(String conn) {
-                        return new CameraRole(MainActivity.this);
-                    }
-
-                    @Override
-                    public File file(String name) {
-                        return new File(dir, run + "-" + name);
-                    }
-                });
-        link.start();
-    }
-
-    @Override
-    protected void onDestroy() {
-        // The display role stops with its Surface; the camera role here.
-        if (link != null && "camera".equals(getIntent().getStringExtra("role"))) link.stop();
-        super.onDestroy();
+        boolean locked = getSystemService(android.app.KeyguardManager.class).isKeyguardLocked();
+        boolean screenOn = getSystemService(android.os.PowerManager.class).isInteractive();
+        Intent svc = new Intent(this, CameraService.class)
+                .putExtra("serial", in.getStringExtra("serial"))
+                .putExtra("proto", in.getIntExtra("proto", Link.VERSION));
+        try {
+            startForegroundService(svc);
+            Log.i(Codecs.TAG, "camera service start requested; at launch keyguard locked " + locked
+                    + ", screen on " + screenOn);
+        } catch (RuntimeException e) {
+            Log.e(Codecs.TAG, "camera service start FAILED (keyguard locked " + locked + ", screen on " + screenOn
+                    + "): " + e);
+            showRefusal("Camera service refused: " + e.getMessage());
+        }
     }
 
     /** A refusal is shown over the video, not only logged. Any thread. */
