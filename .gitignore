@@ -25,3 +25,6 @@ obj/
 
 # Spike capture stills, regenerable
 *.png
+
+# ExoPhone test input and run output, local evidence (spikes/STATUS.md)
+src/ExoPhone/testdata/
