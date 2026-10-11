@@ -1,12 +1,14 @@
-// One role, display or camera, held by the serial the user chose with
-// --display or --camera until a roles UI exists (DECISIONS 5.8, PROJECT_SPEC
+// One device's roles, display, camera or both, as the user chose with
+// --display and --camera until a roles UI exists (DECISIONS 5.8, PROJECT_SPEC
 // FR-4.4). Each time that device reaches `device`, sets up the reverse to
-// the hub's port and launches ExoPhone with its serial and role. For the
-// camera it first grants the camera permission over adb, so nothing asks on
-// the phone. The handshake that follows is DeviceListener's.
+// the hub's port and launches ExoPhone once with its serial and every role it
+// holds. For the camera it first grants the camera permission over adb, so
+// nothing asks on the phone. The handshakes that follow, one connection per
+// role, are DeviceListener's.
 //
-// One phone holding both roles is not handled: each launch force-stops the
-// app with -S, which would end the other role (DECISIONS 10 item 4, D2).
+// One launch per device, not per role: each launch force-stops the app with
+// -S, so a second launch would end the role the first one started
+// (DECISIONS 10 item 4, D2b).
 
 using System.Diagnostics;
 using System.Net.Sockets;
@@ -23,22 +25,24 @@ sealed class RoleSetup
     readonly bool camera;
     readonly int port;
     readonly Stopwatch clock;
+    readonly string roles;  // for the log and the launch: "display", "camera" or "camera,display"
 
     // Bumped on every state change of the chosen device. A setup checks it
     // before each step, so one for a device that has since changed or left
     // stops instead of acting on a stale transport.
     int generation;
 
-    public RoleSetup(string serial, bool camera, int port, Stopwatch clock)
+    public RoleSetup(string serial, bool display, bool camera, int port, Stopwatch clock)
     {
         this.serial = serial;
         this.camera = camera;
         this.port = port;
         this.clock = clock;
+        roles = display && camera ? "camera,display" : camera ? "camera" : "display";
     }
 
     void Log(string line) =>
-        Console.WriteLine($"{clock.Elapsed.TotalSeconds,8:F3}s role {(camera ? "camera" : "display")} {line}");
+        Console.WriteLine($"{clock.Elapsed.TotalSeconds,8:F3}s role {roles} {line}");
 
     // The tracker's callback, on its thread. Never blocks it.
     public void OnState(string who, string state)
@@ -80,8 +84,9 @@ sealed class RoleSetup
                     return;
                 // -S force-stops a running copy, so the app always holds a
                 // serial this hub supplied through this transport (5.7).
+                // Without a role extra the app takes the display role.
                 t0 = Stopwatch.GetTimestamp();
-                string extra = camera ? " --es role camera" : "";
+                string extra = camera ? $" --es role {roles}" : "";
                 string output = AdbWire.Shell(serial, $"am start -S -n {Activity} --es serial {serial}{extra}").Trim();
                 Log($"{serial} launch returned in {Stopwatch.GetElapsedTime(t0).TotalMilliseconds:F1}ms: " +
                     output.Replace("\n", " | "));

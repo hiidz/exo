@@ -18,6 +18,8 @@ import android.widget.FrameLayout;
 import android.widget.TextView;
 
 import java.io.File;
+import java.util.Arrays;
+import java.util.List;
 
 /**
  * The camera role, with --es role camera: the back camera to the hub over
@@ -26,6 +28,9 @@ import java.io.File;
  * adb before it launches this, so nothing asks on screen:
  *
  *   adb shell am start -S -n exo.phone/.MainActivity --es serial PHONESERIAL --es role camera
+ *
+ * With --es role camera,display the device holds both: the camera service
+ * starts as above and this activity runs the display role (D2b).
  *
  * Otherwise the display role. Logs the decoder capabilities, then either decodes the
  * file named by the "file" extra to a full-screen SurfaceView, or, without
@@ -61,9 +66,19 @@ public class MainActivity extends Activity {
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.CENTER));
         setContentView(root);
 
+        // The roles the hub gave this device: "camera", "camera,display", or
+        // none for the display alone. Both come in one launch, because each
+        // launch force-stops the app (DECISIONS 10 item 4, D2b).
         Intent start = getIntent();
-        if ("camera".equals(start.getStringExtra("role"))) {
-            startCamera(start);
+        String roles = start.getStringExtra("role");
+        // Arrays.asList, not List.of: minSdk is 29 and List.of came in 30.
+        List<String> given = Arrays.asList((roles == null ? "display" : roles).split(","));
+        boolean display = given.contains("display");
+        Log.i(Codecs.TAG, "roles " + given);
+        if (given.contains("camera")) {
+            startCamera(start, display);
+        }
+        if (!display) {
             return;
         }
 
@@ -153,16 +168,20 @@ public class MainActivity extends Activity {
      * if the app was visible when it started, so this activity shows itself
      * over the lock screen and wakes it first. It stays behind the lock
      * screen afterwards rather than finishing, so the start never races it.
+     * With the display role too, this same activity goes on to show the
+     * display, over the lock screen as well.
      */
-    private void startCamera(Intent in) {
+    private void startCamera(Intent in, boolean withDisplay) {
         setShowWhenLocked(true);
         setTurnScreenOn(true);
-        view.setVisibility(android.view.View.GONE);
-        TextView t = new TextView(this);
-        t.setText("Exo camera");
-        t.setTextSize(28);
-        root.addView(t, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
+        if (!withDisplay) {
+            view.setVisibility(android.view.View.GONE);
+            TextView t = new TextView(this);
+            t.setText("Exo camera");
+            t.setTextSize(28);
+            root.addView(t, new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
+        }
         boolean locked = getSystemService(android.app.KeyguardManager.class).isKeyguardLocked();
         boolean screenOn = getSystemService(android.os.PowerManager.class).isInteractive();
         Intent svc = new Intent(this, CameraService.class)

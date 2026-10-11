@@ -162,16 +162,23 @@ if (refused != null)
 using var display = new DisplaySender(clock);
 using var devices = new DeviceListener(0, clock, display, cameraSerial != null ? decoder : null);
 Console.WriteLine($"listening on 127.0.0.1:{devices.Port}, session {devices.SessionId:x16}");
-var displayRole = displaySerial != null ? new RoleSetup(displaySerial, false, devices.Port, clock) : null;
-var cameraRole = cameraSerial != null ? new RoleSetup(cameraSerial, true, devices.Port, clock) : null;
-Console.WriteLine(displayRole != null ? $"display role: {displaySerial}"
-                                      : "display role: none chosen; pass --display <serial>");
-Console.WriteLine(cameraRole != null ? $"camera role: {cameraSerial}"
-                                     : "camera role: none chosen; pass --camera <serial>");
+// One setup per device, holding every role it was given, so a phone with
+// both is launched once (DECISIONS 10 item 4, D2b).
+var setups = new List<RoleSetup>();
+if (displaySerial != null)
+    setups.Add(new RoleSetup(displaySerial, true, displaySerial == cameraSerial, devices.Port, clock));
+if (cameraSerial != null && cameraSerial != displaySerial)
+    setups.Add(new RoleSetup(cameraSerial, false, true, devices.Port, clock));
+Console.WriteLine(displaySerial != null ? $"display role: {displaySerial}"
+                                        : "display role: none chosen; pass --display <serial>");
+Console.WriteLine(cameraSerial != null ? $"camera role: {cameraSerial}"
+                                       : "camera role: none chosen; pass --camera <serial>");
+if (displaySerial != null && displaySerial == cameraSerial)
+    Console.WriteLine($"{displaySerial} holds both roles: one launch, two connections");
 var tracker = new DeviceTracker(adb, clock, (serial, state) =>
 {
-    displayRole?.OnState(serial, state);
-    cameraRole?.OnState(serial, state);
+    foreach (RoleSetup setup in setups)
+        setup.OnState(serial, state);
 });
 int exitCode = 0;
 
