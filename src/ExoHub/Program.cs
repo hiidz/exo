@@ -19,14 +19,17 @@
 // --display S the adb serial of the device that holds the display role
 //             (DECISIONS 5.8). Without it every device is tracked and none
 //             is set up. The hub owns adb and issues the reverse itself.
-// --camera-geometry W H S  the synthetic camera frames' width, height and
-//             stride, 1280 720 1344 by default. Anything but 1280x720 is
-//             for watching ExoCamera.dll refuse it (TECHNICAL_DESIGN 3.3).
+// --camera-file F  decode the recorded H.264 stream F into L7, looping it,
+//             in place of the test pattern (DECISIONS 10 item 4, increment C).
+// --camera-geometry W H S  the test pattern's width, height and stride,
+//             1280 720 1344 by default. Anything but 1280x720 is for
+//             watching ExoCamera.dll refuse it (TECHNICAL_DESIGN 3.3).
 
 using System.Diagnostics;
 using System.Net.Sockets;
 using ExoHub;
 using ExoHub.Adb;
+using ExoHub.Camera;
 using ExoHub.Display;
 using ExoHub.Link;
 using SharpGen.Runtime;
@@ -76,9 +79,10 @@ uint fps = 30;
 string outPath = null;
 // The user's choice of display device, until a roles UI exists (FR-4.4).
 string displaySerial = null;
-// L7's synthetic frames (DECISIONS 10 item 4, increment B). The stride is
-// wider than the width on purpose: a reader that ignores it shows a shear.
+// L7's test pattern (DECISIONS 10 item 4, increment B). The stride is wider
+// than the width on purpose: a reader that ignores it shows a shear.
 int camWidth = 1280, camHeight = 720, camStride = 1344;
+string cameraFile = null;
 for (int i = 0; i < args.Length; i++)
 {
     switch (args[i])
@@ -94,6 +98,7 @@ for (int i = 0; i < args.Length; i++)
             camHeight = int.Parse(args[++i]);
             camStride = int.Parse(args[++i]);
             break;
+        case "--camera-file": cameraFile = args[++i]; break;
         default: wanted = args[i]; break;
     }
 }
@@ -108,7 +113,7 @@ Job.JoinNew();
 CameraLink camera;
 try
 {
-    camera = new CameraLink(clock, camWidth, camHeight, camStride);
+    camera = new CameraLink(clock);
 }
 catch (SocketException ex)
 {
@@ -116,7 +121,11 @@ catch (SocketException ex)
                       "Another hub, or an orphan of one, holds it.");
     return 2;
 }
-var adb =new AdbServer(clock);
+// The one producer for L7: the test pattern now, or the decoder once Media
+// Foundation is started, below.
+TestPattern pattern = cameraFile == null ? new TestPattern(camera, clock, camWidth, camHeight, camStride) : null;
+CameraDecoder decoder = null;
+var adb = new AdbServer(clock);
 string refused = adb.CheckForeign() ?? adb.Start();
 if (refused != null)
 {
@@ -146,6 +155,8 @@ if (seconds > 0)
 
 // Once per process, before any other Media Foundation call.
 MediaFactory.MFStartup(false).CheckError();
+if (cameraFile != null)
+    decoder = new CameraDecoder(camera, clock, cameraFile);
 
 // 1ms timers for the encoder's rate gate. How late the timer actually fires
 // is measured and printed, rather than assumed from this call.
@@ -473,6 +484,8 @@ Console.WriteLine($"blt->submit     ms {Spread(bltToSubmit)}");
 Console.WriteLine($"submit->out     ms {Spread(submitToOut)}");
 Console.WriteLine($"blt->out        ms {Spread(bltToOut)}");
 Console.WriteLine($"gate timer late ms {Spread(timerLate)}");
+pattern?.Dispose();
+decoder?.Dispose();
 camera.Dispose();
 devices.Dispose();  // closes the display connection, so the sender's counts stop moving
 display.Dispose();

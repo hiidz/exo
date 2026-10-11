@@ -2,12 +2,13 @@
 // fixed loopback port, because the DLL reads no config and so has no way to
 // learn a port Windows chose. Each client gets 5.7's handshake, then FRAMEs.
 //
-// The frames are synthetic for now (DECISIONS 10 item 4, increment B), and
-// built to make a geometry bug visible rather than only logged: rows are
-// wider than the picture, with the padding bright, so a reader that ignores
-// the stride shows a diagonal shear; and a red marker sweeps across, whose
-// colour comes out right only if the UV plane is found at stride * height.
-// Increment C replaces them with frames decoded from the phone.
+// A latest-frame slot (DECISIONS 5.1). One producer, the decoder or the
+// test pattern, publishes each frame once, built as a whole L7 message.
+// Every client thread sends the newest message it has not sent; a frame
+// superseded before a client got to it is skipped, never queued. So one
+// decode serves every client (FR-1.3), and a slow client holds back only
+// itself. A published message is never written again, so client threads
+// read it without the lock.
 //
 // One thread accepts and one thread serves each client, as DeviceListener.
 
@@ -23,42 +24,60 @@ namespace ExoHub.Link;
 sealed class CameraLink : IDisposable
 {
     const int HelloTimeoutMs = 2000;
-    const int Fps = 30;
     // seq u32, generated-at i64, width, height, stride u32 each.
     const int BodyPrefix = 4 + 8 + 3 * 4;
 
-    // Studio-range NV12. The background is not the test card's, so which
-    // one Chrome shows says at a glance whether the link is up.
-    const byte BackY = 64, PadY = 235, Neutral = 128;
-    const byte MarkY = 81, MarkU = 90, MarkV = 240;  // red, as the card's red bar
-    const int MarkSize = 96;
-    const double SweepSeconds = 2;
-
     readonly TcpListener listener;
     readonly Stopwatch clock;
-    readonly int width, height, stride;
     readonly object gate = new();
     readonly List<Socket> clients = new();  // under gate
+    byte[] latest;     // under gate: the newest whole FRAME message
+    uint latestSeq;    // under gate: its seq
+    uint seq;          // the producer's alone
+    bool disposed;     // under gate
 
     // Random per hub start, sent in every WELCOME, as on the device link.
     public ulong SessionId { get; } = BinaryPrimitives.ReadUInt64BigEndian(RandomNumberGenerator.GetBytes(8));
 
     // Throws SocketException (AddressAlreadyInUse) when another process
     // holds the port, which with exclusive use includes an orphaned hub.
-    public CameraLink(Stopwatch clock, int width, int height, int stride)
+    public CameraLink(Stopwatch clock)
     {
         this.clock = clock;
-        this.width = width;
-        this.height = height;
-        this.stride = stride;
         listener = new TcpListener(IPAddress.Loopback, Wire.CameraPort) { ExclusiveAddressUse = true };
         listener.Start();
         new Thread(AcceptLoop) { IsBackground = true, Name = "camera accept" }.Start();
-        Log($"listening on 127.0.0.1:{Wire.CameraPort}, protocol {Wire.CameraVersion}, session {SessionId:x16}, " +
-            $"sending {width}x{height} stride {stride} at {Fps}fps");
+        Log($"listening on 127.0.0.1:{Wire.CameraPort}, protocol {Wire.CameraVersion}, session {SessionId:x16}");
     }
 
     void Log(string line) => Console.WriteLine($"{clock.Elapsed.TotalSeconds,8:F3}s camera {line}");
+
+    // Called by the one producer. y holds height rows and uv height / 2
+    // rows, each stride bytes apart, as the producer's buffer has them: the
+    // geometry is the producer's, sent as it is, and the DLL checks it.
+    // stampQpc is when the frame came into being, from Stopwatch.
+    public void Publish(long stampQpc, int width, int height, int stride, ReadOnlySpan<byte> y, ReadOnlySpan<byte> uv)
+    {
+        int ySize = stride * height, uvSize = stride * height / 2;
+        byte[] m = new byte[Wire.HeaderSize + BodyPrefix + ySize + uvSize];
+        m[0] = Wire.TypeFrame;
+        BinaryPrimitives.WriteUInt32BigEndian(m.AsSpan(4), (uint)(BodyPrefix + ySize + uvSize));
+        BinaryPrimitives.WriteUInt32BigEndian(m.AsSpan(8), ++seq);
+        BinaryPrimitives.WriteInt64BigEndian(m.AsSpan(12), DisplaySender.Micros(stampQpc));
+        BinaryPrimitives.WriteUInt32BigEndian(m.AsSpan(20), (uint)width);
+        BinaryPrimitives.WriteUInt32BigEndian(m.AsSpan(24), (uint)height);
+        BinaryPrimitives.WriteUInt32BigEndian(m.AsSpan(28), (uint)stride);
+        y[..ySize].CopyTo(m.AsSpan(Wire.HeaderSize + BodyPrefix));
+        uv[..uvSize].CopyTo(m.AsSpan(Wire.HeaderSize + BodyPrefix + ySize));
+        lock (gate)
+        {
+            latest = m;
+            latestSeq = seq;
+            // Monitor is C#'s condition variable: Wait releases the lock and
+            // sleeps, PulseAll wakes every waiter to re-check.
+            Monitor.PulseAll(gate);
+        }
+    }
 
     void AcceptLoop()
     {
@@ -162,89 +181,63 @@ sealed class CameraLink : IDisposable
         return null;
     }
 
-    // Writes a frame every 1/30s until a write fails. Paced against a
-    // deadline that advances by one interval per frame, so a late wake does
-    // not push every later frame back.
+    // Sends the newest frame each time one is published, until a write
+    // fails or the link is disposed.
     void SendFrames(NetworkStream net, string name, ref int sent)
     {
-        int planes = stride * height * 3 / 2;
-        byte[] frame = new byte[Wire.HeaderSize + BodyPrefix + planes];
-        frame[0] = Wire.TypeFrame;
-        BinaryPrimitives.WriteUInt32BigEndian(frame.AsSpan(4), (uint)(BodyPrefix + planes));
-        BinaryPrimitives.WriteUInt32BigEndian(frame.AsSpan(20), (uint)width);
-        BinaryPrimitives.WriteUInt32BigEndian(frame.AsSpan(24), (uint)height);
-        BinaryPrimitives.WriteUInt32BigEndian(frame.AsSpan(28), (uint)stride);
-        Span<byte> y = frame.AsSpan(Wire.HeaderSize + BodyPrefix, stride * height);
-        Span<byte> uv = frame.AsSpan(Wire.HeaderSize + BodyPrefix + stride * height, stride * height / 2);
-
-        long interval = Stopwatch.Frequency / Fps;
-        long due = Stopwatch.GetTimestamp();
-        long windowStart = due;
-        int windowFrames = 0;
+        uint lastSeq = 0;
+        long windowStart = Stopwatch.GetTimestamp();
+        int windowFrames = 0, windowSkipped = 0;
         double windowMaxMs = 0;
-        uint seq = 0;
         while (true)
         {
-            long wait = (due - Stopwatch.GetTimestamp()) * 1000 / Stopwatch.Frequency;
-            if (wait > 0)
-                Thread.Sleep((int)wait);
-            due += interval;
+            byte[] m;
+            uint mSeq;
+            lock (gate)
+            {
+                while (!disposed && (latest == null || latestSeq == lastSeq))
+                    Monitor.Wait(gate);
+                if (disposed)
+                    return;
+                m = latest;
+                mSeq = latestSeq;
+            }
+            if (lastSeq != 0)
+                windowSkipped += (int)(mSeq - lastSeq - 1);
+            lastSeq = mSeq;
 
-            Draw(y, uv);
             long now = Stopwatch.GetTimestamp();
-            BinaryPrimitives.WriteUInt32BigEndian(frame.AsSpan(8), seq++);
-            BinaryPrimitives.WriteInt64BigEndian(frame.AsSpan(12), DisplaySender.Micros(now));
-            net.Write(frame);
+            net.Write(m);
             double ms = (Stopwatch.GetTimestamp() - now) * 1000.0 / Stopwatch.Frequency;
             sent++;
             windowFrames++;
             windowMaxMs = Math.Max(windowMaxMs, ms);
             if (sent == 1)
-                Log($"{name} first frame written, {frame.Length} bytes, in {ms:F2}ms");
+            {
+                int w = (int)BinaryPrimitives.ReadUInt32BigEndian(m.AsSpan(20));
+                int h = (int)BinaryPrimitives.ReadUInt32BigEndian(m.AsSpan(24));
+                int stride = (int)BinaryPrimitives.ReadUInt32BigEndian(m.AsSpan(28));
+                Log($"{name} first frame written, seq {mSeq}, {w}x{h} stride {stride}, {m.Length} bytes, in {ms:F2}ms");
+            }
             if (now - windowStart >= Stopwatch.Frequency * 5)
             {
-                Log($"{name} last 5s: {windowFrames} frames, write max {windowMaxMs:F2}ms");
+                Log($"{name} last 5s: {windowFrames} frames, {windowSkipped} superseded unsent, write max {windowMaxMs:F2}ms");
                 windowStart = now;
-                windowFrames = 0;
+                windowFrames = windowSkipped = 0;
                 windowMaxMs = 0;
             }
         }
-    }
-
-    // The whole picture, every frame: 1.4MB of fills is far cheaper than
-    // tracking what moved. The marker's position is from the hub's clock,
-    // so every client sees the same picture.
-    void Draw(Span<byte> y, Span<byte> uv)
-    {
-        for (int row = 0; row < height; row++)
-        {
-            y.Slice(row * stride, width).Fill(BackY);
-            y.Slice(row * stride + width, stride - width).Fill(PadY);
-        }
-        for (int row = 0; row < height / 2; row++)
-        {
-            uv.Slice(row * stride, width).Fill(Neutral);
-            uv.Slice(row * stride + width, stride - width).Fill(PadY);
-        }
-        // Even coordinates, so the marker covers whole U,V pairs.
-        double phase = clock.Elapsed.TotalSeconds % SweepSeconds / SweepSeconds;
-        int x0 = (int)(phase * (width - MarkSize)) & ~1;
-        int y0 = (height - MarkSize) / 2 & ~1;
-        for (int row = y0; row < y0 + MarkSize; row++)
-            y.Slice(row * stride + x0, MarkSize).Fill(MarkY);
-        for (int row = y0 / 2; row < (y0 + MarkSize) / 2; row++)
-            for (int col = x0; col < x0 + MarkSize; col += 2)
-            {
-                uv[row * stride + col] = MarkU;
-                uv[row * stride + col + 1] = MarkV;
-            }
     }
 
     public void Dispose()
     {
         listener.Stop();
         lock (gate)
+        {
+            disposed = true;
+            Monitor.PulseAll(gate);
             foreach (Socket s in clients)
                 s.Close();
+        }
     }
 }
