@@ -582,13 +582,16 @@ Console.WriteLine($"blt->submit     ms {Spread(bltToSubmit)}");
 Console.WriteLine($"submit->out     ms {Spread(submitToOut)}");
 Console.WriteLine($"blt->out        ms {Spread(bltToOut)}");
 Console.WriteLine($"gate timer late ms {Spread(timerLate)}");
+// The phone connections first: closes the display connection, so the
+// sender's counts stop moving, and ends the camera connection on a closed
+// socket rather than on a disposed decoder, which it logs as a failure.
+devices.Dispose();
 pattern?.Dispose();
 decoder?.Dispose();
 // Before L7 closes, so the DLL in the Frame Server gets Shutdown with its
 // link still up, rather than a reset and a reconnect first (DECISIONS 5.9).
 vcam?.Dispose();
 camera.Dispose();
-devices.Dispose();  // closes the display connection, so the sender's counts stop moving
 display.Dispose();
 Console.WriteLine($"sender connections={display.Connections} sent={display.Sent} bytes={display.SentBytes} " +
                   $"discarded: no device={display.DiscardedNoDevice} before keyframe={display.DiscardedBeforeKeyframe}; " +
