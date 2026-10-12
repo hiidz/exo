@@ -8,6 +8,7 @@ import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.params.StreamConfigurationMap;
+import android.hardware.display.DisplayManager;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
@@ -18,6 +19,7 @@ import android.os.HandlerThread;
 import android.util.Log;
 import android.util.Range;
 import android.util.Size;
+import android.view.Display;
 import android.view.Surface;
 
 import java.io.IOException;
@@ -98,6 +100,15 @@ final class CameraRole {
         Log.i(Codecs.TAG, "camera " + id + " back, sensorOrientation " + c.get(CameraCharacteristics.SENSOR_ORIENTATION)
                 + ", timestamp source " + c.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE)
                 + " (0 unknown, 1 realtime), fps ranges " + Arrays.toString(ranges) + ", chosen " + fps);
+        // Which way up the device is held, and whether the camera itself can
+        // turn its output 180 degrees (ROTATE_AND_CROP_180 is 2, API 31).
+        // Logged to choose the camera rotation strategy (DECISIONS 6.4).
+        Display d = context.getSystemService(DisplayManager.class).getDisplay(Display.DEFAULT_DISPLAY);
+        int[] rotateModes = Build.VERSION.SDK_INT >= 31
+                ? c.get(CameraCharacteristics.SCALER_AVAILABLE_ROTATE_AND_CROP_MODES) : null;
+        Log.i(Codecs.TAG, "camera at start: display rotation " + d.getRotation() + " (0..3, x90 degrees)"
+                + ", rotate-and-crop modes " + (Build.VERSION.SDK_INT >= 31 ? Arrays.toString(rotateModes)
+                : "n/a below API 31"));
 
         // Spike 4's order: configure, then createInputSurface, then start.
         MediaFormat f = MediaFormat.createVideoFormat(Codecs.AVC, WIDTH, HEIGHT);

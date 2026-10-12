@@ -55,8 +55,16 @@ final class Link implements Runnable {
         default void onCursorShape(Bitmap shape, int hotX, int hotY) {
         }
 
-        /** The hotspot in picture pixels, or hidden. Link thread. */
-        default void onCursorPos(boolean visible, int x, int y) {
+        /**
+         * The hotspot in picture pixels, or hidden. hubUs is the hub's mouse
+         * update time on the PONG t2 clock, 0 when the link makes one up.
+         * Link thread.
+         */
+        default void onCursorPos(boolean visible, int x, int y, long hubUs) {
+        }
+
+        /** A display connection ended. name is the one newDecoder got. Link thread. */
+        default void onLinkEnded(String name) {
         }
     }
 
@@ -226,10 +234,11 @@ final class Link implements Runnable {
                 upward = null;
                 pinger.shutdownNow();
                 // The next connection replays the shape and position.
-                listener.onCursorPos(false, 0, 0);
+                listener.onCursorPos(false, 0, 0, 0);
                 Log.i(Codecs.TAG, "link connection " + connections + " ended: " + counts + ", pongs " + pongs.size());
                 decoder.stop();
                 writePongs(listener.file(name + "-pongs.csv"), pongs);
+                listener.onLinkEnded(name);
             }
         }
     }
@@ -460,9 +469,9 @@ final class Link implements Runnable {
             }
             if (type == CURSOR_POS && length == 16 && decoder != null) {
                 int x = in.readInt(), y = in.readInt();
-                in.readLong(); // the hub's mouse update time, unused yet
+                long hubUs = in.readLong();
                 counts.cursorPositions++;
-                listener.onCursorPos((flags & FLAG_VISIBLE) != 0, x, y);
+                listener.onCursorPos((flags & FLAG_VISIBLE) != 0, x, y, hubUs);
                 continue;
             }
             if (type != FRAME || length < FRAME_FIELDS || decoder == null) {

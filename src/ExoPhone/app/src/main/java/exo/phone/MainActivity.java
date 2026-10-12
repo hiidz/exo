@@ -22,6 +22,8 @@ import android.widget.ImageView;
 import android.widget.TextView;
 
 import java.io.File;
+import java.io.IOException;
+import java.io.PrintWriter;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -76,6 +78,16 @@ public class MainActivity extends Activity {
     private boolean cursorShown;
     private Bitmap cursorApplied;
 
+    // Measurement, one row per position, written per connection as
+    // <run>-link-N-cursor.csv: hub_us on the PONG t2 clock, then recv, apply
+    // and draw on this device's nanoTime. apply and draw stay 0 for a
+    // position a newer one replaced before the UI thread took it, and draw
+    // for one that moved nothing. Rows under cursorLock.
+    private static final int MAX_CURSOR_ROWS = 200_000;
+    private final ArrayList<long[]> cursorRows = new ArrayList<>();
+    private long[] cursorLatest;  // the newest row, until applied
+    private final ArrayList<long[]> awaitingDraw = new ArrayList<>();
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -117,6 +129,16 @@ public class MainActivity extends Activity {
                     pictureW, pictureH, v.getWidth(), v.getHeight(), l, t,
                     (double) v.getWidth() / pictureW, (double) v.getHeight() / pictureH));
             applyCursor();
+        });
+        // Just before each frame is drawn, on the UI thread: the moves
+        // applied since the last one are in this frame.
+        root.getViewTreeObserver().addOnDrawListener(() -> {
+            if (awaitingDraw.isEmpty()) return;
+            long now = System.nanoTime();
+            synchronized (cursorLock) {
+                for (long[] r : awaitingDraw) r[3] = now;
+            }
+            awaitingDraw.clear();
         });
         // Touch on the video goes up the display connection (FR-3.3).
         view.setOnTouchListener(this::onTouch);
@@ -189,13 +211,29 @@ public class MainActivity extends Activity {
                                 }
 
                                 @Override
-                                public void onCursorPos(boolean visible, int x, int y) {
+                                public void onCursorPos(boolean visible, int x, int y, long hubUs) {
                                     synchronized (cursorLock) {
                                         cursorVisible = visible;
                                         cursorX = x;
                                         cursorY = y;
+                                        if (hubUs != 0) {
+                                            long[] row = {hubUs, System.nanoTime(), 0, 0};
+                                            if (cursorRows.size() < MAX_CURSOR_ROWS) cursorRows.add(row);
+                                            cursorLatest = row;
+                                        }
                                     }
                                     postCursor();
+                                }
+
+                                @Override
+                                public void onLinkEnded(String conn) {
+                                    ArrayList<long[]> rows;
+                                    synchronized (cursorLock) {
+                                        rows = new ArrayList<>(cursorRows);
+                                        cursorRows.clear();
+                                        cursorLatest = null;
+                                    }
+                                    writeCursorRows(file(conn + "-cursor.csv"), rows);
                                 }
                             });
                     link.start();
@@ -360,6 +398,16 @@ public class MainActivity extends Activity {
         return true;
     }
 
+    private static void writeCursorRows(File f, ArrayList<long[]> rows) {
+        try (PrintWriter w = new PrintWriter(f)) {
+            w.println("hub_us,recv_ns,apply_ns,draw_ns");
+            for (long[] r : rows) w.printf("%d,%d,%d,%d%n", r[0], r[1], r[2], r[3]);
+        } catch (IOException e) {
+            Log.e(Codecs.TAG, "cannot write " + f, e);
+        }
+        Log.i(Codecs.TAG, "cursor rows " + rows.size() + " written to " + f.getName());
+    }
+
     /** Any thread. Queues one apply unless one is already waiting. */
     private void postCursor() {
         synchronized (cursorLock) {
@@ -378,7 +426,11 @@ public class MainActivity extends Activity {
         Bitmap shape;
         int hotX, hotY, x, y;
         boolean visible;
+        long[] row;
         synchronized (cursorLock) {
+            row = cursorLatest;
+            cursorLatest = null;
+            if (row != null) row[2] = System.nanoTime();
             cursorPosted = false;
             shape = cursorShape;
             hotX = cursorHotX;
@@ -409,6 +461,7 @@ public class MainActivity extends Activity {
             lp.leftMargin = tx;
             lp.topMargin = ty;
             cursorView.setLayoutParams(lp);
+            if (row != null) awaitingDraw.add(row);
         }
         if (shape != cursorApplied) {
             cursorView.setImageBitmap(shape);
