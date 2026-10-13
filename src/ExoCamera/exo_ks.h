@@ -9,6 +9,8 @@
 // class that inherits it, which owns the one refcount for the whole object.
 #pragma once
 
+#include "exo_dll.h"
+
 #include <windows.h>
 #include <ks.h>
 #include <ksproxy.h>
@@ -21,22 +23,30 @@ static const GUID EXO_IID_IKsControl =
 class ExoNoKsControl : public IKsControl
 {
 public:
-    STDMETHODIMP KsProperty(PKSPROPERTY, ULONG, LPVOID, ULONG, ULONG* returned) override
+    // name says in the log which object was asked.
+    explicit ExoNoKsControl(const char* name) : m_ksName(name) {}
+
+    STDMETHODIMP KsProperty(PKSPROPERTY p, ULONG length, LPVOID, ULONG, ULONG* returned) override
     {
-        return Refuse(returned);
+        return Refuse("property", p, length, returned);
     }
-    STDMETHODIMP KsMethod(PKSMETHOD, ULONG, LPVOID, ULONG, ULONG* returned) override
+    STDMETHODIMP KsMethod(PKSMETHOD m, ULONG length, LPVOID, ULONG, ULONG* returned) override
     {
-        return Refuse(returned);
+        return Refuse("method", m, length, returned);
     }
-    STDMETHODIMP KsEvent(PKSEVENT, ULONG, LPVOID, ULONG, ULONG* returned) override
+    STDMETHODIMP KsEvent(PKSEVENT e, ULONG length, LPVOID, ULONG, ULONG* returned) override
     {
-        return Refuse(returned);
+        return Refuse("event", e, length, returned);
     }
 
 private:
-    static HRESULT Refuse(ULONG* returned)
+    const char* m_ksName;
+
+    // Every request is logged the first time it is seen, so the log shows
+    // what a camera app asked for before it gave up.
+    HRESULT Refuse(const char* kind, const KSIDENTIFIER* id, ULONG length, ULONG* returned)
     {
+        ExoLogKs(m_ksName, kind, static_cast<const void*>(id), length);
         if (returned) {
             *returned = 0;
         }

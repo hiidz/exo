@@ -11,6 +11,7 @@ import android.os.PowerManager;
 import android.util.Log;
 
 import java.io.File;
+import java.io.IOException;
 
 /**
  * The camera role as a foreground service of type camera (DECISIONS 10 item
@@ -28,6 +29,7 @@ public class CameraService extends Service {
 
     private Link link;
     private PowerManager.WakeLock wakeLock;
+    private int lastTurns;  // the last landscape HELLO rotation; link thread only
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
@@ -81,6 +83,23 @@ public class CameraService extends Service {
                     @Override
                     public File file(String name) {
                         return new File(dir, run + "-" + name);
+                    }
+
+                    @Override
+                    public int rotation() throws IOException {
+                        // Away from the app, on the home screen or with the
+                        // screen off, the display reads portrait, a quarter
+                        // turn the hub refuses. The last landscape stands in
+                        // (DECISIONS 6.4); the first read is always with the
+                        // app in front, in landscape.
+                        int turns = CameraRole.rotation(CameraService.this);
+                        if (turns % 2 == 0) {
+                            lastTurns = turns;
+                            return turns;
+                        }
+                        Log.i(Codecs.TAG, "camera rotation: display not landscape, sending the last landscape, hub turns "
+                                + lastTurns * 90);
+                        return lastTurns;
                     }
                 });
         link.start();

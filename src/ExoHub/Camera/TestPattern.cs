@@ -54,7 +54,7 @@ sealed class TestPattern : IDisposable
                 Thread.Sleep((int)wait);
             due += interval;
             Draw(y, uv);
-            link.Publish(Stopwatch.GetTimestamp(), width, height, stride, y, uv);
+            link.Publish(Stopwatch.GetTimestamp(), width, height, stride, y, uv, flip: false);
         }
     }
 

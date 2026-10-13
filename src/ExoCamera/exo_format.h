@@ -21,8 +21,12 @@ const UINT32 EXO_FPS = 30;
 // the samples this DLL builds, because this DLL builds them.
 const UINT32 EXO_FRAME_BYTES = EXO_WIDTH * EXO_HEIGHT * 3 / 2;
 
-// The id the pipeline uses for our one stream. Any value, used consistently.
-const DWORD EXO_STREAM_ID = 1;
+// The id the pipeline uses for our one stream. Must be 0, its index. With 1,
+// WinRT MediaCapture named the source Source#0 and built no frame source
+// from it, so no frame reader: the Windows Camera app and the Settings
+// preview stayed grey while browsers worked (spike 1 FINDINGS, Notes added
+// 2026-10-13; src/tools/CamProbe shows it).
+const DWORD EXO_STREAM_ID = 0;
 
 // Each returns a new object with one reference, owned by the caller.
 HRESULT ExoCreateMediaType(IMFMediaType** out);

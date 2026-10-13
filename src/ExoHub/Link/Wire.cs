@@ -7,8 +7,9 @@ static class Wire
 {
     public static ReadOnlySpan<byte> Magic => "EXO\0"u8;
     // 2 added CURSOR_SHAPE, CURSOR_POS and TOUCH. Both roles share it, so a
-    // version 1 app is refused on either connection.
-    public const ushort Version = 2;
+    // version 1 app is refused on either connection. 3 added HELLO's
+    // rotation byte after the serial, clockwise quarter turns (DECISIONS 6.4).
+    public const ushort Version = 3;
 
     public const int MaxHelloBody = 256, MaxSerial = 64;
     public const byte RoleCamera = 1, RoleDisplay = 2;

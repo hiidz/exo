@@ -100,16 +100,6 @@ final class CameraRole {
         Log.i(Codecs.TAG, "camera " + id + " back, sensorOrientation " + c.get(CameraCharacteristics.SENSOR_ORIENTATION)
                 + ", timestamp source " + c.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE)
                 + " (0 unknown, 1 realtime), fps ranges " + Arrays.toString(ranges) + ", chosen " + fps);
-        // Which way up the device is held, and whether the camera itself can
-        // turn its output 180 degrees (ROTATE_AND_CROP_180 is 2, API 31).
-        // Logged to choose the camera rotation strategy (DECISIONS 6.4).
-        Display d = context.getSystemService(DisplayManager.class).getDisplay(Display.DEFAULT_DISPLAY);
-        int[] rotateModes = Build.VERSION.SDK_INT >= 31
-                ? c.get(CameraCharacteristics.SCALER_AVAILABLE_ROTATE_AND_CROP_MODES) : null;
-        Log.i(Codecs.TAG, "camera at start: display rotation " + d.getRotation() + " (0..3, x90 degrees)"
-                + ", rotate-and-crop modes " + (Build.VERSION.SDK_INT >= 31 ? Arrays.toString(rotateModes)
-                : "n/a below API 31"));
-
         // Spike 4's order: configure, then createInputSurface, then start.
         MediaFormat f = MediaFormat.createVideoFormat(Codecs.AVC, WIDTH, HEIGHT);
         f.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
@@ -150,6 +140,29 @@ final class CameraRole {
         } catch (CameraAccessException | SecurityException e) {
             throw new IOException("openCamera: " + e, e);
         }
+    }
+
+    /**
+     * The clockwise quarter turns the hub must give the picture to show it
+     * upright, as the device is held now (DECISIONS 6.4). The back camera's
+     * formula; a front camera would also mirror. Read at each connect, so a
+     * phone turned over between connections is caught at the next one.
+     */
+    static int rotation(Context context) throws IOException {
+        CameraManager cm = context.getSystemService(CameraManager.class);
+        String id = chooseCamera(cm);
+        int sensor;
+        try {
+            sensor = cm.getCameraCharacteristics(id).get(CameraCharacteristics.SENSOR_ORIENTATION);
+        } catch (CameraAccessException e) {
+            throw new IOException("camera characteristics: " + e, e);
+        }
+        int display = context.getSystemService(DisplayManager.class).getDisplay(Display.DEFAULT_DISPLAY)
+                .getRotation() * 90;
+        int turns = (sensor - display + 360) % 360 / 90;
+        Log.i(Codecs.TAG, "camera rotation: sensorOrientation " + sensor + ", display " + display
+                + " degrees, hub turns " + turns * 90);
+        return turns;
     }
 
     private static String chooseCamera(CameraManager cm) throws IOException {

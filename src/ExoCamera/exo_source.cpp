@@ -11,7 +11,7 @@
 
 using Microsoft::WRL::ComPtr;
 
-ExoSource::ExoSource()
+ExoSource::ExoSource() : ExoNoKsControl("ExoSource")
 {
     InterlockedIncrement(&g_objects);
 }
@@ -278,6 +278,7 @@ STDMETHODIMP ExoSource::GetSourceAttributes(IMFAttributes** attrs)
         return E_POINTER;
     }
     *attrs = nullptr;
+    ExoLog("GetSourceAttributes");
     HRESULT hr = CheckShutdown();
     if (FAILED(hr)) {
         return hr;

@@ -48,6 +48,14 @@ final class Link implements Runnable {
         File file(String name);
 
         /**
+         * HELLO's rotation, clockwise quarter turns the hub applies to the
+         * picture. Asked before each HELLO. Only the camera role turns.
+         */
+        default int rotation() throws IOException {
+            return 0;
+        }
+
+        /**
          * The hub's pointer shape (DECISIONS 11.1). hotX and hotY are the
          * hotspot within the bitmap. Link thread. A default method: the
          * camera role has no cursor and need not implement it.
@@ -70,7 +78,8 @@ final class Link implements Runnable {
 
     static final byte[] MAGIC = {'E', 'X', 'O', 0};
     // 2 added CURSOR_SHAPE, CURSOR_POS and TOUCH on the display connection.
-    static final int VERSION = 2;
+    // 3 added HELLO's rotation byte, after the serial (DECISIONS 6.4).
+    static final int VERSION = 3;
     static final int ROLE_CAMERA = 1, ROLE_DISPLAY = 2, UP = 1, DOWN = 2;
     static final int ACCEPTED = 0, VERSION_MISMATCH = 1;
     static final int FRAME = 1, PING = 2, PONG = 3, FLAG_KEYFRAME = 1, FLAG_CONFIG = 2;
@@ -168,11 +177,12 @@ final class Link implements Runnable {
             byte[] id = serial.getBytes(StandardCharsets.US_ASCII);
             out.write(MAGIC);
             out.writeShort(version);
-            out.writeShort(3 + id.length);
+            out.writeShort(3 + id.length + 1);
             out.writeByte(role);
             out.writeByte(role == ROLE_CAMERA ? UP : DOWN);
             out.writeByte(id.length);
             out.write(id);
+            out.writeByte(listener.rotation());
             out.flush();
 
             byte[] magic = new byte[4];

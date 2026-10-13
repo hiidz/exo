@@ -9,6 +9,7 @@
 #include "exo_log.h"
 
 #include <windows.h>
+#include <ks.h>
 #include <olectl.h>
 #include <stdio.h>
 #include <string.h>
@@ -46,6 +47,46 @@ void ExoLogQiMiss(const char* object, REFIID riid)
         OLECHAR text[40];
         StringFromGUID2(riid, text, ARRAYSIZE(text));
         ExoLog("%s QI miss %ls (first time; %ld misses in all so far)", object, text, total);
+    }
+}
+
+// KS requests already logged, the same way. A camera app asks for a few
+// dozen distinct properties; past the table's end they are counted only.
+struct KsSeen
+{
+    const char* object;
+    const char* kind;
+    KSIDENTIFIER id;
+};
+static KsSeen g_ks[128];
+static LONG g_ksCount = 0;
+static LONG g_ksTotal = 0;
+
+void ExoLogKs(const char* object, const char* kind, const void* request, ULONG length)
+{
+    // The caller's buffer, from inside a process we do not own: read only
+    // as far as it says it goes.
+    if (!request || length < sizeof(KSIDENTIFIER)) {
+        ExoLog("%s KS %s refused, %lu bytes, too short to read", object, kind, length);
+        return;
+    }
+    KSIDENTIFIER id = *static_cast<const KSIDENTIFIER*>(request);
+    bool seen = false;
+    AcquireSRWLockExclusive(&g_missLock);
+    LONG total = ++g_ksTotal;
+    for (LONG i = 0; i < g_ksCount && !seen; i++) {
+        seen = g_ks[i].object == object && g_ks[i].kind == kind && g_ks[i].id.Set == id.Set &&
+               g_ks[i].id.Id == id.Id && g_ks[i].id.Flags == id.Flags;
+    }
+    if (!seen && g_ksCount < ARRAYSIZE(g_ks)) {
+        g_ks[g_ksCount++] = { object, kind, id };
+    }
+    ReleaseSRWLockExclusive(&g_missLock);
+    if (!seen) {
+        OLECHAR text[40];
+        StringFromGUID2(id.Set, text, ARRAYSIZE(text));
+        ExoLog("%s KS %s refused: set %ls id %lu flags 0x%lX (first time; %ld KS requests in all so far)",
+               object, kind, text, id.Id, id.Flags, total);
     }
 }
 

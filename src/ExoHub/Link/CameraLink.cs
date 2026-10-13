@@ -30,6 +30,7 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -91,7 +92,8 @@ sealed class CameraLink : IDisposable
     // rows, each stride bytes apart, as the producer's buffer has them: the
     // geometry is the producer's, sent as it is, and the DLL checks it.
     // stampQpc is when the frame came into being, from Stopwatch.
-    public void Publish(long stampQpc, int width, int height, int stride, ReadOnlySpan<byte> y, ReadOnlySpan<byte> uv)
+    // flip turns the picture 180 degrees on the way in (DECISIONS 6.4).
+    public void Publish(long stampQpc, int width, int height, int stride, ReadOnlySpan<byte> y, ReadOnlySpan<byte> uv, bool flip)
     {
         int ySize = stride * height, uvSize = stride * height / 2;
         int length = Wire.HeaderSize + BodyPrefix + ySize + uvSize;
@@ -119,8 +121,18 @@ sealed class CameraLink : IDisposable
         BinaryPrimitives.WriteUInt32BigEndian(m.AsSpan(20), (uint)width);
         BinaryPrimitives.WriteUInt32BigEndian(m.AsSpan(24), (uint)height);
         BinaryPrimitives.WriteUInt32BigEndian(m.AsSpan(28), (uint)stride);
-        y[..ySize].CopyTo(m.AsSpan(Wire.HeaderSize + BodyPrefix));
-        uv[..uvSize].CopyTo(m.AsSpan(Wire.HeaderSize + BodyPrefix + ySize));
+        Span<byte> yTo = m.AsSpan(Wire.HeaderSize + BodyPrefix, ySize);
+        Span<byte> uvTo = m.AsSpan(Wire.HeaderSize + BodyPrefix + ySize, uvSize);
+        if (flip)
+        {
+            CopyTurned(y, yTo, height, width, stride, pairs: false);
+            CopyTurned(uv, uvTo, height / 2, width, stride, pairs: true);
+        }
+        else
+        {
+            y[..ySize].CopyTo(yTo);
+            uv[..uvSize].CopyTo(uvTo);
+        }
         f.Seq = seq;
         lock (gate)
         {
@@ -131,6 +143,23 @@ sealed class CameraLink : IDisposable
             // Monitor is C#'s condition variable: Wait releases the lock and
             // sleeps, PulseAll wakes every waiter to re-check.
             Monitor.PulseAll(gate);
+        }
+    }
+
+    // One NV12 plane turned 180 degrees: the last row first, each row back to
+    // front. A UV row is pairs, U then V, so it is reversed in 16-bit units,
+    // which keeps each pair's order. Only width bytes of a row are picture;
+    // the padding out to the stride stays at the end.
+    static void CopyTurned(ReadOnlySpan<byte> from, Span<byte> to, int rows, int width, int stride, bool pairs)
+    {
+        for (int r = 0; r < rows; r++)
+        {
+            Span<byte> row = to.Slice(r * stride, width);
+            from.Slice((rows - 1 - r) * stride, width).CopyTo(row);
+            if (pairs)
+                MemoryMarshal.Cast<byte, ushort>(row).Reverse();
+            else
+                row.Reverse();
         }
     }
 

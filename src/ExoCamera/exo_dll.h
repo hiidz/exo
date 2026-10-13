@@ -16,3 +16,9 @@ extern LONG g_objects;
 // within minutes (A4, 2026-10-11). object is a string literal naming the
 // class.
 void ExoLogQiMiss(const char* object, REFIID riid);
+
+// For refused IKsControl requests, the same way: the first of each object,
+// kind, set, id and flags is logged, the rest counted. request is the
+// caller's KSIDENTIFIER and length its size as passed; anything shorter is
+// logged as such and never read.
+void ExoLogKs(const char* object, const char* kind, const void* request, ULONG length);

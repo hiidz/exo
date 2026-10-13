@@ -46,6 +46,7 @@ sealed unsafe class CameraDecoder : IDisposable
     volatile bool stop;
     bool waitForKeyframe = true;  // under gate
     long time;                    // under gate: the next input's sample time
+    bool flip;                    // under gate: this stream's picture turns 180 (DECISIONS 6.4)
 
     // Set from the decoder's output type by SelectOutput.
     int width, height, stride;
@@ -56,7 +57,7 @@ sealed unsafe class CameraDecoder : IDisposable
     // Input time of each frame inside the decoder, by sample time.
     readonly Dictionary<long, long> inFlight = new();
     int windowIn, windowOut, windowUnmatched, windowDiscarded;
-    double windowSumMs, windowMaxMs;
+    double windowSumMs, windowMaxMs, windowCopyMs;
     long windowStart = Stopwatch.GetTimestamp();
     int gen2Before = GC.CollectionCount(2);
 
@@ -170,7 +171,8 @@ sealed unsafe class CameraDecoder : IDisposable
 
     // A new stream: whatever the decoder holds from the last one is flushed,
     // and nothing is decoded until codec config and a keyframe arrive.
-    public void BeginStream(string who)
+    // flip comes from the camera's HELLO and holds for the whole stream.
+    public void BeginStream(string who, bool flip)
     {
         lock (gate)
         {
@@ -180,7 +182,9 @@ sealed unsafe class CameraDecoder : IDisposable
             int dropped = inFlight.Count;
             inFlight.Clear();
             waitForKeyframe = true;
-            Log($"decode stream from {who}: decoder flushed ({dropped} frames inside), waiting for config and a keyframe");
+            this.flip = flip;
+            Log($"decode stream from {who}: decoder flushed ({dropped} frames inside), waiting for config and a keyframe, " +
+                $"{(flip ? "turned 180" : "not turned")}");
         }
     }
 
@@ -237,11 +241,12 @@ sealed unsafe class CameraDecoder : IDisposable
                 int gen2 = GC.CollectionCount(2);
                 Log($"decode last 5s: {windowIn} in, {windowOut} out, {windowDiscarded} discarded before a keyframe, " +
                     $"in to out {(windowOut > 0 ? windowSumMs / windowOut : 0):F2}ms mean {windowMaxMs:F2}ms max, " +
-                    $"{windowUnmatched} unmatched, {inFlight.Count} held, {gen2 - gen2Before} gen-2 GCs");
+                    $"{windowUnmatched} unmatched, {inFlight.Count} held, {gen2 - gen2Before} gen-2 GCs, " +
+                    $"into L7 {(windowOut > 0 ? windowCopyMs / windowOut : 0):F2}ms mean{(flip ? ", turned 180" : "")}");
                 windowStart = now;
                 gen2Before = gen2;
                 windowIn = windowOut = windowUnmatched = windowDiscarded = 0;
-                windowSumMs = windowMaxMs = 0;
+                windowSumMs = windowMaxMs = windowCopyMs = 0;
             }
             return true;
         }
@@ -258,7 +263,7 @@ sealed unsafe class CameraDecoder : IDisposable
             $"first frame {(units.Count > 0 && units[0].Config && units[0].Keyframe ? "carries SPS, PPS and an IDR" : "DOES NOT START WITH SPS, PPS AND AN IDR")}");
         if (units.Count == 0)
             throw new InvalidDataException($"{path}: no H.264 frames found");
-        BeginStream(path);
+        BeginStream(path, flip: false);
         fileThread = new Thread(() =>
         {
             long interval = Stopwatch.Frequency / Fps;
@@ -345,7 +350,8 @@ sealed unsafe class CameraDecoder : IDisposable
                 throw new InvalidOperationException($"decoded buffer {length} bytes, {width}x{height} stride {stride} needs {ySize + uvSize}");
             link.Publish(outQpc, width, height, stride,
                          new ReadOnlySpan<byte>((void*)p, ySize),
-                         new ReadOnlySpan<byte>((byte*)p + ySize, uvSize));
+                         new ReadOnlySpan<byte>((byte*)p + ySize, uvSize), flip);
+            windowCopyMs += (Stopwatch.GetTimestamp() - outQpc) * 1000.0 / Stopwatch.Frequency;
         }
         finally
         {

@@ -38,11 +38,12 @@ sealed class DeviceListener : IDisposable
     public ulong SessionId { get; } = BinaryPrimitives.ReadUInt64BigEndian(RandomNumberGenerator.GetBytes(8));
     public int Port => ((IPEndPoint)listener.LocalEndpoint).Port;
 
-    sealed class Connection(Socket socket, string serial, byte role)
+    sealed class Connection(Socket socket, string serial, byte role, byte rotation)
     {
         public readonly Socket Socket = socket;
         public readonly string Serial = serial;
         public readonly byte Role = role;
+        public readonly byte Rotation = rotation;  // clockwise quarter turns, 0 or 2
     }
 
     public DeviceListener(int port, Stopwatch clock, DisplaySender sender, TouchInjector touch, CameraDecoder camera)
@@ -161,9 +162,9 @@ sealed class DeviceListener : IDisposable
         if (version != Wire.Version)
             return Refuse(net, who, Wire.VersionMismatch, $"hub speaks protocol {Wire.Version}, device sent {version}");
 
-        if (length < 3 || length < 3 + body[2] || body[2] > Wire.MaxSerial)
+        if (length < 4 || length < 4 + body[2] || body[2] > Wire.MaxSerial)
             return Refuse(net, who, Wire.BadHello, $"hello body malformed, {length} bytes");
-        byte role = body[0], direction = body[1];
+        byte role = body[0], direction = body[1], rotation = body[3 + body[2]];
         string serial = Encoding.ASCII.GetString(body, 3, body[2]);
         string name = serial == "" ? $"{who} (serial not supplied)" : serial;
         if (role != Wire.RoleDisplay && role != Wire.RoleCamera)
@@ -174,8 +175,12 @@ sealed class DeviceListener : IDisposable
             return Refuse(net, name, Wire.BadHello, $"{roleName} role must be direction {want}, got {direction}");
         if (role == Wire.RoleCamera && camera == null)
             return Refuse(net, name, Wire.BadHello, "this hub has no camera role; start it with --camera");
+        // Landscape only: a quarter turn would make the picture 720x1280,
+        // which ExoCamera.dll refuses (TECHNICAL_DESIGN 3.3).
+        if (rotation != 0 && rotation != 2)
+            return Refuse(net, name, Wire.BadHello, $"rotation {rotation * 90} degrees, only 0 and 180 are supported");
 
-        var conn = new Connection(s, serial, role);
+        var conn = new Connection(s, serial, role, rotation);
         Connection replaced;
         lock (gate)
         {
@@ -199,7 +204,7 @@ sealed class DeviceListener : IDisposable
         Span<byte> session = stackalloc byte[8];
         BinaryPrimitives.WriteUInt64BigEndian(session, SessionId);
         SendWelcome(net, Wire.Version, Wire.Accepted, session);
-        Log($"{name} accepted: protocol {version}, role {roleName}, session {SessionId:x16}");
+        Log($"{name} accepted: protocol {version}, role {roleName}, rotation {rotation * 90}, session {SessionId:x16}");
         return conn;
     }
 
@@ -270,7 +275,7 @@ sealed class DeviceListener : IDisposable
     void ReadCamera(NetworkStream net, Connection conn)
     {
         const int FrameFields = 4 + 3 * 8;  // seq; present, encoded, sent
-        camera.BeginStream(conn.Serial);
+        camera.BeginStream(conn.Serial, flip: conn.Rotation == 2);
         Span<byte> head = stackalloc byte[Wire.HeaderSize];
         Span<byte> pong = stackalloc byte[Wire.HeaderSize + 24];
         byte[] body = new byte[256 * 1024];  // grows to the largest keyframe, once

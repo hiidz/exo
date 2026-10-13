@@ -17,7 +17,7 @@ static const LONGLONG kFrameDuration = 10000000LL / EXO_FPS;
 // prototype used 10 (ExoCamSource/MediaStream.cpp:150).
 static const DWORD kPoolSamples = 10;
 
-ExoStream::ExoStream()
+ExoStream::ExoStream() : ExoNoKsControl("ExoStream")
 {
     InterlockedIncrement(&g_objects);
 }
