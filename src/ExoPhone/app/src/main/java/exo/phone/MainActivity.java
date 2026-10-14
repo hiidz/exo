@@ -13,8 +13,10 @@ import android.view.WindowInsets;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.SeekBar;
 import android.widget.Spinner;
 import android.widget.TextView;
 
@@ -43,6 +45,11 @@ public class MainActivity extends Activity {
 
     private DisplaySettings settings;
     private Spinner sizePicker, orientationPicker, ratePicker;
+    private CameraSettings camera;
+    private Spinner facingPicker, lensPicker;
+    private CheckBox torchBox;
+    private SeekBar zoomBar, exposureBar, focusBar;
+    private TextView focusLabel;
     private Button webcamButton;
     private TextView webcamStatus;
     // A sentence of this screen's own, such as a refused permission, shown
@@ -94,9 +101,9 @@ public class MainActivity extends Activity {
         // exactly this mode the next time the display starts.
         settings = DisplaySettings.load(this);
         LinearLayout pickers = new LinearLayout(this);
-        sizePicker = picker(pickers);
-        orientationPicker = picker(pickers);
-        ratePicker = picker(pickers);
+        sizePicker = picker(pickers, this::picked);
+        orientationPicker = picker(pickers, this::picked);
+        ratePicker = picker(pickers, this::picked);
         root.addView(pickers);
         bindPickers();
         webcamButton = new Button(this);
@@ -108,6 +115,29 @@ public class MainActivity extends Activity {
             }
         });
         root.addView(webcamButton);
+        // The webcam's settings, under its button. Zoom, exposure, focus and
+        // torch change the picture as they move; side and lens reopen the
+        // camera, a second's gap.
+        camera = CameraSettings.load(this);
+        LinearLayout camPickers = new LinearLayout(this);
+        facingPicker = picker(camPickers, this::cameraPicked);
+        lensPicker = picker(camPickers, this::cameraPicked);
+        torchBox = new CheckBox(this);
+        torchBox.setText("Torch");
+        torchBox.setOnCheckedChangeListener((box, on) -> {
+            if (camera.torch == on) return;
+            camera.torch = on;
+            cameraChanged();
+        });
+        camPickers.addView(torchBox, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        root.addView(camPickers);
+        LinearLayout sliders = new LinearLayout(this);
+        zoomBar = slider(sliders, "Zoom");
+        exposureBar = slider(sliders, "Exposure");
+        focusBar = slider(sliders, "Focus");
+        focusLabel = (TextView) ((LinearLayout) focusBar.getParent()).getChildAt(0);
+        root.addView(sliders);
+        bindCamera();
         webcamStatus = new TextView(this);
         webcamStatus.setPadding(0, 16, 0, 0);
         root.addView(webcamStatus);
@@ -136,7 +166,12 @@ public class MainActivity extends Activity {
         Log.i(Codecs.TAG, "roles from the intent: " + given);
         setShowWhenLocked(true);
         setTurnScreenOn(true);
-        if (given.contains("camera") && !CameraService.running) useWebcam();
+        if (given.contains("camera")) {
+            camera.apply(in);
+            bindCamera();
+            cameraChanged();
+            if (!CameraService.running) useWebcam();
+        }
         if (given.contains("display")) {
             settings.apply(in);
             settings.save(this);
@@ -145,13 +180,13 @@ public class MainActivity extends Activity {
         }
     }
 
-    private Spinner picker(LinearLayout row) {
+    private Spinner picker(LinearLayout row, Runnable onPick) {
         Spinner s = new Spinner(this);
         row.addView(s, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
         s.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override
             public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                picked();
+                onPick.run();
             }
 
             @Override
@@ -179,6 +214,103 @@ public class MainActivity extends Activity {
         settings.save(this);
         Log.i(Codecs.TAG, "display settings picked: " + settings);
         bindPickers();
+    }
+
+    /** A labelled slider, sharing a row with others. */
+    private SeekBar slider(LinearLayout row, String label) {
+        LinearLayout cell = new LinearLayout(this);
+        cell.setGravity(Gravity.CENTER_VERTICAL);
+        TextView t = new TextView(this);
+        t.setText(label);
+        cell.addView(t);
+        SeekBar bar = new SeekBar(this);
+        bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar b, int progress, boolean fromUser) {
+                if (fromUser) slid(b, progress);
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar b) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar b) {
+            }
+        });
+        cell.addView(bar, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        row.addView(cell, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        return bar;
+    }
+
+    private void slid(SeekBar b, int progress) {
+        CameraSettings.Lens lens = camera.lens();
+        if (lens == null) return;
+        if (b == zoomBar) camera.zoom = 1 + progress / 100f * (lens.maxZoom - 1);
+        else if (b == exposureBar) camera.exposure = lens.aeMin + progress;
+        else camera.focus = progress / 100f;
+        focusLabel.setText(camera.focus == 0 ? "Focus: auto" : "Focus");
+        cameraChanged();
+    }
+
+    // The sides with a lens, in the facing picker's order: false back, true front.
+    private final List<Boolean> sides = new ArrayList<>();
+
+    /** The webcam's controls, from camera, each shown only where this lens has it. */
+    private void bindCamera() {
+        sides.clear();
+        List<String> names = new ArrayList<>();
+        for (boolean front : new boolean[] {false, true}) {
+            for (CameraSettings.Lens l : camera.lenses) {
+                if (l.front != front) continue;
+                sides.add(front);
+                names.add(front ? "Front camera" : "Back camera");
+                break;
+            }
+        }
+        if (sides.isEmpty()) names.add("No camera");
+        bind(facingPicker, names, Math.max(0, sides.indexOf(camera.front)));
+        List<CameraSettings.Lens> side = camera.side();
+        CameraSettings.Lens lens = camera.lens();
+        List<String> lenses = new ArrayList<>();
+        for (CameraSettings.Lens l : side) lenses.add(l.label(side));
+        if (lenses.isEmpty()) lenses.add("No lens");
+        bind(lensPicker, lenses, Math.max(0, side.indexOf(lens)));
+        boolean any = lens != null;
+        torchBox.setVisibility(any && lens.flash ? View.VISIBLE : View.INVISIBLE);
+        torchBox.setChecked(camera.torch);
+        zoomBar.setMax(100);
+        zoomBar.setEnabled(any && lens.maxZoom > 1);
+        zoomBar.setProgress(any && lens.maxZoom > 1 ? Math.round((camera.zoom - 1) / (lens.maxZoom - 1) * 100) : 0);
+        exposureBar.setMax(any ? lens.aeMax - lens.aeMin : 0);
+        exposureBar.setProgress(any ? camera.exposure - lens.aeMin : 0);
+        ((View) focusBar.getParent()).setVisibility(any && lens.minFocus > 0 ? View.VISIBLE : View.INVISIBLE);
+        focusBar.setMax(100);
+        focusBar.setProgress(Math.round(camera.focus * 100));
+        focusLabel.setText(camera.focus == 0 ? "Focus: auto" : "Focus");
+    }
+
+    /** The side or lens picker moved. Spinners report bindCamera's selections too, which change nothing. */
+    private void cameraPicked() {
+        if (sides.isEmpty()) return;
+        boolean front = sides.get(Math.max(0, facingPicker.getSelectedItemPosition()));
+        if (front != camera.front) {
+            camera.front = front;  // that side's lens is the one last chosen there
+        } else {
+            List<CameraSettings.Lens> side = camera.side();
+            int at = lensPicker.getSelectedItemPosition();
+            if (at < 0 || at >= side.size() || side.get(at) == camera.lens()) return;
+            camera.chooseLens(side.get(at).id);
+        }
+        cameraChanged();
+        bindCamera();
+    }
+
+    /** Kept, and into the running webcam: live, or by reopening the camera for another lens. */
+    private void cameraChanged() {
+        camera.save(this);
+        Log.i(Codecs.TAG, "webcam settings: " + camera);
+        CameraService.settingsChanged(this);
     }
 
     private void bindPickers() {

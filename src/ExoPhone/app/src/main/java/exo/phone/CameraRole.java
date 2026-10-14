@@ -56,18 +56,84 @@ final class CameraRole {
     }
 
     private final Context context;
+    private final CameraSettings settings;
+    private final CameraSettings.Lens lens;
     private final ArrayBlockingQueue<Frame> queue = new ArrayBlockingQueue<>(QUEUE);
     private final HandlerThread cameraThread = new HandlerThread("camera");
     private final Thread drainThread = new Thread(this::drain, "encoder drain");
     private MediaCodec encoder;
     private Surface input;
+    private Handler handler;                         // the camera thread's
+    private CameraCharacteristics chars;
     private volatile CameraDevice camera;            // set on the camera thread
     private volatile CameraCaptureSession session;
+    private CaptureRequest.Builder request;          // camera thread only
     private volatile boolean stopped;
     private volatile String failure;
 
-    CameraRole(Context context) {
+    /** The lens and controls come from settings, as they are now. */
+    CameraRole(Context context, CameraSettings settings) {
         this.context = context;
+        this.settings = settings;
+        this.lens = settings.lens();
+    }
+
+    /** The camera this one opens, to tell whether a settings change needs another. */
+    String lensId() {
+        return lens == null ? null : lens.id;
+    }
+
+    /**
+     * Ends this camera on purpose, as a failure does: the connection ends,
+     * and the next one opens the lens now chosen.
+     */
+    void restart(String why) {
+        if (failure == null) {
+            failure = why;
+            Log.i(Codecs.TAG, "camera reopening: " + why);
+        }
+    }
+
+    /** The zoom, focus, exposure and torch in s, into the running capture. Any thread. */
+    void update(CameraSettings s) {
+        Handler h = handler;
+        if (h == null) return;
+        h.post(() -> {
+            if (session == null || request == null || stopped) return;
+            controls(request, s);
+            try {
+                session.setRepeatingRequest(request.build(), null, h);
+                Log.i(Codecs.TAG, "camera controls now " + s);
+            } catch (CameraAccessException | IllegalStateException e) {
+                Log.w(Codecs.TAG, "camera controls not applied: " + e);
+            }
+        });
+    }
+
+    /**
+     * Zoom, focus, exposure and torch, each only as far as this lens can.
+     * Zoom by ratio from Android 11; on 10 by cropping the active array.
+     */
+    private void controls(CaptureRequest.Builder b, CameraSettings s) {
+        float zoom = Math.max(1, Math.min(lens.maxZoom, s.zoom));
+        if (Build.VERSION.SDK_INT >= 30) {
+            b.set(CaptureRequest.CONTROL_ZOOM_RATIO, zoom);
+        } else {
+            android.graphics.Rect a = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
+            int w = Math.round(a.width() / zoom), h = Math.round(a.height() / zoom);
+            b.set(CaptureRequest.SCALER_CROP_REGION, new android.graphics.Rect(
+                    a.left + (a.width() - w) / 2, a.top + (a.height() - h) / 2,
+                    a.left + (a.width() + w) / 2, a.top + (a.height() + h) / 2));
+        }
+        if (s.focus > 0 && lens.minFocus > 0) {
+            b.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF);
+            b.set(CaptureRequest.LENS_FOCUS_DISTANCE, Math.min(1, s.focus) * lens.minFocus);
+        } else if (lens.minFocus > 0) {
+            b.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO);
+        }
+        b.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, Math.max(lens.aeMin, Math.min(lens.aeMax, s.exposure)));
+        b.set(CaptureRequest.FLASH_MODE, s.torch && lens.flash ? CaptureRequest.FLASH_MODE_TORCH
+                : CaptureRequest.FLASH_MODE_OFF);
     }
 
     /** Why the camera or encoder failed, or null. The link ends the connection on it. */
@@ -81,23 +147,21 @@ final class CameraRole {
     }
 
     void start() throws IOException {
+        // CameraSettings lists only lenses that can send WIDTH x HEIGHT to an encoder.
+        if (lens == null) throw new IOException("no camera on this phone can be the webcam");
         CameraManager cm = context.getSystemService(CameraManager.class);
-        String id = chooseCamera(cm);
+        String id = lens.id;
         CameraCharacteristics c;
         try {
             c = cm.getCameraCharacteristics(id);
         } catch (CameraAccessException e) {
             throw new IOException("camera characteristics: " + e, e);
         }
-        StreamConfigurationMap map = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
-        Size[] sizes = map.getOutputSizes(MediaCodec.class);
-        if (!Arrays.asList(sizes).contains(new Size(WIDTH, HEIGHT))) {
-            throw new IOException("camera " + id + " cannot output " + WIDTH + "x" + HEIGHT + " to an encoder: "
-                    + Arrays.toString(sizes));
-        }
+        chars = c;
         Range<Integer>[] ranges = c.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
         Range<Integer> fps = chooseFps(ranges);
-        Log.i(Codecs.TAG, "camera " + id + " back, sensorOrientation " + c.get(CameraCharacteristics.SENSOR_ORIENTATION)
+        Log.i(Codecs.TAG, "camera " + id + (lens.front ? " front" : " back") + ", " + settings
+                + ", sensorOrientation " + c.get(CameraCharacteristics.SENSOR_ORIENTATION)
                 + ", timestamp source " + c.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE)
                 + " (0 unknown, 1 realtime), fps ranges " + Arrays.toString(ranges) + ", chosen " + fps);
         // Spike 4's order: configure, then createInputSurface, then start.
@@ -117,6 +181,7 @@ final class CameraRole {
 
         cameraThread.start();
         Handler h = new Handler(cameraThread.getLooper());
+        handler = h;
         try {
             cm.openCamera(id, new CameraDevice.StateCallback() {
                 @Override
@@ -144,37 +209,28 @@ final class CameraRole {
 
     /**
      * The clockwise quarter turns the hub must give the picture to show it
-     * upright, as the device is held now (DECISIONS 6.4). The back camera's
-     * formula; a front camera would also mirror. Read at each connect, so a
-     * phone turned over between connections is caught at the next one.
+     * upright, as the device is held now (DECISIONS 6.4), for the lens in
+     * settings. A front camera turns the other way; its picture needs no
+     * mirroring, since Camera2 gives it as others see you. Read at each
+     * connect, so a phone turned over between connections is caught at the
+     * next one.
      */
-    static int rotation(Context context) throws IOException {
-        CameraManager cm = context.getSystemService(CameraManager.class);
-        String id = chooseCamera(cm);
+    static int rotation(Context context, CameraSettings settings) throws IOException {
+        CameraSettings.Lens lens = settings.lens();
+        if (lens == null) return 0;
         int sensor;
         try {
-            sensor = cm.getCameraCharacteristics(id).get(CameraCharacteristics.SENSOR_ORIENTATION);
+            sensor = context.getSystemService(CameraManager.class).getCameraCharacteristics(lens.id)
+                    .get(CameraCharacteristics.SENSOR_ORIENTATION);
         } catch (CameraAccessException e) {
             throw new IOException("camera characteristics: " + e, e);
         }
         int display = context.getSystemService(DisplayManager.class).getDisplay(Display.DEFAULT_DISPLAY)
                 .getRotation() * 90;
-        int turns = (sensor - display + 360) % 360 / 90;
-        Log.i(Codecs.TAG, "camera rotation: sensorOrientation " + sensor + ", display " + display
-                + " degrees, hub turns " + turns * 90);
+        int turns = (lens.front ? sensor + display : sensor - display + 360) % 360 / 90;
+        Log.i(Codecs.TAG, "camera rotation: lens " + lens.id + (lens.front ? " front" : " back")
+                + ", sensorOrientation " + sensor + ", display " + display + " degrees, hub turns " + turns * 90);
         return turns;
-    }
-
-    private static String chooseCamera(CameraManager cm) throws IOException {
-        try {
-            for (String id : cm.getCameraIdList()) {
-                Integer facing = cm.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING);
-                if (facing != null && facing == CameraCharacteristics.LENS_FACING_BACK) return id;
-            }
-        } catch (CameraAccessException e) {
-            throw new IOException("camera list: " + e, e);
-        }
-        throw new IOException("no back camera");
     }
 
     /** A fixed 30 if offered; else the range topping out at 30 with the highest floor (DECISIONS 6.4). */
@@ -200,6 +256,8 @@ final class CameraRole {
                         CaptureRequest.Builder b = d.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
                         b.addTarget(input);
                         if (fps != null) b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fps);
+                        controls(b, settings);
+                        request = b;  // kept, so update() changes only the controls
                         s.setRepeatingRequest(b.build(), null, h);
                         Log.i(Codecs.TAG, "camera capturing, AE target fps " + fps);
                     } catch (CameraAccessException | IllegalStateException e) {

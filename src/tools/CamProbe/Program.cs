@@ -4,10 +4,17 @@
 // Three readers in turn: CPU memory, Auto memory (GPU allowed), and Auto
 // converted to BGRA. Close the Camera app first: it holds the camera.
 // Usage: CamProbe [seconds per reader, default 5]
+//        CamProbe --snap F [seconds, default 3]: reads BGRA frames that
+//        long and saves the last as the PNG F, to see what apps get.
 
+using Windows.Graphics.Imaging;
 using Windows.Media.Capture;
 using Windows.Media.Capture.Frames;
 using Windows.Media.MediaProperties;
+using Windows.Storage.Streams;
+
+if (args.Length > 1 && args[0] == "--snap")
+    return await Snap(args[1], args.Length > 2 ? int.Parse(args[2]) : 3);
 
 int seconds = args.Length > 0 ? int.Parse(args[0]) : 5;
 
@@ -100,6 +107,59 @@ static string Describe(IMediaEncodingProperties p) =>
     p is VideoEncodingProperties v ? $"{v.Subtype} {v.Width}x{v.Height} {v.FrameRate.Numerator}/{v.FrameRate.Denominator}"
     : p is ImageEncodingProperties i ? $"{i.Subtype} {i.Width}x{i.Height}"
     : p.Subtype;
+
+static async Task<int> Snap(string path, int seconds)
+{
+    var exo = (await MediaFrameSourceGroup.FindAllAsync()).FirstOrDefault(g => g.DisplayName.Contains("Exo"));
+    if (exo == null)
+    {
+        Console.WriteLine("no Exo Camera group; is the hub running?");
+        return 1;
+    }
+    using var capture = new MediaCapture();
+    await capture.InitializeAsync(new MediaCaptureInitializationSettings
+    {
+        SourceGroup = exo,
+        SharingMode = MediaCaptureSharingMode.ExclusiveControl,
+        StreamingCaptureMode = StreamingCaptureMode.Video,
+        MemoryPreference = MediaCaptureMemoryPreference.Cpu,
+    });
+    var source = capture.FrameSources.Values.First(s => s.Info.SourceKind == MediaFrameSourceKind.Color);
+    using var reader = await capture.CreateFrameReaderAsync(source, MediaEncodingSubtypes.Bgra8);
+    SoftwareBitmap last = null;
+    int frames = 0;
+    reader.FrameArrived += (r, _) =>
+    {
+        using var f = r.TryAcquireLatestFrame();
+        var b = f?.VideoMediaFrame?.SoftwareBitmap;
+        if (b == null)
+            return;
+        // A copy: the frame's own bitmap goes back to the reader with it.
+        Interlocked.Exchange(ref last, SoftwareBitmap.Copy(b))?.Dispose();
+        Interlocked.Increment(ref frames);
+    };
+    await reader.StartAsync();
+    await Task.Delay(seconds * 1000);
+    await reader.StopAsync();
+    if (last == null)
+    {
+        Console.WriteLine($"no frame in {seconds}s");
+        return 1;
+    }
+    using var png = new InMemoryRandomAccessStream();
+    var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.PngEncoderId, png);
+    encoder.SetSoftwareBitmap(SoftwareBitmap.Convert(last, BitmapPixelFormat.Bgra8, BitmapAlphaMode.Ignore));
+    await encoder.FlushAsync();
+    var bytes = new byte[png.Size];
+    using (var r = new DataReader(png.GetInputStreamAt(0)))
+    {
+        await r.LoadAsync((uint)png.Size);
+        r.ReadBytes(bytes);
+    }
+    File.WriteAllBytes(path, bytes);
+    Console.WriteLine($"{frames} frames in {seconds}s; saved {last.PixelWidth}x{last.PixelHeight} to {path}");
+    return 0;
+}
 
 static string Format(MediaFrameFormat f) =>
     f == null ? "none" : $"{f.Subtype} {f.VideoFormat.Width}x{f.VideoFormat.Height} {f.FrameRate.Numerator}/{f.FrameRate.Denominator}";

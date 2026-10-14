@@ -4,6 +4,7 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.os.IBinder;
@@ -38,6 +39,27 @@ public class CameraService extends Service {
     private Link link;
     private PowerManager.WakeLock wakeLock;
     private int lastTurns;  // the last landscape HELLO rotation; link thread only
+    private volatile CameraRole current;    // the connection's camera, or null
+    private static volatile CameraService instance;
+
+    /**
+     * MainActivity changed and saved the webcam's settings. Zoom, focus,
+     * exposure and torch go into the running capture; another lens or side
+     * ends this camera, and the link's next connection opens the new one.
+     * Main thread.
+     */
+    static void settingsChanged(Context context) {
+        CameraService service = instance;
+        CameraRole camera = service == null ? null : service.current;
+        if (camera == null) return;
+        CameraSettings s = CameraSettings.load(context);
+        CameraSettings.Lens lens = s.lens();
+        if (lens != null && !lens.id.equals(camera.lensId())) {
+            camera.restart("the webcam's lens changed to " + lens.id);
+        } else {
+            camera.update(s);
+        }
+    }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
@@ -60,6 +82,7 @@ public class CameraService extends Service {
         }
         Log.i(Codecs.TAG, "camera service in the foreground, type camera");
         running = true;
+        instance = this;
         setStatus(Link.WAITING);
 
         wakeLock = getSystemService(PowerManager.class)
@@ -84,7 +107,9 @@ public class CameraService extends Service {
 
                     @Override
                     public CameraRole newCamera(String conn) {
-                        return new CameraRole(CameraService.this);
+                        CameraRole c = new CameraRole(CameraService.this, CameraSettings.load(CameraService.this));
+                        current = c;
+                        return c;
                     }
 
                     @Override
@@ -99,7 +124,7 @@ public class CameraService extends Service {
                         // turn the hub refuses. The last landscape stands in
                         // (DECISIONS 6.4); the first read is always with the
                         // app in front, in landscape.
-                        int turns = CameraRole.rotation(CameraService.this);
+                        int turns = CameraRole.rotation(CameraService.this, CameraSettings.load(CameraService.this));
                         if (turns % 2 == 0) {
                             lastTurns = turns;
                             return turns;
@@ -135,6 +160,7 @@ public class CameraService extends Service {
 
     @Override
     public void onDestroy() {
+        instance = null;
         if (link != null) link.stop();
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         // A failed start keeps its status, so the screen says why.
