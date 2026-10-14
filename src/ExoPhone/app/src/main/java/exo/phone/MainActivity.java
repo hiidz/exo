@@ -10,10 +10,15 @@ import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowInsets;
+import android.widget.AdapterView;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.Spinner;
 import android.widget.TextView;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -27,6 +32,7 @@ import java.util.List;
  * The tools pick roles with an extra, through the same paths as the buttons:
  *
  *   adb shell am start -S -n exo.phone/.MainActivity --es role camera,display [--ei proto 3]
+ *       [--ei rate 60] [--es orientation portrait] [--es size 1800x810]
  *
  * Started that way, it shows over the lock screen and wakes it, since the
  * webcam may start only while the app is visible. Every extra goes on to
@@ -35,6 +41,8 @@ import java.util.List;
 public class MainActivity extends Activity {
     private static final int ASK_CAMERA = 1;
 
+    private DisplaySettings settings;
+    private Spinner sizePicker, orientationPicker, ratePicker;
     private Button webcamButton;
     private TextView webcamStatus;
     // A sentence of this screen's own, such as a refused permission, shown
@@ -82,6 +90,15 @@ public class MainActivity extends Activity {
         display.setText("Use as display");
         display.setOnClickListener(v -> useDisplay());
         root.addView(display);
+        // The display's settings, under its button. The hub's monitor gets
+        // exactly this mode the next time the display starts.
+        settings = DisplaySettings.load(this);
+        LinearLayout pickers = new LinearLayout(this);
+        sizePicker = picker(pickers);
+        orientationPicker = picker(pickers);
+        ratePicker = picker(pickers);
+        root.addView(pickers);
+        bindPickers();
         webcamButton = new Button(this);
         webcamButton.setOnClickListener(v -> {
             if (CameraService.running) {
@@ -94,7 +111,11 @@ public class MainActivity extends Activity {
         webcamStatus = new TextView(this);
         webcamStatus.setPadding(0, 16, 0, 0);
         root.addView(webcamStatus);
-        setContentView(root);
+        // Scrolls when a short landscape phone cannot fit it all.
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.addView(root);
+        setContentView(scroll);
 
         if (savedInstanceState == null) fromTools(getIntent());
     }
@@ -116,7 +137,64 @@ public class MainActivity extends Activity {
         setShowWhenLocked(true);
         setTurnScreenOn(true);
         if (given.contains("camera") && !CameraService.running) useWebcam();
-        if (given.contains("display")) useDisplay();
+        if (given.contains("display")) {
+            settings.apply(in);
+            settings.save(this);
+            bindPickers();
+            useDisplay();
+        }
+    }
+
+    private Spinner picker(LinearLayout row) {
+        Spinner s = new Spinner(this);
+        row.addView(s, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        s.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                picked();
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {
+            }
+        });
+        return s;
+    }
+
+    /**
+     * A picker moved: the settings follow it and are kept, and the sizes are
+     * worked out again for the rate and orientation. Spinners also report
+     * the selections bindPickers makes, later, so a report that changes
+     * nothing is ignored.
+     */
+    private void picked() {
+        int at = sizePicker.getSelectedItemPosition();
+        int[] size = at >= 0 && at < settings.sizes.size() ? settings.sizes.get(at) : settings.size;
+        boolean portrait = orientationPicker.getSelectedItemPosition() == 1;
+        int fps = DisplaySettings.RATES[Math.max(0, ratePicker.getSelectedItemPosition())];
+        if (size == settings.size && portrait == settings.portrait && fps == settings.fps) return;
+        settings.portrait = portrait;
+        settings.fps = fps;
+        settings.refresh(size == null ? null : size[0] + "x" + size[1]);
+        settings.save(this);
+        Log.i(Codecs.TAG, "display settings picked: " + settings);
+        bindPickers();
+    }
+
+    private void bindPickers() {
+        List<String> sizes = new ArrayList<>();
+        for (int[] s : settings.sizes) sizes.add(settings.label(s));
+        if (sizes.isEmpty()) sizes.add("No size at " + settings.fps + " fps");
+        bind(sizePicker, sizes, Math.max(0, settings.sizes.indexOf(settings.size)));
+        bind(orientationPicker, Arrays.asList("Landscape", "Portrait"), settings.portrait ? 1 : 0);
+        bind(ratePicker, Arrays.asList("30 fps", "60 fps"), settings.fps == 60 ? 1 : 0);
+    }
+
+    private void bind(Spinner s, List<String> items, int selected) {
+        ArrayAdapter<String> a = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, items);
+        a.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        s.setAdapter(a);
+        s.setSelection(selected);
     }
 
     @Override

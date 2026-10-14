@@ -2,6 +2,7 @@ package exo.phone;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.hardware.display.DisplayManager;
@@ -126,23 +127,22 @@ public class DisplayActivity extends Activity {
             c.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
         }
 
-        // The panel's physical size, landscape: long side first.
-        Display d = getSystemService(DisplayManager.class).getDisplay(Display.DEFAULT_DISPLAY);
-        Display.Mode m = d.getMode();
-        int pw = Math.max(m.getPhysicalWidth(), m.getPhysicalHeight());
-        int ph = Math.min(m.getPhysicalWidth(), m.getPhysicalHeight());
-        Log.i(Codecs.TAG, String.format("panel %dx%d at %.1fHz", pw, ph, d.getRefreshRate()));
-        Codecs.logAvcDecoders(new int[][] {{2944, 1840}, {pw, ph}}, new int[] {30, 60});
-
         Intent in = getIntent();
         String name = in.getStringExtra("file");
         File dir = getExternalFilesDir(null);
         boolean paced = in.getBooleanExtra("paced", true);
         boolean lowLatency = in.getBooleanExtra("lowlatency", true);
         String codec = in.getStringExtra("codec");
-        // Only a hint for choosing the decoder. Over the link the hub's
-        // virtual display is meant to match the panel (NFR-3).
-        int hintW = in.getIntExtra("w", name == null ? pw : 0), hintH = in.getIntExtra("h", name == null ? ph : 0);
+        // The mode the hub's monitor gets: the settings MainActivity saved,
+        // with the tools' extras it passed on.
+        DisplaySettings settings = DisplaySettings.load(this);
+        settings.apply(in);
+        Log.i(Codecs.TAG, "display settings: " + settings);
+        Codecs.logAvcDecoders(new int[][] {{settings.panelW, settings.panelH}}, new int[] {30, 60});
+        // Sensor variants, so a turn through 180 degrees follows the phone.
+        // configChanges keeps the activity, and the link, through any turn.
+        setRequestedOrientation(name == null && settings.portrait ? ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+                : ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
         if (name == null) {
             statusView = new TextView(this);
             statusView.setTextSize(24);
@@ -151,95 +151,109 @@ public class DisplayActivity extends Activity {
             statusView.setPadding(48, 48, 48, 48);
             root.addView(statusView, new FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
+            if (settings.size == null) {
+                showStatus("This phone cannot decode the display at " + settings.fps + " fps. Pick another frame rate.");
+                return;
+            }
             showStatus(Link.WAITING);
         }
+        // Only a hint for choosing the decoder from a file. Over the link it
+        // is the mode itself.
+        int hintW = name == null ? settings.width() : in.getIntExtra("w", 0);
+        int hintH = name == null ? settings.height() : in.getIntExtra("h", 0);
         // Link runs from this start are told apart by the time it happened.
         String linkRun = String.format("%tH%<tM%<tS", System.currentTimeMillis());
 
         // Both inputs need the Surface, so both start once it exists and stop
-        // before it goes.
+        // before it goes. The link waits until the window has turned to the
+        // chosen orientation, so the picture is fitted to the screen it stays on.
         view.getHolder().addCallback(new SurfaceHolder.Callback() {
             @Override
-            public void surfaceCreated(SurfaceHolder holder) {
+            public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+                if (name != null || link != null || (height > width) != settings.portrait) return;
                 Surface surface = holder.getSurface();
-                if (name == null) {
-                    link = new Link(Identity.of(DisplayActivity.this), in.getIntExtra("proto", Link.VERSION),
-                            Link.ROLE_DISPLAY, new Link.Listener() {
-                                @Override
-                                public void onStatus(String sentence) {
-                                    showStatus(sentence);
-                                }
+                link = new Link(Identity.of(DisplayActivity.this), in.getIntExtra("proto", Link.VERSION),
+                        Link.ROLE_DISPLAY, new Link.Listener() {
+                            @Override
+                            public void onStatus(String sentence) {
+                                showStatus(sentence);
+                            }
 
-                                @Override
-                                public Decoder newDecoder(String conn) {
-                                    return Decoder.ofLink(file(conn + ".csv"), hintW, hintH,
-                                            lowLatency, codec, surface, DisplayActivity.this::fit);
-                                }
+                            @Override
+                            public byte[] helloTail() {
+                                return settings.helloTail();
+                            }
 
-                                @Override
-                                public CameraRole newCamera(String conn) {
-                                    throw new IllegalStateException("display role has no camera");
-                                }
+                            @Override
+                            public Decoder newDecoder(String conn) {
+                                return Decoder.ofLink(file(conn + ".csv"), hintW, hintH, settings.fps,
+                                        lowLatency, codec, surface, DisplayActivity.this::fit);
+                            }
 
-                                @Override
-                                public File file(String name) {
-                                    return new File(dir, linkRun + "-" + name);
-                                }
+                            @Override
+                            public CameraRole newCamera(String conn) {
+                                throw new IllegalStateException("display role has no camera");
+                            }
 
-                                @Override
-                                public void onCursorShape(Bitmap shape, int hotX, int hotY) {
-                                    synchronized (cursorLock) {
-                                        cursorShape = shape;
-                                        cursorHotX = hotX;
-                                        cursorHotY = hotY;
+                            @Override
+                            public File file(String name) {
+                                return new File(dir, linkRun + "-" + name);
+                            }
+
+                            @Override
+                            public void onCursorShape(Bitmap shape, int hotX, int hotY) {
+                                synchronized (cursorLock) {
+                                    cursorShape = shape;
+                                    cursorHotX = hotX;
+                                    cursorHotY = hotY;
+                                }
+                                postCursor();
+                            }
+
+                            @Override
+                            public void onCursorPos(boolean visible, int x, int y, long hubUs) {
+                                synchronized (cursorLock) {
+                                    cursorVisible = visible;
+                                    cursorX = x;
+                                    cursorY = y;
+                                    if (hubUs != 0) {
+                                        long[] row = {hubUs, System.nanoTime(), 0, 0};
+                                        if (cursorRows.size() < MAX_CURSOR_ROWS) cursorRows.add(row);
+                                        cursorLatest = row;
                                     }
-                                    postCursor();
                                 }
+                                postCursor();
+                            }
 
-                                @Override
-                                public void onCursorPos(boolean visible, int x, int y, long hubUs) {
-                                    synchronized (cursorLock) {
-                                        cursorVisible = visible;
-                                        cursorX = x;
-                                        cursorY = y;
-                                        if (hubUs != 0) {
-                                            long[] row = {hubUs, System.nanoTime(), 0, 0};
-                                            if (cursorRows.size() < MAX_CURSOR_ROWS) cursorRows.add(row);
-                                            cursorLatest = row;
-                                        }
-                                    }
-                                    postCursor();
+                            @Override
+                            public void onLinkEnded(String conn) {
+                                ArrayList<long[]> rows;
+                                synchronized (cursorLock) {
+                                    rows = new ArrayList<>(cursorRows);
+                                    cursorRows.clear();
+                                    cursorLatest = null;
                                 }
+                                writeCursorRows(file(conn + "-cursor.csv"), rows);
+                            }
+                        });
+                link.start();
+            }
 
-                                @Override
-                                public void onLinkEnded(String conn) {
-                                    ArrayList<long[]> rows;
-                                    synchronized (cursorLock) {
-                                        rows = new ArrayList<>(cursorRows);
-                                        cursorRows.clear();
-                                        cursorLatest = null;
-                                    }
-                                    writeCursorRows(file(conn + "-cursor.csv"), rows);
-                                }
-                            });
-                    link.start();
-                    return;
-                }
+            @Override
+            public void surfaceCreated(SurfaceHolder holder) {
+                if (name == null) return;
                 String run = name + "-" + (paced ? "paced" : "fast") + (lowLatency ? "-ll" : "-noll")
                         + (codec != null ? "-" + codec : "");
                 decoder = Decoder.ofFile(new File(dir, name), new File(dir, run + ".csv"),
-                        in.getFloatExtra("fps", 30), hintW, hintH, paced, lowLatency, codec, surface,
+                        in.getFloatExtra("fps", 30), hintW, hintH, paced, lowLatency, codec, holder.getSurface(),
                         DisplayActivity.this::fit);
                 decoder.start();
             }
 
             @Override
-            public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
-            }
-
-            @Override
             public void surfaceDestroyed(SurfaceHolder holder) {
                 if (link != null) link.stop();
+                link = null;
                 if (decoder != null) decoder.stop();
             }
         });

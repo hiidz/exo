@@ -1,8 +1,9 @@
 // The monitor's EDID: one 128-byte block with no extension, so Windows sees
 // no HDR or audio claims. Manufacturer EXO, which is not in the PNP ID
 // registry, and product 0001, so Windows names the monitor EXO0001. The hub
-// supplies the serial number and strings from the phone, so each phone is
-// its own monitor to Windows and keeps its own position and scale.
+// supplies the serial number and strings from the phone and its mode, so
+// each phone at each size is its own monitor to Windows and keeps its own
+// position and scale.
 // Monitor modes come from ExoAddMonitor, not from the timings here.
 
 #pragma once

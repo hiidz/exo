@@ -13,7 +13,8 @@ install, with a tray app and Wi-Fi, is planned.
 - **A webcam called Exo** that any Windows camera app can pick. The
   picture comes from a phone's back camera, upright, at 30fps.
 - **A second monitor** on a phone or tablet, at the panel's own
-  resolution, with touch acting as touch on that part of the desktop.
+  resolution or a lower one set on the phone, landscape or portrait, 30
+  or 60 fps, with touch acting as touch on that part of the desktop.
   About a tenth of a second behind the PC.
 - One phone can be both, or two phones one role each. Either role may be
   left empty.
@@ -33,9 +34,7 @@ install, with a tray app and Wi-Fi, is planned.
 3. **Phones:** enable USB debugging, plug in, unlock, accept the PC.
 4. **Install:** `src/ExoSetup/setup.ps1`. It asks for administrator,
    registers the camera, makes the log folder, installs the app on every
-   attached phone, and puts an Exo shortcut on the desktop. The monitor
-   is 2944x1840, the TB375FC's panel; for another display phone, add
-   `--panel WxH` (landscape) to the shortcut.
+   attached phone, and puts an Exo shortcut on the desktop.
 
 To remove everything: `src/ExoSetup/setup.ps1 -Uninstall`, then
 `src/ExoDisplay/install.ps1 -Uninstall`.
@@ -46,6 +45,9 @@ Double-click **Exo** on the desktop. Plug the phones in, in any order.
 On each phone, open Exo and tap **Use as display** or **Use as webcam**,
 or both. The webcam asks for the camera the first time. A role another
 phone already holds is refused, and the phone says which one has it.
+Under **Use as display** are its resolution, landscape or portrait, and
+30 or 60 fps; the PC's monitor takes exactly that mode the next time the
+display starts.
 Ctrl+C in the hub's window stops it, and nothing it started is left
 running.
 
@@ -66,8 +68,8 @@ running.
 - **Two-finger gestures** work only in apps that handle touch natively.
 - **The pointer runs slightly ahead of the picture** on the tablet, so a
   dragged window trails it.
-- **A resolution change** blanks the tablet for about a tenth of a
-  second. The tablet keeps running through a UAC prompt. Unplugging a
+- **The display's resolution is set on the phone,** not in Windows'
+  display settings. The tablet keeps running through a UAC prompt. Unplugging a
   phone stops only that phone's role; plugging it back resumes in about
   a second.
 

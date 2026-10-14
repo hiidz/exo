@@ -57,7 +57,7 @@ sealed class DisplaySender : IDisposable
 
     uint seq;
     // Totals for the whole run, read at the end.
-    public int Sent, DiscardedNoDevice, DiscardedBeforeKeyframe, MaxWaiting, Connections;
+    public int Sent, DiscardedNoDevice, DiscardedBeforeKeyframe, DiscardedOtherRate, MaxWaiting, Connections;
     public long SentBytes;
     public readonly List<double> WaitMs = new();   // encoded to sent
     public readonly List<double> WriteMs = new();  // how long Write blocked
@@ -71,14 +71,23 @@ sealed class DisplaySender : IDisposable
 
     void Log(string line) => Console.WriteLine($"{clock.Elapsed.TotalSeconds,8:F3}s send {line}");
 
+    // The rate the attached phone asked for, which the capture loop builds
+    // the encoder at; 0 before the first connection. An encoder at another
+    // rate gets no keyframe request and none of its frames are sent, so a
+    // phone that changed rate sees parameter sets from the rebuilt encoder
+    // only.
+    public uint Fps { get { lock (gate) return fps; } }
+    uint fps;  // under gate
+
     // The display connection, once its handshake is done. Discards until a
     // keyframe carrying SPS and PPS, and asks the encoder for one (5.3).
-    public void Attach(NetworkStream net, string who)
+    public void Attach(NetworkStream net, string who, uint rate)
     {
         lock (gate)
         {
             stream = net;
             serial = who;
+            fps = rate;
             keyframeWanted = waitForKeyframe = true;
             Connections++;
             ReturnAll();
@@ -136,10 +145,12 @@ sealed class DisplaySender : IDisposable
 
     // The encoder's TrySubmit calls these under its own lock.
     public bool Busy { get { lock (gate) return stream != null && waiting.Count > 0; } }
-    public bool TakeKeyframeRequest()
+    public bool TakeKeyframeRequest(uint encoderFps)
     {
         lock (gate)
         {
+            if (encoderFps != fps)
+                return false;
             bool r = keyframeWanted;
             keyframeWanted = false;
             return r;
@@ -149,7 +160,7 @@ sealed class DisplaySender : IDisposable
     public void SetKick(Action action) { lock (gate) kick = action; }
 
     // On a Media Foundation thread, under the encoder's lock. Never blocks.
-    public void Put(byte[] data, int length, bool keyframe, long presentQpc, long encodedQpc)
+    public void Put(byte[] data, int length, bool keyframe, long presentQpc, long encodedQpc, uint encoderFps)
     {
         byte flags = (byte)((keyframe ? FlagKeyframe : 0) | (HasParameterSets(data, length) ? FlagConfig : 0));
         lock (gate)
@@ -158,6 +169,11 @@ sealed class DisplaySender : IDisposable
             if (stream == null)
             {
                 DiscardedNoDevice++;
+                return;
+            }
+            if (encoderFps != fps)
+            {
+                DiscardedOtherRate++;
                 return;
             }
             if (waitForKeyframe)

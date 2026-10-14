@@ -78,6 +78,7 @@ sealed class H264Encoder : IDisposable
 
     public uint Width { get; }
     public uint Height { get; }
+    public uint Fps { get; }
     public string Name { get; }
 
     // What the encoder reported once configured. Printed by the caller.
@@ -130,6 +131,7 @@ sealed class H264Encoder : IDisposable
     {
         Width = width;
         Height = height;
+        Fps = fps;
         this.sink = sink;
         this.sender = sender;
         sender?.SetKick(Kick);
@@ -313,7 +315,7 @@ sealed class H264Encoder : IDisposable
         inFlight[time] = (pendingQpc, f.BltQpc, now);
         // Asked for here, at submit, so the request is only taken when a
         // frame is actually going in to carry it.
-        bool force = forceRequested | (sender?.TakeKeyframeRequest() ?? false);
+        bool force = forceRequested | (sender?.TakeKeyframeRequest(Fps) ?? false);
         forceRequested = false;
         f.Owner.Submit(f, sample =>
         {
@@ -454,7 +456,7 @@ sealed class H264Encoder : IDisposable
             buffer.Unlock();
         }
         sink?.Write(copy, 0, length);
-        sender?.Put(copy, length, keyframe, presentQpc, outQpc);
+        sender?.Put(copy, length, keyframe, presentQpc, outQpc, Fps);
         Outputs++;
         OutputBytes += length;
     }

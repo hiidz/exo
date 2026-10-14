@@ -10,17 +10,15 @@
 // Every device that reaches adb gets the reverse to the hub's port; the
 // role is picked in the app on the phone, which then connects.
 //
-// Usage: ExoHub [--debug] [--seconds N] [--dump F] [--fps N] [--out F] [--panel WxH]
+// Usage: ExoHub [--debug] [--seconds N] [--dump F [--dump-after S]] [--out F]
 //               [--camera-file F | --test-pattern [--camera-geometry W H S]] [--no-reverse]
-// --panel WxH the display phone's panel, landscape, which the monitor
-//             offers at 60 and 30. 2944x1840, the TB375FC's, until the
-//             phone sends its own (build step 2).
 // --debug     D3D11 debug layer on, messages printed as they arrive. Slow.
 // --seconds N stop after N seconds, as if Ctrl+C was pressed.
 // --dump F    write the first converted frame to F as raw NV12. The one
 //             debug readback DECISIONS 4.1 allows; nothing reads back
 //             without it.
-// --fps N     the encoded frame rate, 30 by default (DECISIONS 11.2).
+// --dump-after S  dump the first frame converted or resent after S
+//             seconds instead, since the first after a plug is black.
 // --out F     write the encoded stream to F as Annex-B H.264.
 // --camera-file F  decode the recorded H.264 stream F into L7, looping it,
 //             in place of a phone (DECISIONS 10 item 4, increment C). The
@@ -63,8 +61,9 @@ const int MaxRetryMs = 1000;
 // kept image is offered again.
 const double HeartbeatMs = 500;
 
-// NFR-3: 30 to 50 Mbps, do not tune down.
-const uint Bitrate = 40_000_000;
+// NFR-3: 40 Mbps at 30fps, do not tune down. At 60fps the same bits a
+// frame, 80 Mbps, so text stays as sharp while it moves (2026-10-14).
+const uint BitrateAt30 = 40_000_000;
 
 // 2 is PROCESS_PER_MONITOR_DPI_AWARE. Anything else means the manifest did
 // not apply, and every rectangle printed below is suspect.
@@ -75,14 +74,10 @@ using (IDXGIFactory1 factory = DXGI.CreateDXGIFactory1<IDXGIFactory1>())
     foreach (OutputInfo o in Outputs.List(factory))
         Console.WriteLine($"  {o}");
 
-uint panelWidth = 2944, panelHeight = 1840;
 bool debugLayer = false;
 double seconds = 0;
 string dumpPath = null;
-// The encoded rate. DECISIONS 11.2 is open; 30 is PROJECT_SPEC's proposal
-// and the only rate encoded so far. It sets the per-frame bit budget and
-// the H.264 level, so it is a flag, not a constant.
-uint fps = 30;
+double dumpAfter = 0;
 string outPath = null;
 // L7's test pattern (DECISIONS 10 item 4, increment B). The stride is wider
 // than the width on purpose: a reader that ignores it shows a shear.
@@ -95,15 +90,10 @@ for (int i = 0; i < args.Length; i++)
     switch (args[i])
     {
         case "--debug": debugLayer = true; break;
-        case "--fps": fps = uint.Parse(args[++i]); break;
         case "--seconds": seconds = double.Parse(args[++i]); break;
         case "--dump": dumpPath = args[++i]; break;
+        case "--dump-after": dumpAfter = double.Parse(args[++i]); break;
         case "--out": outPath = args[++i]; break;
-        case "--panel":
-            string[] wh = args[++i].Split('x');
-            panelWidth = uint.Parse(wh[0]);
-            panelHeight = uint.Parse(wh[1]);
-            break;
         case "--camera-geometry":
             camWidth = int.Parse(args[++i]);
             camHeight = int.Parse(args[++i]);
@@ -173,7 +163,7 @@ using var display = new DisplaySender(clock);
 var touch = new TouchInjector(clock);
 // Before the listener, which tells it when the display connection comes
 // and goes.
-using var monitor = new VirtualDisplay(clock, panelWidth, panelHeight);
+using var monitor = new VirtualDisplay(clock);
 using var devices = new DeviceListener(0, clock, display, touch, cameraRole, monitor);
 Console.WriteLine($"listening on 127.0.0.1:{devices.Port}, session {devices.SessionId:x16}, " +
                   $"camera role {(cameraRole != null ? "open" : "REFUSED")}, " +
@@ -370,14 +360,18 @@ while (!stop.IsCancellationRequested)
 
     // The converter has no size until it has converted a frame, and the
     // first wait after a Reopen often times out. Building then gave the
-    // encoder a 0x0 type, which it refused.
+    // encoder a 0x0 type, which it refused. The rate is the display
+    // phone's; until one has connected, 30.
+    uint fps = display.Fps != 0 ? display.Fps : 30;
     if (converter.Width != 0 &&
-        (encoder == null || encoder.Width != converter.Width || encoder.Height != converter.Height))
+        (encoder == null || encoder.Width != converter.Width || encoder.Height != converter.Height ||
+         encoder.Fps != fps))
     {
         if (encoder != null)
             Retire(encoder);
         long e0 = Stopwatch.GetTimestamp();
-        encoder = new H264Encoder(source.Device, converter.Width, converter.Height, fps, Bitrate, sink, display);
+        encoder = new H264Encoder(source.Device, converter.Width, converter.Height, fps, BitrateAt30 * fps / 30, sink,
+                                  display);
         encodersBuilt++;
         Console.WriteLine($"{t} encoder #{encodersBuilt} {encoder.Name} built for {encoder.Width}x{encoder.Height}@{fps} " +
                           $"in {Stopwatch.GetElapsedTime(e0).TotalMilliseconds:F1}ms");
@@ -389,7 +383,7 @@ while (!stop.IsCancellationRequested)
     // hold. The Blt ran while it was held, so the image is good.
     if (converted != null)
     {
-        if (dumpPath != null)
+        if (dumpPath != null && clock.Elapsed.TotalSeconds >= dumpAfter)
         {
             DumpAndDecode(converter, dumpPath, t);
             dumpPath = null;
@@ -461,6 +455,11 @@ while (!stop.IsCancellationRequested)
             resends++;
             Console.WriteLine($"{clock.Elapsed.TotalSeconds,8:F3}s RESEND #{resends} {(connect ? "for connection" : "heartbeat")} " +
                               $"present={DisplaySender.Micros(stamp)}us blt={converter.LastResendMs:F2}ms");
+            if (dumpPath != null && clock.Elapsed.TotalSeconds >= dumpAfter)
+            {
+                DumpAndDecode(converter, dumpPath, t);
+                dumpPath = null;
+            }
         }
     }
 
@@ -546,7 +545,7 @@ vcam?.Dispose();
 camera.Dispose();
 display.Dispose();
 Console.WriteLine($"sender connections={display.Connections} sent={display.Sent} bytes={display.SentBytes} " +
-                  $"discarded: no device={display.DiscardedNoDevice} before keyframe={display.DiscardedBeforeKeyframe}; " +
+                  $"discarded: no device={display.DiscardedNoDevice} before keyframe={display.DiscardedBeforeKeyframe} other rate={display.DiscardedOtherRate}; " +
                   $"max waiting={display.MaxWaiting}");
 touch.Dispose();
 Console.WriteLine($"touch received: messages={touch.Messages} gestures={touch.Gestures} dropped={touch.Dropped} " +

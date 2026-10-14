@@ -94,9 +94,9 @@ final class Decoder {
      * From the link. The first unit offered must carry SPS and PPS with an
      * IDR; Link discards everything before one (DECISIONS 5.3).
      */
-    static Decoder ofLink(File csv, int hintWidth, int hintHeight, boolean lowLatency, String codecName,
+    static Decoder ofLink(File csv, int hintWidth, int hintHeight, int fps, boolean lowLatency, String codecName,
                           Surface surface, SizeListener sizeListener) {
-        return new Decoder(null, new ArrayBlockingQueue<>(2), csv, 0, hintWidth, hintHeight, false, lowLatency,
+        return new Decoder(null, new ArrayBlockingQueue<>(2), csv, fps, hintWidth, hintHeight, false, lowLatency,
                 codecName, surface, sizeListener);
     }
 
@@ -163,16 +163,12 @@ final class Decoder {
             }
         }
 
-        MediaFormat format = MediaFormat.createVideoFormat(Codecs.AVC, hintWidth, hintHeight);
-        if (lowLatency && Build.VERSION.SDK_INT >= 30) format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
+        // The same format and choice DisplaySettings checked its modes with.
+        MediaFormat format = Codecs.decoderFormat(hintWidth, hintHeight, (int) Math.round(fps), lowLatency);
         try {
-            // KEY_LOW_LATENCY does not steer findDecoderForFormat: on the
-            // TB375FC it picks c2.mtk.avc.decoder over the separate
-            // c2.mtk.avc.decoder.lowlatency. A name, when given, wins.
-            if (codecName == null) {
-                codecName = new MediaCodecList(MediaCodecList.REGULAR_CODECS).findDecoderForFormat(format);
-            }
-            codec = MediaCodec.createByCodecName(codecName);
+            String chosen = Codecs.chooseDecoder(format, codecName);
+            codec = MediaCodec.createByCodecName(chosen != null ? chosen : codecName);
+            codecName = codec.getName();
         } catch (IOException | NullPointerException e) {
             Log.e(Codecs.TAG, "no decoder for " + format, e);
             return;

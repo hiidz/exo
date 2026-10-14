@@ -161,8 +161,7 @@ sealed class Nv12Converter : IDisposable
         context.Begin(disjoint[slot]);
         context.End(start[slot]);
 
-        // No source or destination rectangles: the whole input to the whole
-        // output, which is the same size.
+        // The whole input to the whole output, by the rectangles Rebuild set.
         var stream = new VideoProcessorStream { Enable = true, InputSurface = input };
         videoContext.VideoProcessorBlt(processor, frame.View, 0, new[] { stream }).CheckError();
 
@@ -228,6 +227,14 @@ sealed class Nv12Converter : IDisposable
             throw new InvalidOperationException("video processor cannot produce NV12");
 
         processor = videoDevice.CreateVideoProcessor(vpEnum, 0);
+        // The stream's destination rectangle defaults to empty, which by the
+        // documentation writes nothing. The AMD driver writes the whole frame
+        // anyway, but nothing promises that, so all three are set to the
+        // whole surface.
+        var whole = new Vortice.RawRect(0, 0, (int)d.Width, (int)d.Height);
+        videoContext.VideoProcessorSetStreamSourceRect(processor, 0, true, whole);
+        videoContext.VideoProcessorSetStreamDestRect(processor, 0, true, whole);
+        videoContext.VideoProcessorSetOutputTargetRect(processor, true, whole);
 
         // The duplication texture's own description, so size and format
         // match for CopyResource, and its bind flags, which an input view

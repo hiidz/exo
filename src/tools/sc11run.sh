@@ -46,7 +46,8 @@ PAGEPID=$!
 say "hub start, --seconds $S"
 hub $T/hub.log --seconds $S
 "$ADB" -s $CAM shell am start -S -n exo.phone/.MainActivity --es role camera >/dev/null
-"$ADB" -s $DISP shell am start -S -n exo.phone/.MainActivity --es role display >/dev/null
+"$ADB" -s $DISP shell am start -S -n exo.phone/.MainActivity --es role display \
+    --ei rate 30 --es orientation landscape --es size full >/dev/null
 # The EXO monitor exists once the phone connects; the content goes on it then.
 until grep -q "vdisp EXO0001 on the desktop" $T/hub.log; do sleep 0.2; done
 powershell -NoProfile -ExecutionPolicy Bypass -File C:/Dev/Exo/src/tools/vddcontent.ps1 -Seconds $((S + 60)) > $T/content.log 2>&1 &

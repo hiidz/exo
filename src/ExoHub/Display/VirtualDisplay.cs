@@ -10,9 +10,11 @@ namespace ExoHub.Display;
 
 // The hub's side of plugging ExoDisplay's monitor (ExoDisplayDriver).
 //
-// A display phone's connection asks for a monitor with its panel's modes;
-// the monitor stays for a grace period after the connection ends, so a
-// replug or a short drop does not throw windows about. One thread makes
+// A display phone's connection asks for a monitor with the one mode the
+// phone chose, and the panel's size; the monitor stays for a grace period
+// after the connection ends, so a replug or a short drop does not throw
+// windows about. The same phone back with another size gets a new plug.
+// One thread makes
 // every driver call: the plug, a ping each second for the driver's
 // watchdog, the grace timer, and the topology check after a plug. If the
 // hub dies, the watchdog unplugs the monitor within 3 s.
@@ -30,18 +32,19 @@ sealed class VirtualDisplay : IDisposable
     const int MaxEnforcements = 2;
 
     readonly Stopwatch clock;
-    readonly uint panelWidth, panelHeight;
     readonly Thread thread;
     readonly AutoResetEvent wake = new(false);
     readonly object gate = new();
-    Phone wanted;     // under gate: the phone whose monitor should exist, or null
-    long leftQpc;     // under gate: when wanted last became null
-    bool disposed;    // under gate
+    Phone wanted;          // under gate: the phone whose monitor should exist, or null
+    DisplayMode wantedMode;  // under gate: what it asked for
+    long leftQpc;          // under gate: when wanted last became null
+    bool disposed;         // under gate
 
     // The thread's own, but for openError, which the device listener reads.
     SafeFileHandle device;
     volatile string openError;  // the last reason the driver could not be opened, logged once
     Phone plugged;              // the phone whose monitor is plugged, or null
+    DisplayMode pluggedMode;
     Guid pluggedId;
     uint luidLow, target;
     int luidHigh;
@@ -81,11 +84,9 @@ sealed class VirtualDisplay : IDisposable
         }
     }
 
-    public VirtualDisplay(Stopwatch clock, uint panelWidth, uint panelHeight)
+    public VirtualDisplay(Stopwatch clock)
     {
         this.clock = clock;
-        this.panelWidth = panelWidth;
-        this.panelHeight = panelHeight;
         thread = new Thread(Run) { IsBackground = true, Name = "virtual display" };
         thread.Start();
     }
@@ -98,10 +99,13 @@ sealed class VirtualDisplay : IDisposable
 
     // From the device listener, when a display connection is accepted and
     // when it ends.
-    public void Connected(Phone phone)
+    public void Connected(Phone phone, DisplayMode mode)
     {
         lock (gate)
+        {
             wanted = phone;
+            wantedMode = mode;
+        }
         wake.Set();
     }
 
@@ -122,15 +126,17 @@ sealed class VirtualDisplay : IDisposable
         while (true)
         {
             Phone want;
+            DisplayMode mode;
             long left;
             lock (gate)
             {
                 if (disposed)
                     break;
                 want = wanted;
+                mode = wantedMode;
                 left = leftQpc;
             }
-            Step(want, left);
+            Step(want, mode, left);
             wake.WaitOne(plugged != null && !settled ? TopologyPollMs : PingMs);
         }
         if (plugged != null)
@@ -138,16 +144,19 @@ sealed class VirtualDisplay : IDisposable
         device?.Dispose();
     }
 
-    void Step(Phone want, long left)
+    void Step(Phone want, DisplayMode mode, long left)
     {
         if (device == null && !Open())
             return;
         if (plugged != null && want != null && want.Id != plugged.Id)
             Unplug($"{want} took the display role");
+        // The rate is the encoder's alone; the monitor runs at 60 either way.
+        if (plugged != null && want != null && mode with { Fps = 0 } != pluggedMode with { Fps = 0 })
+            Unplug($"{want} asked for {mode}");
         if (plugged != null && want == null && Stopwatch.GetElapsedTime(left).TotalMilliseconds >= GraceMs)
             Unplug($"{GraceMs / 1000} s after its connection ended");
         if (plugged == null && want != null)
-            Plug(want);
+            Plug(want, mode);
         if (plugged == null)
             return;
         if (Ioctl(IoctlPing, null, null) is int e and not 0)
@@ -176,19 +185,24 @@ sealed class VirtualDisplay : IDisposable
         return true;
     }
 
-    // Plugs the phone's monitor: the panel at 60 and 30, 60 preferred. Its Id
-    // comes from its identity, so Windows sees the same monitor each time and
-    // keeps its position and scale. Retried each tick on failure, logged
-    // once: an orphaned monitor from a hub that died is gone within 3 s.
-    void Plug(Phone phone)
+    // Plugs the phone's monitor: exactly the mode it chose, at 60Hz, so
+    // resolution has one home, the phone. Its Id comes from the phone's
+    // identity and the mode's size, so Windows sees the same monitor each
+    // time that phone uses that size, and keeps its position and scale.
+    // From the identity alone, Windows restored a saved landscape desktop
+    // into a portrait monitor (2026-10-14). Retried each tick on failure,
+    // logged once: an orphaned monitor
+    // from a hub that died is gone within 3 s. The phone is not told yet; it
+    // shows a black screen.
+    void Plug(Phone phone, DisplayMode mode)
     {
-        Guid id = new(MD5.HashData(Encoding.UTF8.GetBytes("exo.display:" + phone.Id)));
+        Guid id = new(MD5.HashData(Encoding.UTF8.GetBytes($"exo.display:{phone.Id}:{mode.Width}x{mode.Height}")));
         var output = new byte[12];
-        int e = Ioctl(IoctlAdd, AddParams(id, phone.Id), output);
+        int e = Ioctl(IoctlAdd, AddParams(id, phone.Id, mode), output);
         if (e != 0)
         {
             if (!plugFailing)
-                Log($"{phone} plug FAILED, error {e}; retrying each second");
+                Log($"{phone} plug FAILED for {mode}, error {e}; retrying each second, the phone shows black");
             plugFailing = true;
             CloseDevice();
             return;
@@ -199,11 +213,12 @@ sealed class VirtualDisplay : IDisposable
         target = BinaryPrimitives.ReadUInt32LittleEndian(output.AsSpan(8));
         Publish(true);
         plugged = phone;
+        pluggedMode = mode;
         pluggedId = id;
         pluggedQpc = Stopwatch.GetTimestamp();
         settled = false;
         enforcements = 0;
-        Log($"{phone} plugged {MonitorId} {panelWidth}x{panelHeight} at 60 and 30, " +
+        Log($"{phone} plugged {MonitorId} {mode.Width}x{mode.Height} at 60Hz, {mode.WidthMm}x{mode.HeightMm}mm, " +
             $"target {target} on adapter {luidHigh:X8}:{luidLow:X8}");
     }
 
@@ -284,19 +299,16 @@ sealed class VirtualDisplay : IDisposable
     }
 
     // ExoAddMonitor, little-endian, laid out as in exo_display.h.
-    byte[] AddParams(Guid id, string serial)
+    byte[] AddParams(Guid id, string serial, DisplayMode mode)
     {
         var b = new byte[AddSize];
         id.TryWriteBytes(b);
-        // WidthMm and HeightMm stay 0, unknown, until the phone sends them.
-        BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(24), 2);
-        (uint hz, int at)[] modes = [(60, 28), (30, 40)];
-        foreach (var (hz, at) in modes)
-        {
-            BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(at), panelWidth);
-            BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(at + 4), panelHeight);
-            BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(at + 8), hz);
-        }
+        BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(16), mode.WidthMm);
+        BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(20), mode.HeightMm);
+        BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(24), 1);
+        BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(28), mode.Width);
+        BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(32), mode.Height);
+        BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(36), 60);
         int name = 28 + 12 * MaxModes;
         Encoding.ASCII.GetBytes("Exo", b.AsSpan(name));
         Encoding.ASCII.GetBytes(serial.Length > EdidString ? serial[..EdidString] : serial, b.AsSpan(name + 16));

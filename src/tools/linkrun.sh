@@ -5,9 +5,10 @@
 # then the phone's CSVs pulled and LinkTimes run on them. Pull the cable
 # during the run for the replug test; the hub log records every cycle.
 # Needs the hub built in Release, ExoPhone installed, and 5037 free.
-# Usage: linkrun.sh <seconds> <tag> <serial> [moving|static] [relaunches]
+# Usage: linkrun.sh <seconds> <tag> <serial> [moving|static] [relaunches] [fps]
 # static paints the text once and nothing moves (DECISIONS 5.4). relaunches
 # restarts the app that many times, evenly spaced, each a new connection.
+# fps is 30 or 60, 30 by default; the display is landscape at full size.
 #
 # Every adb command here runs while a hub owns 5037. Run with no hub, adb
 # would start a server of its own, and the hub refuses a server it did not
@@ -15,7 +16,8 @@
 # short hub run that sets no reverse, so the app cannot reconnect, and whose
 # server dies with it.
 export MSYS_NO_PATHCONV=1
-S=$1; TAG=$2; SERIAL=$3; CONTENT=${4:-moving}; RELAUNCH=${5:-0}
+S=$1; TAG=$2; SERIAL=$3; CONTENT=${4:-moving}; RELAUNCH=${5:-0}; RATE=${6:-30}
+ROLE="--es role display --ei rate $RATE --es orientation landscape --es size full"
 STATIC=; [ "$CONTENT" = static ] && STATIC=-Static
 # Output is local evidence, gitignored with the rest of testdata.
 T=C:/Dev/Exo/src/ExoPhone/testdata/link/$TAG; mkdir -p $T
@@ -36,7 +38,7 @@ hub() {
 }
 
 hub $T/hub.log --seconds $S
-adb -s $SERIAL shell am start -S -n exo.phone/.MainActivity --es role display >/dev/null
+adb -s $SERIAL shell am start -S -n exo.phone/.MainActivity $ROLE >/dev/null
 # The EXO monitor exists once the phone connects; the content goes on it then.
 until grep -q "vdisp EXO0001 on the desktop" $T/hub.log; do sleep 0.2; done
 powershell -NoProfile -ExecutionPolicy Bypass -File C:/Dev/Exo/src/tools/vddcontent.ps1 -Seconds $S $STATIC > $T/content.log 2>&1 &
@@ -57,7 +59,7 @@ adb -s $SERIAL shell dumpsys SurfaceFlinger --timestats -enable >/dev/null
 # running app, so the connection it ends leaves no CSV; logcat has its times.
 for i in $(seq 1 $RELAUNCH); do
     sleep $((S / (RELAUNCH + 1)))
-    adb -s $SERIAL shell am start -S -n exo.phone/.MainActivity --es role display >/dev/null
+    adb -s $SERIAL shell am start -S -n exo.phone/.MainActivity $ROLE >/dev/null
 done
 wait $HUBPID; sleep 2
 # The stream ends with the hub's server, possibly before the phone logged

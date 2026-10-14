@@ -20,6 +20,31 @@ final class Codecs {
     static final String TAG = "ExoPhone";
     static final String AVC = MediaFormat.MIMETYPE_VIDEO_AVC;
 
+    /** What Decoder configures with, and what choosing a decoder is checked against. fps 0 leaves the rate out. */
+    static MediaFormat decoderFormat(int w, int h, int fps, boolean lowLatency) {
+        MediaFormat f = MediaFormat.createVideoFormat(AVC, w, h);
+        if (fps > 0) f.setInteger(MediaFormat.KEY_FRAME_RATE, fps);
+        if (lowLatency && Build.VERSION.SDK_INT >= 30) f.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
+        return f;
+    }
+
+    /**
+     * The decoder Decoder uses for this format, or null if none can take it.
+     * A given name wins, as in Decoder, but must take the format too.
+     * KEY_LOW_LATENCY does not steer findDecoderForFormat: on the TB375FC it
+     * picks c2.mtk.avc.decoder over the separate c2.mtk.avc.decoder.lowlatency.
+     */
+    static String chooseDecoder(MediaFormat format, String name) {
+        MediaCodecList list = new MediaCodecList(MediaCodecList.REGULAR_CODECS);
+        if (name == null) return list.findDecoderForFormat(format);
+        for (MediaCodecInfo info : list.getCodecInfos()) {
+            if (!info.isEncoder() && info.getName().equals(name) && supports(info, AVC)) {
+                return info.getCapabilitiesForType(AVC).isFormatSupported(format) ? name : null;
+            }
+        }
+        return null;
+    }
+
     /** sizes is {width, height} pairs; each is checked at every rate. */
     static void logAvcDecoders(int[][] sizes, int[] rates) {
         MediaCodecList list = new MediaCodecList(MediaCodecList.REGULAR_CODECS);

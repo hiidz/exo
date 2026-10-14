@@ -32,10 +32,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- Its orientation is the display setting, set in onCreate. It
+             handles turns itself, so the link stays up through them. -->
         <activity
             android:name=".DisplayActivity"
-            android:exported="false"
-            android:screenOrientation="sensorLandscape" />
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize"
+            android:exported="false" />
         <service
             android:name=".CameraService"
             android:exported="false"

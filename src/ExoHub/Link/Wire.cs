@@ -11,13 +11,17 @@ static class Wire
     // rotation byte after the serial, clockwise quarter turns (DECISIONS 6.4).
     // 4: the role is picked on the phone, which names itself with an
     // identity it made, and each side states the oldest version it speaks.
-    public const ushort Version = 4, Oldest = 4;
+    // 5: the display role's HELLO carries its mode, rate and panel size.
+    public const ushort Version = 5, Oldest = 5;
 
     // HELLO is frozen up to its body: magic, the newest version the device
     // speaks u16, body length u16. From 4 on the body starts with the oldest
     // version it speaks u16, then role u8, identity [16], name length u8 and
-    // UTF-8 name, rotation u8. Later versions only append to it.
-    public const int MaxHelloBody = 256, IdSize = 16, MaxName = 64;
+    // UTF-8 name, rotation u8. Later versions only append to it. From 5 the
+    // display role appends width u16, height u16 (portrait is taller than
+    // wide), fps u8 (30 or 60), then the panel's width and height in mm u16,
+    // 0 when unknown.
+    public const int MaxHelloBody = 256, IdSize = 16, MaxName = 64, DisplayFields = 9;
     public const byte RoleCamera = 1, RoleDisplay = 2;
 
     // WELCOME: magic, version u16, status u8, body length u16, body. Accepted

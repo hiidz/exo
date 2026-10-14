@@ -40,12 +40,13 @@ sealed class DeviceListener : IDisposable
     public ulong SessionId { get; } = BinaryPrimitives.ReadUInt64BigEndian(RandomNumberGenerator.GetBytes(8));
     public int Port => ((IPEndPoint)listener.LocalEndpoint).Port;
 
-    sealed class Connection(Socket socket, Phone phone, byte role, byte rotation)
+    sealed class Connection(Socket socket, Phone phone, byte role, byte rotation, DisplayMode mode)
     {
         public readonly Socket Socket = socket;
         public readonly Phone Phone = phone;
         public readonly byte Role = role;
         public readonly byte Rotation = rotation;  // clockwise quarter turns, 0 or 2
+        public readonly DisplayMode Mode = mode;   // the display role's; default for the camera
     }
 
     // camera is null when the hub has no virtual camera to feed, so the
@@ -114,8 +115,8 @@ sealed class DeviceListener : IDisposable
             }
             s.SendBufferSize = SendBufferBytes;
             Log($"{conn.Phone} send buffer {s.SendBufferSize} bytes, nodelay {s.NoDelay}");
-            monitor.Connected(conn.Phone);
-            sender.Attach(net, conn.Phone.ToString());
+            monitor.Connected(conn.Phone, conn.Mode);
+            sender.Attach(net, conn.Phone.ToString(), conn.Mode.Fps);
             try
             {
                 ReadMessages(net, conn);
@@ -194,8 +195,23 @@ sealed class DeviceListener : IDisposable
         // which ExoCamera.dll refuses (TECHNICAL_DESIGN 3.3).
         if (rotation != 0 && rotation != 2)
             return Refuse(net, name, Wire.BadHello, $"rotation {rotation * 90} degrees, only 0 and 180 are supported");
+        DisplayMode mode = default;
+        if (role == Wire.RoleDisplay)
+        {
+            int at = nameAt + body[nameAt - 1] + 1;
+            if (length < at + Wire.DisplayFields)
+                return Refuse(net, name, Wire.BadHello, $"display hello {length} bytes, no mode");
+            var d = body.AsSpan(at);
+            mode = new DisplayMode(BinaryPrimitives.ReadUInt16BigEndian(d), BinaryPrimitives.ReadUInt16BigEndian(d[2..]),
+                                   d[4], BinaryPrimitives.ReadUInt16BigEndian(d[5..]),
+                                   BinaryPrimitives.ReadUInt16BigEndian(d[7..]));
+            // Even, for 4:2:0, and in a range every part handles.
+            if (mode.Width % 2 != 0 || mode.Height % 2 != 0 || mode.Width is < 320 or > 8192 ||
+                mode.Height is < 320 or > 8192 || mode.Fps is not (30 or 60))
+                return Refuse(net, name, Wire.BadHello, $"display mode {mode} unsupported");
+        }
 
-        var conn = new Connection(s, phone, role, rotation);
+        var conn = new Connection(s, phone, role, rotation, mode);
         Connection replaced;
         lock (gate)
         {
@@ -224,7 +240,7 @@ sealed class DeviceListener : IDisposable
         BinaryPrimitives.WriteUInt64BigEndian(session, SessionId);
         SendWelcome(net, version, Wire.Accepted, session);
         Log($"{name} accepted: protocol {version} (device {oldest} to {newest}), role {roleName}, " +
-            $"rotation {rotation * 90}, session {SessionId:x16}");
+            (role == Wire.RoleDisplay ? $"{mode}" : $"rotation {rotation * 90}") + $", session {SessionId:x16}");
         return conn;
     }
 

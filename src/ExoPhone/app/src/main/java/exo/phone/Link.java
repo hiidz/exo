@@ -60,6 +60,11 @@ final class Link implements Runnable {
             return 0;
         }
 
+        /** What HELLO carries after the rotation: the display role's mode (DisplaySettings), else nothing. */
+        default byte[] helloTail() {
+            return new byte[0];
+        }
+
         /**
          * The hub's pointer shape (DECISIONS 11.1). hotX and hotY are the
          * hotspot within the bitmap. Link thread. A default method: the
@@ -86,8 +91,9 @@ final class Link implements Runnable {
     // 3 added HELLO's rotation byte, after the serial (DECISIONS 6.4).
     // 4: the role is picked here, HELLO carries this app's identity and
     // name in place of the serial, and each side states the oldest version
-    // it speaks. HELLO's layout is in the hub's Wire.cs.
-    static final int VERSION = 4, OLDEST = 4;
+    // it speaks. 5: the display role's HELLO carries its mode, rate and
+    // panel size. HELLO's layout is in the hub's Wire.cs.
+    static final int VERSION = 5, OLDEST = 5;
     static final int ROLE_CAMERA = 1, ROLE_DISPLAY = 2;
     static final int ACCEPTED = 0, VERSION_MISMATCH = 1, BAD_HELLO = 2, ROLE_TAKEN = 3;
     static final int CAMERA_UNAVAILABLE = 4, DISPLAY_UNAVAILABLE = 5;
@@ -216,15 +222,17 @@ final class Link implements Runnable {
             DataOutputStream out = new DataOutputStream(new BufferedOutputStream(s.getOutputStream()));
 
             byte[] myName = me.nameBytes();
+            byte[] tail = listener.helloTail();
             out.write(MAGIC);
             out.writeShort(version);
-            out.writeShort(2 + 1 + Identity.ID_SIZE + 1 + myName.length + 1);
+            out.writeShort(2 + 1 + Identity.ID_SIZE + 1 + myName.length + 1 + tail.length);
             out.writeShort(oldest);
             out.writeByte(role);
             out.write(me.id);
             out.writeByte(myName.length);
             out.write(myName);
             out.writeByte(listener.rotation());
+            out.write(tail);
             out.flush();
 
             byte[] magic = new byte[4];
