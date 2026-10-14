@@ -1,0 +1,82 @@
+# Exo
+
+Turns Android phones, plugged in by USB, into a webcam and a second
+monitor with touch for one Windows 11 PC. One program, the hub, owns the
+single adb connection and runs both at once. That is the point: two
+separate products each brought their own adb and could not run together.
+
+Personal tool for now, USB only, set up by hand. A version anyone can
+install, with a tray app and Wi-Fi, is planned.
+
+## What you get
+
+- **A webcam called Exo** that any Windows camera app can pick. The
+  picture comes from a phone's back camera, upright, at 30fps.
+- **A second monitor** on a phone or tablet, at the panel's own
+  resolution, with touch acting as touch on that part of the desktop.
+  About a tenth of a second behind the PC.
+- One phone can be both, or two phones one role each. Either role may be
+  left empty.
+
+## Setup, once
+
+1. **Display driver:** `src/ExoDisplay/build.bat`, then
+   `src/ExoDisplay/install.ps1`, which asks for administrator. It trusts
+   the build's test certificate and adds the Exo display adapter. Its
+   monitor appears only while the display phone is connected.
+   **Black screen risk:** Windows may move everything to the virtual
+   display. Recover blind with Win+P, arrow, Enter ("PC screen only").
+   Win+Ctrl+Shift+B resets the graphics stack.
+2. **Build** the other three parts: `src/ExoCamera/build.bat`, the hub
+   with `dotnet build src/ExoHub/ExoHub.csproj -c Release`, and the phone
+   app with `./gradlew assembleDebug` in `src/ExoPhone`.
+3. **Phones:** enable USB debugging, plug in, unlock, accept the PC.
+4. **Install:** `src/ExoSetup/setup.ps1 -Camera <serial> -Display
+   <serial>`. It asks for administrator, registers the camera, makes the
+   log folder, installs the app on every attached phone, and puts an Exo
+   shortcut on the desktop with those roles. Leave out either flag to
+   leave that role empty. The monitor is 2944x1840, the TB375FC's panel;
+   for another display phone, add `--panel WxH` (landscape) to the
+   shortcut.
+
+To remove everything: `src/ExoSetup/setup.ps1 -Uninstall`, then
+`src/ExoDisplay/install.ps1 -Uninstall`.
+
+## Each time
+
+Double-click **Exo** on the desktop. Plug the phones in, in any order.
+The hub starts the app on each phone itself. Ctrl+C in the hub's window
+stops it, and nothing it started is left running.
+
+To change roles, run `setup.ps1` again with the new serials.
+
+## What you will notice
+
+- **One camera app at a time.** A second app gets "Camera Reserved By
+  Another App". Windows' Multi-App Camera setting (Settings, Bluetooth &
+  devices, Cameras, Exo, Advanced camera options) allows sharing, but it
+  turns itself off every time the hub starts.
+- **No hub, no camera.** Exo exists only while the hub runs.
+- **The extra monitor comes and goes with the display phone.** It
+  appears when the phone connects, beside the PC's screen, and leaves 10
+  seconds after the phone does, or at once when the hub stops. Windows
+  then moves its windows to the PC's screen. Its scale is set in
+  Windows' display settings, like any monitor's.
+- **Touch cannot reach administrator windows** (Task Manager, installers,
+  UAC prompts). Against those the tablet looks frozen.
+- **Two-finger gestures** work only in apps that handle touch natively.
+- **The pointer runs slightly ahead of the picture** on the tablet, so a
+  dragged window trails it.
+- **A resolution change** blanks the tablet for about a tenth of a
+  second. The tablet keeps running through a UAC prompt. Unplugging a
+  phone stops only that phone's role; plugging it back resumes in about
+  a second.
+
+## How it works
+
+ExoHub (C#) talks to each phone over adb reverse, one connection per
+role. The camera phone sends H.264, which the hub decodes once and hands
+to ExoCamera.dll (C++), the media source Windows loads into its camera
+service. For the display, Exo's display driver hands each image of the
+virtual monitor to the hub on the GPU; the hub encodes it to H.264 and
+sends it to the phone, which decodes and shows it, and sends touches back. Details in `CLAUDE.md`.

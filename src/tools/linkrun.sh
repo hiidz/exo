@@ -1,5 +1,5 @@
 #!/bin/sh
-# One live run over the link (DECISIONS 5.7, 5.8). Moving content on the VDD,
+# One live run over the link (DECISIONS 5.7, 5.8). Moving content on the EXO monitor,
 # the hub for N seconds holding the display role for SERIAL, so it sets the
 # reverse and launches the app itself, SurfaceFlinger timestats around it,
 # then the phone's CSVs pulled and LinkTimes run on them. Pull the cable
@@ -34,9 +34,10 @@ hub() {
     done
 }
 
-powershell -NoProfile -ExecutionPolicy Bypass -File C:/Dev/Exo/src/tools/vddcontent.ps1 -Seconds $((S + 15)) $STATIC > $T/content.log 2>&1 &
-sleep 3
 hub $T/hub.log --display $SERIAL --seconds $S
+# The EXO monitor exists once the phone connects; the content goes on it then.
+until grep -q "vdisp EXO0001 on the desktop" $T/hub.log; do sleep 0.2; done
+powershell -NoProfile -ExecutionPolicy Bypass -File C:/Dev/Exo/src/tools/vddcontent.ps1 -Seconds $S $STATIC > $T/content.log 2>&1 &
 # logcat streams for the whole run rather than being cleared and dumped:
 # a clear raced the hub's launch, and the tablet's buffer wrapped before the
 # dump. -T replays from a device time, so lines logged before the stream
@@ -50,7 +51,7 @@ LOGPID=$!
 adb -s $SERIAL shell "rm -f $FILES/*-link-*.csv"
 adb -s $SERIAL shell dumpsys SurfaceFlinger --timestats -disable -clear >/dev/null
 adb -s $SERIAL shell dumpsys SurfaceFlinger --timestats -enable >/dev/null
-# Each relaunch is a new connection on whatever the VDD shows. -S kills the
+# Each relaunch is a new connection on whatever the EXO monitor shows. -S kills the
 # running app, so the connection it ends leaves no CSV; logcat has its times.
 for i in $(seq 1 $RELAUNCH); do
     sleep $((S / (RELAUNCH + 1)))

@@ -65,10 +65,16 @@ fi
 
 # A closed line within 5s of the end is the normal stop.
 end=$(awk '/^totals/{print $2+0}' hub.log)
-faults=$(grep -cE "REFUSED|SERVER DIED|tracking ended|STALLED|has failed|STOPPED|LOST #|RESEND .*heartbeat|write failed|IDLE sent|DEPARTED" hub.log)
+# Heartbeats in the first 10s are the still desktop before the moving
+# content starts, which waits for the EXO monitor (linkrun.sh), not stalls.
+faultlines() {
+    grep -E "REFUSED|SERVER DIED|tracking ended|STALLED|has failed|STOPPED|LOST #|RESEND .*heartbeat|write failed|IDLE sent|DEPARTED" hub.log |
+        awk '!($0 ~ /RESEND .*heartbeat/ && $1+0 < 10)'
+}
+faults=$(faultlines | wc -l)
 early=$(grep -E "closed" hub.log | awk -v e="${end:-0}" '$1+0 < e-5' | wc -l)
 verdict $((faults + early)) "hub fault lines: $faults, connections closed before the end: $early"
-grep -E "REFUSED|SERVER DIED|tracking ended|STALLED|has failed|STOPPED|LOST #|RESEND .*heartbeat|write failed|IDLE sent|DEPARTED" hub.log | head -5 | sed 's/^/      /'
+faultlines | head -5 | sed 's/^/      /'
 
 csv=$(ls *-link-*.csv 2>/dev/null | grep -vE -- '-(cursor|pongs)\.csv$' | head -1)
 if [ -n "$csv" ]; then

@@ -1,6 +1,6 @@
 #!/bin/sh
 # PROJECT_SPEC SC-11, an hour of both. The S21 as camera feeding Chrome, the
-# TB375FC as display with moving content on the VDD, one hub for N seconds.
+# TB375FC as display with moving content on the EXO monitor, one hub for N seconds.
 # Shaped like linkrun.sh: hub, live logcat from a device time, timestats,
 # then a second hub with no role to collect. Adds the Chrome page
 # (campage.ps1) and a once-a-minute heat and battery sample per phone.
@@ -43,10 +43,11 @@ sample() {
 powershell -NoProfile -ExecutionPolicy Bypass -File C:/Dev/Exo/src/tools/campage.ps1 \
     -Log "$(cygpath -w $T/page.log)" -Seconds $((S + 300)) > $T/campage.txt 2>&1 &
 PAGEPID=$!
-powershell -NoProfile -ExecutionPolicy Bypass -File C:/Dev/Exo/src/tools/vddcontent.ps1 -Seconds $((S + 80)) > $T/content.log 2>&1 &
-sleep 3
 say "hub start, --seconds $S"
 hub $T/hub.log --camera $CAM --display $DISP --seconds $S
+# The EXO monitor exists once the phone connects; the content goes on it then.
+until grep -q "vdisp EXO0001 on the desktop" $T/hub.log; do sleep 0.2; done
+powershell -NoProfile -ExecutionPolicy Bypass -File C:/Dev/Exo/src/tools/vddcontent.ps1 -Seconds $((S + 60)) > $T/content.log 2>&1 &
 HUB0=$(date +%s)
 say "hub holds the device list"
 

@@ -1,8 +1,9 @@
-# Fills the VDD with static text plus motion, repainting as fast
-# as possible, then closes itself after $Seconds. -Static paints the
+# Fills the virtual display, the one screen not primary, with static text
+# plus motion, repainting as fast as possible, then closes itself after
+# $Seconds. -Static paints the
 # text once, with no motion, so DWM presents nothing more (DECISIONS 5.4).
 # -Screen picks a display by name (\\.\DISPLAYn) when more than one is not
-# primary, as when SuperDisplay's monitor is attached beside the VDD.
+# primary.
 param([int]$Seconds = 150, [switch]$Static, [string]$Screen)
 
 Add-Type @"

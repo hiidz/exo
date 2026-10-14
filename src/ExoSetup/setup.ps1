@@ -16,8 +16,8 @@
 #   3. a desktop shortcut that starts the hub with the chosen roles
 #   4. the phone app on every attached phone
 #
-# Not done here, by hand once (CLAUDE.md, External dependency): the Virtual
-# Display Driver. Printed at the end of an install.
+# Not done here, by hand once: the display driver, src/ExoDisplay's
+# build.bat and install.ps1. Printed at the end of an install.
 param([string]$Camera, [string]$Display, [switch]$Uninstall)
 
 $root = (Resolve-Path "$PSScriptRoot\..\..").Path
@@ -113,14 +113,10 @@ $lnk.Save()
 Step 'phone app'
 OnEachPhone { param($s) "$s install: $(& $adb -s $s install -r $apk 2>&1 | Select-Object -Last 1)" }
 
-Step 'by hand, once: the Virtual Display Driver'
+Step 'by hand, once: the display driver'
 @'
-1. Install VirtualDrivers/Virtual-Display-Driver through its Virtual Driver
-   Control app.
-2. Add the display phone's panel resolution in landscape (2944x1840 for the
-   TB375FC) to C:\VirtualDisplayDriver\vdd_settings.xml, then restart the
-   driver (Disable-PnpDevice, then Enable-PnpDevice, elevated).
-3. Set the new display to that resolution and extend the desktop onto it.
+src/ExoDisplay/build.bat, then src/ExoDisplay/install.ps1. Its monitor
+appears only while the display phone is connected.
 BLACK SCREEN: Windows may put everything on the virtual display. Blind
 recovery: Win+P, arrow, Enter for "PC screen only". Win+Ctrl+Shift+B
 resets the graphics stack.

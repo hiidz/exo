@@ -13,6 +13,7 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using ExoHub.Camera;
+using ExoHub.Display;
 using ExoHub.Touch;
 
 namespace ExoHub.Link;
@@ -29,6 +30,7 @@ sealed class DeviceListener : IDisposable
     readonly DisplaySender sender;
     readonly TouchInjector touch;   // TOUCH from the display connection (FR-3.3)
     readonly CameraDecoder camera;  // null: the camera role is refused
+    readonly VirtualDisplay monitor;  // plugged for the display connection
     readonly object gate = new();
     Connection display;     // under gate
     Connection cameraConn;  // under gate
@@ -46,9 +48,11 @@ sealed class DeviceListener : IDisposable
         public readonly byte Rotation = rotation;  // clockwise quarter turns, 0 or 2
     }
 
-    public DeviceListener(int port, Stopwatch clock, DisplaySender sender, TouchInjector touch, CameraDecoder camera)
+    public DeviceListener(int port, Stopwatch clock, DisplaySender sender, TouchInjector touch, CameraDecoder camera,
+                          VirtualDisplay monitor)
     {
         this.clock = clock;
+        this.monitor = monitor;
         this.sender = sender;
         this.touch = touch;
         this.camera = camera;
@@ -108,6 +112,7 @@ sealed class DeviceListener : IDisposable
             }
             s.SendBufferSize = SendBufferBytes;
             Log($"{conn.Serial} send buffer {s.SendBufferSize} bytes, nodelay {s.NoDelay}");
+            monitor.Connected(conn.Serial);
             sender.Attach(net, conn.Serial);
             try
             {
@@ -116,6 +121,7 @@ sealed class DeviceListener : IDisposable
             finally
             {
                 sender.Detach(net);
+                monitor.Disconnected(conn.Serial);
                 touch.ConnectionEnded();
             }
         }

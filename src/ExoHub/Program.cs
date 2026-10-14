@@ -1,15 +1,17 @@
-// ExoHub. Build order item 3, step 4: hardware H.264 encode.
+// ExoHub.
 //
-// Duplicates the virtual display and logs what every AcquireNextFrame
-// returns. Any failure drops the duplication and rebuilds it, forever, per
-// DECISIONS 5.5. Every new image is converted to NV12 by the video
-// processor while the frame is held, then offered to the hardware encoder
-// once it is released. No network. Ctrl+C stops it and prints totals.
+// Plugs ExoDisplay's monitor while the display phone is connected
+// (VirtualDisplay), takes each new image of it from the driver
+// (DriverFrameSource), converts it to NV12 on the GPU while it is held, and
+// offers it to the hardware encoder once it is released. Any loss drops the
+// texture and reopens it, forever. The pointer comes from the driver on its
+// own thread (DriverCursor). Ctrl+C stops it and prints totals.
 //
-// Usage: ExoHub [monitorId] [--debug] [--seconds N] [--dump F] [--fps N] [--out F] [--display SERIAL]
-//               [--camera SERIAL | --camera-file F] [--camera-geometry W H S]
-// monitorId is the EDID code Windows shows for the monitor, e.g. ACR0721.
-// Without one, the virtual display is used.
+// Usage: ExoHub [--debug] [--seconds N] [--dump F] [--fps N] [--out F] [--display SERIAL]
+//               [--panel WxH] [--camera SERIAL | --camera-file F] [--camera-geometry W H S]
+// --panel WxH the display phone's panel, landscape, which the monitor
+//             offers at 60 and 30. 2944x1840, the TB375FC's, until the
+//             phone sends its own (build step 2).
 // --debug     D3D11 debug layer on, messages printed as they arrive. Slow.
 // --seconds N stop after N seconds, as if Ctrl+C was pressed.
 // --dump F    write the first converted frame to F as raw NV12. The one
@@ -43,11 +45,7 @@ using Vortice.Direct3D11;
 using Vortice.DXGI;
 using Vortice.MediaFoundation;
 
-// EDID manufacturer and product code of the Virtual Display Driver monitor.
-// Measured 2026-10-09: Get-PnpDevice shows DISPLAY\MTT1337\..., "VDD by MTT".
-const string VddMonitorId = "MTT1337";
-
-// The longest the capture loop waits in AcquireNextFrame, which can wait on
+// The longest the capture loop waits for an image, which can wait on
 // nothing else. A new connection is noticed within this (DECISIONS 5.4).
 const double WakeMs = 100;
 
@@ -74,7 +72,7 @@ using (IDXGIFactory1 factory = DXGI.CreateDXGIFactory1<IDXGIFactory1>())
     foreach (OutputInfo o in Outputs.List(factory))
         Console.WriteLine($"  {o}");
 
-string wanted = VddMonitorId;
+uint panelWidth = 2944, panelHeight = 1840;
 bool debugLayer = false;
 double seconds = 0;
 string dumpPath = null;
@@ -101,6 +99,11 @@ for (int i = 0; i < args.Length; i++)
         case "--dump": dumpPath = args[++i]; break;
         case "--out": outPath = args[++i]; break;
         case "--display": displaySerial = args[++i]; break;
+        case "--panel":
+            string[] wh = args[++i].Split('x');
+            panelWidth = uint.Parse(wh[0]);
+            panelHeight = uint.Parse(wh[1]);
+            break;
         case "--camera-geometry":
             camWidth = int.Parse(args[++i]);
             camHeight = int.Parse(args[++i]);
@@ -108,7 +111,9 @@ for (int i = 0; i < args.Length; i++)
             break;
         case "--camera-file": cameraFile = args[++i]; break;
         case "--camera": cameraSerial = args[++i]; break;
-        default: wanted = args[i]; break;
+        default:
+            Console.WriteLine($"unknown argument {args[i]}");
+            return 2;
     }
 }
 
@@ -162,7 +167,10 @@ if (refused != null)
 // the session ID in WELCOME it is the per-session identifier (5.7, 5.8).
 using var display = new DisplaySender(clock);
 var touch = new TouchInjector(clock);
-using var devices = new DeviceListener(0, clock, display, touch, cameraSerial != null ? decoder : null);
+// Before the listener, which tells it when the display connection comes
+// and goes.
+using var monitor = new VirtualDisplay(clock, panelWidth, panelHeight);
+using var devices = new DeviceListener(0, clock, display, touch, cameraSerial != null ? decoder : null, monitor);
 Console.WriteLine($"listening on 127.0.0.1:{devices.Port}, session {devices.SessionId:x16}");
 // One setup per device, holding every role it was given, so a phone with
 // both is launched once (DECISIONS 10 item 4, D2b).
@@ -184,8 +192,11 @@ var tracker = new DeviceTracker(adb, clock, (serial, state) =>
 });
 int exitCode = 0;
 
-using var source = new DesktopDuplicationSource(wanted, debugLayer);
-Console.WriteLine($"target monitor {wanted}, heartbeat {HeartbeatMs}ms, wake {WakeMs}ms, debug layer {(debugLayer ? "ON" : "off")}, " +
+using var source = new DriverFrameSource(monitor, debugLayer);
+// The pointer the phone draws (DECISIONS 11.1), from the driver.
+using var pointer = new DriverCursor(clock, display, () => source.Output);
+Console.WriteLine($"target monitor {VirtualDisplay.MonitorId}, heartbeat {HeartbeatMs}ms, wake {WakeMs}ms, " +
+                  $"debug layer {(debugLayer ? "ON" : "off")}, " +
                   $"{(seconds > 0 ? $"stopping after {seconds}s" : "Ctrl+C to stop")}");
 Console.WriteLine();
 
@@ -232,16 +243,16 @@ void Retire(H264Encoder e)
 }
 int debugMessages = 0;
 
-// Which texture objects duplication hands out. If it is one object
-// reused, a per-frame input view could become a cached one; until then the
-// view is made per frame.
+// Which texture objects the source hands out: one per driver texture. A
+// per-frame input view could become a cached one; until then the view is
+// made per frame.
 var textures = new HashSet<IntPtr>();
 
 // Per-frame Blt times, for the totals. The first NFR-1 data point.
 var submitMs = new List<double>();
 
-// Runs inside Next, between AcquireNextFrame and ReleaseFrame. Records
-// what to print and returns, so printing never lengthens the frame hold.
+// Runs inside Next, while the texture is held. Records what to print and
+// returns, so printing never lengthens the hold.
 bool rebuilt = false;
 Texture2DDescription rebuiltFor = default;
 Nv12Frame converted = null;  // handed to the encoder after the frame is released
@@ -257,15 +268,12 @@ void OnNewImage(ID3D11Texture2D texture)
 
 var sinceLoss = Stopwatch.StartNew();  // startup counts as the first loss
 int losses = 0, failedAttempts = 0;
-int timeouts = 0, newImages = 0, cursorOnly = 0, disagreements = 0;
-long prevPresent = 0, prevMouse = 0;
+int timeouts = 0, newImages = 0, frameGaps = 0;
+long prevPresent = 0;
+uint prevFrame = 0;
 long lastOfferQpc = 0;  // 0: never, so the first resend is due at once
-int resends = 0;
-// The pointer the phone draws (DECISIONS 11.1). Fed from every acquired
-// frame, after the frame is released.
-var cursor = new CursorTracker();
-bool shapeSinceOpen = false;  // whether this duplication has given a shape yet
-int cursorDisagreements = 0;
+long lastPlacementQpc = 0;
+int resends = 0, moves = 0;
 
 while (!stop.IsCancellationRequested)
 {
@@ -280,6 +288,14 @@ while (!stop.IsCancellationRequested)
 
     if (!source.IsOpen)
     {
+        // The monitor exists only while a display phone is connected, and
+        // has images once Windows has it on the desktop.
+        if (!monitor.Ready)
+        {
+            stop.Token.WaitHandle.WaitOne((int)WakeMs);
+            sinceLoss.Restart();
+            continue;
+        }
         try
         {
             source.Reopen();
@@ -296,17 +312,14 @@ while (!stop.IsCancellationRequested)
             continue;
         }
 
-        // isCurrent is printed again here, after recovery, because spike 2
-        // could not tell whether it fires per event or latches false. With a
-        // fresh factory it reads true here, and the next loss line tells.
         OutputInfo o = source.Output;
         Console.WriteLine($"{t} {(losses == 0 ? "opened" : "recovered")} after {failedAttempts} failed attempts " +
                           $"in {sinceLoss.ElapsedMilliseconds}ms: {source.Width}x{source.Height} {source.Format} " +
-                          $"at ({o.Left},{o.Top}) {o.GdiName} isCurrent={source.FactoryIsCurrent} factories={source.FactoriesCreated}");
+                          $"@{source.RefreshRate.Numerator}/{source.RefreshRate.Denominator} at ({o.Left},{o.Top}) {source.Name}");
         failedAttempts = 0;
-        prevPresent = prevMouse = 0;  // gaps are measured within one duplication only
-        shapeSinceOpen = false;
+        prevPresent = 0;  // gaps are measured within one texture only
         touch.Target = CheckTouchTarget(o, t);
+        lastPlacementQpc = Stopwatch.GetTimestamp();
         // DECISIONS 5.4: the heartbeat is due at once after a recovery, and
         // carries the forced IDR below if no new image comes first.
         lastOfferQpc = 0;
@@ -324,19 +337,19 @@ while (!stop.IsCancellationRequested)
     }
 
     rebuilt = false;
-    Result r;
-    FrameKind kind;
-    OutduplFrameInfo info;
     // Until the heartbeat is due, capped so a new connection is noticed
     // soon. At least 1ms: a 0 timeout returns at once and would spin. When
     // no resend can happen, the cap alone, or an overdue heartbeat would
     // spin the loop at 1ms.
     bool canResend = encoder != null && display.HasDevice && !encoder.HasPending;
     double untilDue = HeartbeatMs - Stopwatch.GetElapsedTime(lastOfferQpc).TotalMilliseconds;
-    uint acquireMs = (uint)(canResend ? Math.Clamp(untilDue, 1, WakeMs) : WakeMs);
+    int waitFor = (int)(canResend ? Math.Clamp(untilDue, 1, WakeMs) : WakeMs);
+    FrameKind kind;
+    long presentQpc;
+    string lostWhy;
     try
     {
-        r = source.Next(acquireMs, OnNewImage, out kind, out info);
+        kind = source.Next(waitFor, OnNewImage, out presentQpc, out lostWhy);
     }
     catch when (debugLayer)
     {
@@ -350,9 +363,8 @@ while (!stop.IsCancellationRequested)
 
     if (rebuilt)
     {
-        // The duplication texture's own description, next to the mode the
-        // duplication reported. Spike 5's dupflags read these from the
-        // primary monitor; this is the VDD.
+        // The shared texture's own description, next to the mode Windows
+        // runs the monitor at.
         var d = rebuiltFor;
         Console.WriteLine($"{t} converter build #{converter.Rebuilds} for {d.Width}x{d.Height} {d.Format} " +
                           $"(mode {source.Width}x{source.Height} @{source.RefreshRate.Numerator}/{source.RefreshRate.Denominator}), " +
@@ -363,8 +375,8 @@ while (!stop.IsCancellationRequested)
     }
 
     // The converter has no size until it has converted a frame, and the
-    // first acquire after a Reopen is often a timeout or cursor-only.
-    // Building then gave the encoder a 0x0 type, which it refused.
+    // first wait after a Reopen often times out. Building then gave the
+    // encoder a 0x0 type, which it refused.
     if (converter.Width != 0 &&
         (encoder == null || encoder.Width != converter.Width || encoder.Height != converter.Height))
     {
@@ -379,9 +391,8 @@ while (!stop.IsCancellationRequested)
             Console.WriteLine($"           {line}");
     }
 
-    // After ReleaseFrame, so handing over never lengthens the frame hold.
-    // Even when ReleaseFrame reported a loss: the Blt ran while the frame
-    // was held, so the image is good.
+    // After the texture is released, so handing over never lengthens the
+    // hold. The Blt ran while it was held, so the image is good.
     if (converted != null)
     {
         if (dumpPath != null)
@@ -389,7 +400,7 @@ while (!stop.IsCancellationRequested)
             DumpAndDecode(converter, dumpPath, t);
             dumpPath = null;
         }
-        encoder.Offer(converted, info.LastPresentTime);
+        encoder.Offer(converted, presentQpc);
         lastOfferQpc = Stopwatch.GetTimestamp();
         converted = null;
     }
@@ -405,14 +416,31 @@ while (!stop.IsCancellationRequested)
     if (converter.Pool?.Error != null)
         throw new InvalidOperationException($"pool return callback failed: {converter.Pool.Error}");
 
-    if (r.Failure)
+    // A move in Settings brings no new texture, only a new place for touch
+    // to land, so the place is read again every heartbeat.
+    if (kind != FrameKind.Lost && Stopwatch.GetElapsedTime(lastPlacementQpc).TotalMilliseconds >= HeartbeatMs)
+    {
+        lastPlacementQpc = Stopwatch.GetTimestamp();
+        if (!source.RefreshPlacement(out bool moved))
+        {
+            kind = FrameKind.Lost;
+            lostWhy = $"{VirtualDisplay.MonitorId} is no longer on the desktop";
+        }
+        else if (moved)
+        {
+            moves++;
+            OutputInfo o = source.Output;
+            Console.WriteLine($"{t} MOVED to ({o.Left},{o.Top}) {o.Width}x{o.Height}");
+            touch.Target = CheckTouchTarget(o, t);
+        }
+    }
+
+    if (kind == FrameKind.Lost)
     {
         losses++;
-        string what = r == Vortice.DXGI.ResultCode.AccessLost ? "ACCESS_LOST" : "acquire failed";
-        Console.WriteLine($"{t} LOST #{losses} {what} 0x{r.Code:X8} isCurrent={source.FactoryIsCurrent} " +
-                          $"removed=0x{source.DeviceRemovedReason.Code:X8}");
-        // A resolution change or a move arrives as a loss, so no touch lands
-        // on a stale rectangle; Reopen publishes the new one.
+        Console.WriteLine($"{t} LOST #{losses} {lostWhy} removed=0x{source.DeviceRemovedReason.Code:X8}");
+        // A mode change arrives as a loss, so no touch lands on a stale
+        // rectangle; Reopen publishes the new one.
         touch.Target = null;
         source.Drop();
         sinceLoss.Restart();
@@ -442,110 +470,37 @@ while (!stop.IsCancellationRequested)
         }
     }
 
-    // Counted, not printed: up to ten a second now.
+    // Counted, not printed: up to ten a second.
     if (kind == FrameKind.Timeout)
     {
         timeouts++;
         continue;
     }
 
-    // The pointer, from either kind of frame. The shape first, since its
-    // hotspot applies to a position in the same frame.
-    if (source.ShapeNew)
-    {
-        bool first = !shapeSinceOpen;
-        shapeSinceOpen = true;
-        if (cursor.TakeShape(source.ShapeInfo, source.ShapeBytes))
-        {
-            display.CursorShape(cursor.Shape);
-            Console.WriteLine($"{t} CURSOR SHAPE #{cursor.ShapeChanges} {cursor.Shape}, " +
-                              $"{source.ShapeBytes.Length} bytes raw{(first ? ", first from this duplication" : "")}");
-        }
-    }
-    if (info.LastMouseUpdateTime != 0)
-    {
-        bool wasVisible = cursor.Known && cursor.Visible;
-        bool moved = cursor.TakePosition(info.PointerPosition);
-        if (moved)
-            display.CursorPos(cursor.Visible, cursor.X, cursor.Y, info.LastMouseUpdateTime);
-        if (moved && cursor.Visible != wasVisible)
-        {
-            if (cursor.Visible)
-            {
-                // GetCursorPos is the hotspot in virtual-desktop pixels. With
-                // the mouse still, it minus the output's origin must equal
-                // what DXGI's top-left plus the shape's hotspot gave.
-                Win32.GetCursorPos(out Win32.POINT cp);
-                OutputInfo o = source.Output;
-                int gx = cp.X - o.Left, gy = cp.Y - o.Top;
-                bool agree = gx == cursor.X && gy == cursor.Y;
-                if (!agree) cursorDisagreements++;
-                Console.WriteLine($"{t} CURSOR ENTERED at picture ({cursor.X},{cursor.Y}); GetCursorPos ({cp.X},{cp.Y}) " +
-                                  $"is picture ({gx},{gy}), {(agree ? "agrees" : "DIFFERS")}" +
-                                  (cursor.Shape == null ? "; no shape yet" : ""));
-            }
-            else
-            {
-                Console.WriteLine($"{t} CURSOR LEFT");
-            }
-        }
-    }
+    newImages++;
+    string blt = poolEmpty ? " DROPPED, every pool frame in use" : $" blt={converter.LastSubmitMs:F2}ms";
+    if (!poolEmpty)
+        submitMs.Add(converter.LastSubmitMs);
 
-    string blt = "";
-    if (kind == FrameKind.NewImage)
-    {
-        newImages++;
-        if (poolEmpty)
-        {
-            blt = " DROPPED, every pool frame in use";
-        }
-        else
-        {
-            submitMs.Add(converter.LastSubmitMs);
-            blt = $" blt={converter.LastSubmitMs:F2}ms";
-        }
-    }
-    else
-    {
-        cursorOnly++;
-    }
-
-    // Spike 2 never saw these two indicators disagree, on one machine. Keep
-    // counting rather than assume it holds everywhere.
-    bool disagree = (info.LastPresentTime > 0) != (info.AccumulatedFrames > 0);
-    if (disagree) disagreements++;
-
-    // Timestamps are 100ns units (spike 2), so /10000 is milliseconds. Print
-    // the gap since the previous nonzero value; 0 means "did not change".
-    string present = info.LastPresentTime > 0 && prevPresent > 0
-        ? $"+{(info.LastPresentTime - prevPresent) / 10000.0:F1}ms" : (info.LastPresentTime > 0 ? "first" : "-");
-    string mouse = info.LastMouseUpdateTime > 0 && prevMouse > 0
-        ? $"+{(info.LastMouseUpdateTime - prevMouse) / 10000.0:F1}ms" : (info.LastMouseUpdateTime > 0 ? "first" : "-");
-    if (info.LastPresentTime > 0) prevPresent = info.LastPresentTime;
-    if (info.LastMouseUpdateTime > 0) prevMouse = info.LastMouseUpdateTime;
-
-    // PointerPosition is only filled in when the mouse updated in this
-    // frame (LastMouseUpdateTime nonzero). Otherwise it reads as hidden at
-    // (0,0), which would be a lie.
-    // Cursor-only frames come every 1ms while the mouse moves on the VDD
-    // (a 1000Hz mouse, measured 2026-10-12), so they are counted, and printed
-    // only when they bring a shape.
-    if (kind == FrameKind.CursorOnly && !source.ShapeNew)
-        continue;
-    var p = info.PointerPosition;
-    string pointer = info.LastMouseUpdateTime == 0 ? "-"
-        : p.Visible ? $"visible({p.Position.X},{p.Position.Y})" : "hidden";
-
-    Console.WriteLine($"{t} {(kind == FrameKind.NewImage ? "NEW   " : "CURSOR")} " +
-                      $"acc={info.AccumulatedFrames} present={present} mouse={mouse} " +
-                      $"ptr={pointer} shape={info.PointerShapeBufferSize} meta={info.TotalMetadataBufferSize}" +
-                      blt + (disagree ? "  INDICATORS DISAGREE" : ""));
+    // Images the driver replaced before the hub took them show as skipped
+    // frame numbers. The present time is when Windows means the image
+    // shown, so it runs a few ms ahead of now.
+    var f = source.Last;
+    int skipped = prevFrame != 0 && f.FrameNumber > prevFrame ? (int)(f.FrameNumber - prevFrame - 1) : 0;
+    frameGaps += skipped;
+    string present = presentQpc > 0 && prevPresent > 0
+        ? $"+{(presentQpc - prevPresent) * 1000.0 / Stopwatch.Frequency:F1}ms" : "first";
+    prevPresent = presentQpc;
+    prevFrame = f.FrameNumber;
+    Console.WriteLine($"{t} NEW    frame={f.FrameNumber} present={present}" +
+                      (skipped > 0 ? $" skipped={skipped}" : "") +
+                      $" copied={f.Copied} waited={f.Waited}" + blt);
 }
 
 Console.WriteLine();
 Console.WriteLine($"totals {clock.Elapsed.TotalSeconds:F1}s  losses={losses} timeouts={timeouts} newImages={newImages} " +
-                  $"cursorOnly={cursorOnly} disagreements={disagreements}");
-Console.WriteLine($"converter builds={converter?.Rebuilds ?? 0} distinct duplication textures={textures.Count} " +
+                  $"frames skipped={frameGaps} moves={moves}");
+Console.WriteLine($"converter builds={converter?.Rebuilds ?? 0} distinct textures={textures.Count} " +
                   $"debug messages={(debugLayer ? debugMessages.ToString() : "n/a")}");
 if (debugLayer && source.Device != null)
 {
@@ -571,10 +526,11 @@ Console.WriteLine($"encoders built={encodersBuilt} submitted={encSubmitted} repl
                   $"({encBytes * 8 / Math.Max(clock.Elapsed.TotalSeconds, 0.001) / 1e6:F1} Mbps over the whole run, " +
                   $"{(encOutputs > 0 ? encBytes / encOutputs / 1024 : 0)}KB a frame)");
 Console.WriteLine($"resends={resends} present times clamped={encClamped}");
+pointer.Dispose();
+CursorTracker cursor = pointer.Tracker;
 Console.WriteLine($"cursor shape changes={cursor.ShapeChanges} position changes={cursor.PositionChanges} " +
-                  $"visible without a shape={cursor.PositionsWithoutShape} GetCursorPos disagreements={cursorDisagreements} " +
-                  $"shape read failures={source.ShapeFailures}" +
-                  (source.ShapeFailures > 0 ? $" last 0x{source.LastShapeFailure.Code:X8}" : ""));
+                  $"visible without a shape={cursor.PositionsWithoutShape} GetCursorPos disagreements={pointer.Disagreements} " +
+                  $"driver read failures={pointer.ReadFailures}");
 Console.WriteLine($"gate waits={encGateWaits} unmatched outputs={encUnmatched} " +
                   $"submit rate={encSubmitted / Math.Max(clock.Elapsed.TotalSeconds, 0.001):F1}/s");
 Console.WriteLine($"present->blt    ms {Spread(presentToBlt)}");
@@ -586,6 +542,8 @@ Console.WriteLine($"gate timer late ms {Spread(timerLate)}");
 // sender's counts stop moving, and ends the camera connection on a closed
 // socket rather than on a disposed decoder, which it logs as a failure.
 devices.Dispose();
+// Unplugs the monitor now rather than leaving it to the driver's watchdog.
+monitor.Dispose();
 pattern?.Dispose();
 decoder?.Dispose();
 // Before L7 closes, so the DLL in the Frame Server gets Shutdown with its
@@ -641,8 +599,8 @@ static void DumpAndDecode(Nv12Converter converter, string path, string t)
 }
 
 // Where touch lands: DXGI's rectangle for the duplicated output, checked
-// against the monitor rectangle Windows gives for its centre (CLAUDE.md,
-// Touch). Null, so touch is refused, if the two disagree.
+// against the monitor rectangle Windows gives for its centre (traps-touch
+// rule). Null, so touch is refused, if the two disagree.
 static OutputInfo CheckTouchTarget(OutputInfo o, string t)
 {
     var centre = new Win32.POINT { X = o.Left + o.Width / 2, Y = o.Top + o.Height / 2 };

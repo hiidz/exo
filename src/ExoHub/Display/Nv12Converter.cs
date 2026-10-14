@@ -88,8 +88,8 @@ sealed class Nv12Converter : IDisposable
     }
 
     // Converts one frame into a frame from the pool. Must be called while
-    // the frame is acquired, which is what DesktopDuplicationSource.Next's
-    // callback guarantees. rebuilt is true when this frame caused a rebuild.
+    // the texture is held, which is what DriverFrameSource.Next's callback
+    // guarantees. rebuilt is true when this frame caused a rebuild.
     // Returns null when every pool frame is in use, and the image is dropped.
     public Nv12Frame Convert(ID3D11Texture2D bgra, Rational frameRate, out bool rebuilt)
     {
