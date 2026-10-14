@@ -2,7 +2,7 @@ using static ExoHub.Win32;
 
 namespace ExoHub.Display;
 
-// Where the EXO monitor sits on the desktop (CLAUDE.md, display driver
+// Where the EXO monitor sits on the desktop (PLAN.md, display driver
 // decision): extended, never primary, never a clone. Windows extends onto a
 // new monitor by itself and remembers where the user put it, so this acts
 // only when the monitor is inactive, overlaps another display, or is

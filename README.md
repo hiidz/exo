@@ -82,4 +82,4 @@ role. The camera phone sends H.264, which the hub decodes once and hands
 to ExoCamera.dll (C++), the media source Windows loads into its camera
 service. For the display, Exo's display driver hands each image of the
 virtual monitor to the hub on the GPU; the hub encodes it to H.264 and
-sends it to the phone, which decodes and shows it, and sends touches back. Details in `CLAUDE.md`.
+sends it to the phone, which decodes and shows it, and sends touches back. Details in `PLAN.md`.
