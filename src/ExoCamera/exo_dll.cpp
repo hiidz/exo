@@ -206,7 +206,7 @@ static LONG SetString(const char* subkey, const char* name, const char* value)
 }
 
 // HKLM, never HKCU: the Frame Server runs as LOCAL SERVICE, whose HKCU is
-// not the user's (CLAUDE.md). So this needs an elevated regsvr32.
+// not the user's (traps-camera). So this needs an elevated regsvr32.
 // ThreadingModel Both: COM may call the objects from any thread, and they
 // lock for themselves.
 STDAPI DllRegisterServer(void)

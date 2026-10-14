@@ -49,7 +49,7 @@ static DWORD GetU32(const BYTE* p) { return (DWORD)GetU16(p) << 16 | GetU16(p + 
 static LONGLONG GetI64(const BYTE* p) { return (LONGLONG)((ULONGLONG)GetU32(p) << 32 | GetU32(p + 4)); }
 
 // Once per process. Never paired with WSACleanup: this DLL must not be the
-// one that drops Winsock's count while a host process tears down (CLAUDE.md).
+// one that drops Winsock's count while a host process tears down (traps-camera).
 static INIT_ONCE g_wsaOnce = INIT_ONCE_STATIC_INIT;
 static int g_wsaResult = -1;
 static BOOL CALLBACK StartWinsock(PINIT_ONCE, PVOID, PVOID*)
@@ -354,7 +354,7 @@ void ExoLink::ReadFrames()
             stride = GetU32(m_scratch + 20);
         }
         // Geometry comes with every frame and is checked, never assumed: a
-        // wrong stride is an out-of-bounds read inside svchost (CLAUDE.md).
+        // wrong stride is an out-of-bounds read inside svchost (traps-camera).
         // Computed in 64 bits, so no stride can wrap the size to a small one.
         ULONGLONG want = kBodyPrefix + (ULONGLONG)stride * h * 3 / 2;
         bool fits = length >= kBodyPrefix && w == EXO_WIDTH && h == EXO_HEIGHT && stride >= w && want == length;

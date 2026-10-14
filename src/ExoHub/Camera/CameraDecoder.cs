@@ -15,7 +15,7 @@
 // TCP socket, so a hardware decoder's GPU output would be read back anyway
 // (TECHNICAL_DESIGN 2.5), and 720p at 30fps is light work for a CPU.
 //
-// Geometry comes from the decoder, never a constant (CLAUDE.md). Its first
+// Geometry comes from the decoder, never a constant (traps-camera). Its first
 // ProcessOutput answers STREAM_CHANGE once it has parsed the SPS; the
 // output type is then set again and its frame size and stride read back,
 // and every frame goes onto L7 at exactly that size and stride.

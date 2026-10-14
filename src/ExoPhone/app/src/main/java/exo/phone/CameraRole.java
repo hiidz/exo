@@ -106,7 +106,7 @@ final class CameraRole {
         f.setInteger(MediaFormat.KEY_BIT_RATE, BITRATE);
         f.setInteger(MediaFormat.KEY_FRAME_RATE, FPS);
         f.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
-        // An encoder key: frames out as they are encoded, not batched (CLAUDE.md).
+        // An encoder key: frames out as they are encoded, not batched (traps-phone).
         if (Build.VERSION.SDK_INT >= 30) f.setInteger(MediaFormat.KEY_LATENCY, 1);
         encoder = MediaCodec.createEncoderByType(Codecs.AVC);
         encoder.configure(f, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);

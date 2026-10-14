@@ -1,6 +1,6 @@
 // ExoCamera's file logger. This DLL runs inside svchost (LOCAL SERVICE), the
 // hub, and possibly camera apps, where a debugger is impractical, so the log
-// is the debugger (CLAUDE.md, TECHNICAL_DESIGN 3.4).
+// is the debugger (traps-camera, TECHNICAL_DESIGN 3.4).
 //
 // One file per process: C:\Windows\Temp\Exo\logs\exo-<exe>-<pid>.log. The
 // exe name in the file name records which processes loaded the DLL.

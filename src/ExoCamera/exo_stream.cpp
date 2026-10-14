@@ -339,7 +339,7 @@ void ExoStream::Tick()
 // apart, into dst's buffer. dst's row pitch comes from the buffer itself:
 // the Frame Server's samples may be GPU surfaces whose rows are padded, and
 // a pitch assumed from a constant would write out of bounds inside svchost
-// (CLAUDE.md). The UV plane follows pitch * height bytes after the first
+// (traps-camera). The UV plane follows pitch * height bytes after the first
 // row, as the prototype placed it (ExoCamSource/MediaStream.cpp:412).
 HRESULT ExoStream::CopyPicture(IMFMediaBuffer* src, IMFSample* dst)
 {

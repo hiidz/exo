@@ -19,7 +19,7 @@ import java.io.IOException;
  * service use the camera only if it was started while the app was visible,
  * which is why MainActivity shows itself over the lock screen and starts it.
  *
- * A partial wake lock keeps the CPU running with the screen off (CLAUDE.md).
+ * A partial wake lock keeps the CPU running with the screen off (traps-phone).
  * The service runs until the app is force-stopped, which the hub does with
  * am start -S on every launch.
  */

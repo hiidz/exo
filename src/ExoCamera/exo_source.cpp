@@ -45,7 +45,7 @@ HRESULT ExoSource::Init()
 {
     // Reference counted by Media Foundation. Never paired with MFShutdown:
     // this DLL lives in processes it does not own, and dropping a global
-    // count during their teardown is the mistake CLAUDE.md names for
+    // count during their teardown is the mistake traps-camera names for
     // WSACleanup.
     HRESULT hr = MFStartup(MF_VERSION, MFSTARTUP_LITE);
     if (FAILED(hr)) return hr;
