@@ -4,9 +4,10 @@
 // The encoder hands frames over on a Media Foundation thread under its own
 // lock, so Put only copies into a queue. This class's thread does the
 // blocking socket writes. The encoder asks Busy before each input and gets
-// none while a frame is still waiting here, so a slow phone holds back the
-// encoder and the drop lands on raw frames, where its Offer already keeps
-// only the newest. Encoded frames are never dropped singly.
+// none while a frame is still waiting here, or while MaxInFlight frames are
+// sent and not yet acked by the phone, so a slow phone or link holds back
+// the encoder and the drop lands on raw frames, where its Offer already
+// keeps only the newest. Encoded frames are never dropped singly.
 
 using System.Buffers.Binary;
 using System.Diagnostics;
@@ -19,6 +20,19 @@ sealed class DisplaySender : IDisposable
 {
     public const byte FlagKeyframe = 1, FlagConfig = 2;
     const int FrameHeader = Wire.HeaderSize + 4 + 3 * 8;  // seq, present, encoded, sent
+    // Frames sent and not yet acked. Every decoder seen emits a frame with
+    // only that one queued: the median depth at output was 1 on the
+    // TB375FC (d-driver, d-long, MTK, 2944x1840) and on the S21 (Exynos,
+    // 2400x1080 at 30 and 60), peaks of 4 and 3 in bursts. So a cap this
+    // low cannot starve the decoder; it bounds what queues behind it.
+    // Measured 2026-10-14 on the S21 at 60 over USB, 20 s each, back to
+    // back: no cap 548 frames; 3, 545 frames, at the cap twice; 2, 464
+    // frames, at the cap 312 times; 1, a frame per round trip, 15/s.
+    const int MaxInFlight = 3;
+    // At the cap with no ack for this long, the frames in flight are
+    // written off, so a decoder that holds frames or a lost ack cannot
+    // freeze the display. Expected never to fire.
+    const int StallMs = 1000;
 
     sealed class Frame
     {
@@ -34,6 +48,9 @@ sealed class DisplaySender : IDisposable
     readonly Queue<Frame> waiting = new();  // under gate
     readonly Queue<(long t1, long t2)> pongs = new();  // under gate
     readonly Stack<Frame> free = new();     // under gate
+    // Sent and not yet acked, oldest first, with when each was taken to send.
+    readonly Queue<(uint seq, long qpc)> inFlight = new();  // under gate
+    readonly Timer stallCheck;
     readonly Thread thread;
     NetworkStream stream;  // under gate; null with no device
     string serial;
@@ -61,12 +78,15 @@ sealed class DisplaySender : IDisposable
     public long SentBytes;
     public readonly List<double> WaitMs = new();   // encoded to sent
     public readonly List<double> WriteMs = new();  // how long Write blocked
+    public readonly List<double> AckMs = new();    // taken to send, to acked
+    public int Acks, Acked, AtCap, StallReleases;  // AtCap: Busy said yes for the cap alone
 
     public DisplaySender(Stopwatch clock)
     {
         this.clock = clock;
         thread = new Thread(WriteLoop) { IsBackground = true, Name = "display sender" };
         thread.Start();
+        stallCheck = new Timer(_ => CheckStall(), null, 250, 250);
     }
 
     void Log(string line) => Console.WriteLine($"{clock.Elapsed.TotalSeconds,8:F3}s send {line}");
@@ -144,7 +164,70 @@ sealed class DisplaySender : IDisposable
     public bool KeyframeWanted { get { lock (gate) return keyframeWanted; } }
 
     // The encoder's TrySubmit calls these under its own lock.
-    public bool Busy { get { lock (gate) return stream != null && waiting.Count > 0; } }
+    public bool Busy
+    {
+        get
+        {
+            lock (gate)
+            {
+                if (stream == null)
+                    return false;
+                if (waiting.Count > 0)
+                    return true;
+                if (inFlight.Count < MaxInFlight)
+                    return false;
+                AtCap++;
+                return true;
+            }
+        }
+    }
+
+    // The listener's reader calls this for each ACK on the display
+    // connection: every frame up to seq is done. One from a connection since
+    // replaced, or for frames already written off, changes nothing.
+    public void Ack(NetworkStream net, uint seq)
+    {
+        Action k = null;
+        lock (gate)
+        {
+            if (stream != net)
+                return;
+            Acks++;
+            long now = Stopwatch.GetTimestamp();
+            while (inFlight.Count > 0 && (int)(seq - inFlight.Peek().seq) >= 0)
+            {
+                AckMs.Add(Ms(now - inFlight.Dequeue().qpc));
+                Acked++;
+                k = kick;
+            }
+        }
+        // Outside the lock: Kick takes the encoder's lock, and the encoder
+        // takes this one inside its own.
+        k?.Invoke();
+    }
+
+    // On a timer thread. At the cap with the oldest frame unacked for
+    // StallMs, writes them all off and lets the encoder go on.
+    void CheckStall()
+    {
+        Action k = null;
+        string why = null;
+        lock (gate)
+        {
+            if (stream == null || inFlight.Count < MaxInFlight)
+                return;
+            double ms = Ms(Stopwatch.GetTimestamp() - inFlight.Peek().qpc);
+            if (ms < StallMs)
+                return;
+            why = $"{serial} NO ACK for {ms:F0}ms with {inFlight.Count} frames in flight, seq {inFlight.Peek().seq} " +
+                  "the oldest; writing them off";
+            inFlight.Clear();
+            StallReleases++;
+            k = kick;
+        }
+        Log(why);
+        k?.Invoke();
+    }
     public bool TakeKeyframeRequest(uint encoderFps)
     {
         lock (gate)
@@ -245,6 +328,9 @@ sealed class DisplaySender : IDisposable
                 else
                 {
                     f = waiting.Dequeue();
+                    // Counted before the write, so an ack can never come
+                    // for a frame not yet in the queue.
+                    inFlight.Enqueue((f.Seq, Stopwatch.GetTimestamp()));
                     k = kick;
                     first = firstOfConnection;
                     firstOfConnection = false;
@@ -385,6 +471,7 @@ sealed class DisplaySender : IDisposable
         while (waiting.Count > 0)
             free.Push(waiting.Dequeue());
         pongs.Clear();
+        inFlight.Clear();
     }
 
     // Whether SPS (7) and PPS (8) come before the first slice (1 or 5).
@@ -415,6 +502,7 @@ sealed class DisplaySender : IDisposable
 
     public void Dispose()
     {
+        stallCheck.Dispose();
         lock (gate)
         {
             disposed = true;

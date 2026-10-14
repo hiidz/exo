@@ -66,6 +66,8 @@ final class Decoder {
     private final boolean paced, lowLatency;
     private final Surface surface;
     private final SizeListener sizeListener;
+    // The link's ACK, for each frame out (protocol 6); a no-op for a file.
+    private java.util.function.LongConsumer acks = seq -> { };
 
     private final HandlerThread thread = new HandlerThread("decode");
     private Handler handler;
@@ -95,9 +97,11 @@ final class Decoder {
      * IDR; Link discards everything before one (DECISIONS 5.3).
      */
     static Decoder ofLink(File csv, int hintWidth, int hintHeight, int fps, boolean lowLatency, String codecName,
-                          Surface surface, SizeListener sizeListener) {
-        return new Decoder(null, new ArrayBlockingQueue<>(2), csv, fps, hintWidth, hintHeight, false, lowLatency,
+                          Surface surface, SizeListener sizeListener, java.util.function.LongConsumer acks) {
+        Decoder d = new Decoder(null, new ArrayBlockingQueue<>(2), csv, fps, hintWidth, hintHeight, false, lowLatency,
                 codecName, surface, sizeListener);
+        d.acks = acks;
+        return d;
     }
 
     private Decoder(File file, ArrayBlockingQueue<Unit> live, File csv, double fps, int hintWidth, int hintHeight,
@@ -171,6 +175,8 @@ final class Decoder {
             codecName = codec.getName();
         } catch (IOException | NullPointerException e) {
             Log.e(Codecs.TAG, "no decoder for " + format, e);
+            // Finished, so offer() fails and the link ends rather than waits.
+            finish();
             return;
         }
         codec.setCallback(callback, handler);
@@ -179,10 +185,21 @@ final class Decoder {
         // of a run where SurfaceFlinger dropped 76. Rendered and dropped
         // come from dumpsys SurfaceFlinger --timestats instead.
         codec.setOnFrameRenderedListener((c, ptsUs, nanoTime) -> renderCallbacks++, handler);
-        codec.configure(format, surface, null, 0);
-        Log.i(Codecs.TAG, "configured " + codecName + " with " + format);
-        Log.i(Codecs.TAG, "input format " + codec.getInputFormat());
-        codec.start();
+        try {
+            codec.configure(format, surface, null, 0);
+            Log.i(Codecs.TAG, "configured " + codecName + " with " + format);
+            Log.i(Codecs.TAG, "input format " + codec.getInputFormat());
+            codec.start();
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            // The Surface went between the connection and here: the screen
+            // went off, or the activity left (seen 2026-10-14, the power
+            // button just after connecting). This crashed the app.
+            Log.e(Codecs.TAG, "decoder could not start: " + e);
+            codec.release();
+            codec = null;
+            finish();
+            return;
+        }
         t0Ms = SystemClock.uptimeMillis();
     }
 
@@ -228,6 +245,9 @@ final class Decoder {
             // frame is the right one.
             c.releaseOutputBuffer(index, true);
             released++;
+            // Every frame up to this one is done; one the decoder dropped
+            // is covered too.
+            if (f != null && f.u.seq >= 0) acks.accept(f.u.seq);
         }
 
         @Override

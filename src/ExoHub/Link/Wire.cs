@@ -12,7 +12,9 @@ static class Wire
     // 4: the role is picked on the phone, which names itself with an
     // identity it made, and each side states the oldest version it speaks.
     // 5: the display role's HELLO carries its mode, rate and panel size.
-    public const ushort Version = 5, Oldest = 5;
+    // 6: the display phone acks each frame it has decoded, and the hub caps
+    // the frames in flight; a phone that sent no acks would freeze at the cap.
+    public const ushort Version = 6, Oldest = 6;
 
     // HELLO is frozen up to its body: magic, the newest version the device
     // speaks u16, body length u16. From 4 on the body starts with the oldest
@@ -46,6 +48,11 @@ static class Wire
     public const byte FlagVisible = 1;
     // TOUCH, device to hub, on the display connection (FR-3.3).
     public const byte TypeTouch = 6;
+    // ACK, device to hub, on the display connection: seq u32, every FRAME
+    // up to and including it is done, decoded and on its way to the screen
+    // or discarded. Cumulative, so a frame the decoder drops is covered by
+    // the next one's ack.
+    public const byte TypeAck = 7;
 
     // L7, the hub to ExoCamera.dll link (DECISIONS 5.9). The same frozen
     // prefix and framing, its own version. The port is a constant because

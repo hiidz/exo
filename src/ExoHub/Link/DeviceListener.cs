@@ -289,6 +289,11 @@ sealed class DeviceListener : IDisposable
                 sender.Pong(net, BinaryPrimitives.ReadInt64BigEndian(body), t2);
                 continue;
             }
+            if (type == Wire.TypeAck && length == 4)
+            {
+                sender.Ack(net, BinaryPrimitives.ReadUInt32BigEndian(body));
+                continue;
+            }
             if (type == Wire.TypeTouch)
             {
                 if (!touch.Post(body.AsSpan(0, (int)length)))

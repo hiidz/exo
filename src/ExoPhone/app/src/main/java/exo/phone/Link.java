@@ -43,8 +43,11 @@ final class Link implements Runnable {
          */
         void onStatus(String sentence);
 
-        /** A decoder for one accepted connection, not yet started. name tells runs apart. */
-        Decoder newDecoder(String name);
+        /**
+         * A decoder for one accepted connection, not yet started. name tells
+         * runs apart; the decoder acks each frame it outputs through acks.
+         */
+        Decoder newDecoder(String name, java.util.function.LongConsumer acks);
 
         /** The camera for one accepted connection, not yet started. */
         CameraRole newCamera(String name);
@@ -92,14 +95,15 @@ final class Link implements Runnable {
     // 4: the role is picked here, HELLO carries this app's identity and
     // name in place of the serial, and each side states the oldest version
     // it speaks. 5: the display role's HELLO carries its mode, rate and
-    // panel size. HELLO's layout is in the hub's Wire.cs.
-    static final int VERSION = 5, OLDEST = 5;
+    // panel size. 6: the display connection acks each frame (ACK), and
+    // the hub caps the frames in flight. HELLO's layout is in the hub's Wire.cs.
+    static final int VERSION = 6, OLDEST = 6;
     static final int ROLE_CAMERA = 1, ROLE_DISPLAY = 2;
     static final int ACCEPTED = 0, VERSION_MISMATCH = 1, BAD_HELLO = 2, ROLE_TAKEN = 3;
     static final int CAMERA_UNAVAILABLE = 4, DISPLAY_UNAVAILABLE = 5;
     static final String WAITING = "Waiting for the PC. Plug this phone in by USB, with Exo running on the PC.";
     static final int FRAME = 1, PING = 2, PONG = 3, FLAG_KEYFRAME = 1, FLAG_CONFIG = 2;
-    static final int CURSOR_SHAPE = 4, CURSOR_POS = 5, TOUCH = 6, FLAG_VISIBLE = 1;
+    static final int CURSOR_SHAPE = 4, CURSOR_POS = 5, TOUCH = 6, ACK = 7, FLAG_VISIBLE = 1;
     private static final int PING_MS = 1000, SILENCE_MS = 3000;
     static final int FRAME_FIELDS = 4 + 3 * 8; // seq, present, encoded, sent
     static final int HEADER_SIZE = 8, MAX_BODY = 4 << 20;
@@ -281,7 +285,7 @@ final class Link implements Runnable {
                 cameraSession(s, in, out, name);
                 return;
             }
-            Decoder decoder = listener.newDecoder(name);
+            Decoder decoder = listener.newDecoder(name, this::sendAck);
             decoder.start();
             Counts counts = new Counts();
             ArrayList<long[]> pongs = new ArrayList<>();
@@ -408,13 +412,26 @@ final class Link implements Runnable {
      * to send it on (FR-3.3).
      */
     boolean sendTouch(byte[] body) {
+        return sendUp(TOUCH, body);
+    }
+
+    /**
+     * Every FRAME up to seq is done: decoded, or discarded. Cumulative, so a
+     * frame the decoder drops is covered by the next one's. Any thread, in
+     * order: everything up goes through the one writer thread.
+     */
+    void sendAck(long seq) {
+        sendUp(ACK, ByteBuffer.allocate(4).putInt((int) seq).array());
+    }
+
+    private boolean sendUp(int type, byte[] body) {
         Upward u = upward;
         if (u == null) return false;
         try {
             u.writer.execute(() -> {
                 try {
                     synchronized (u.out) {
-                        u.out.writeByte(TOUCH);
+                        u.out.writeByte(type);
                         u.out.writeByte(0);
                         u.out.writeShort(0);
                         u.out.writeInt(body.length);
@@ -560,6 +577,8 @@ final class Link implements Runnable {
             // DECISIONS 5.3, receiver side: nothing before SPS, PPS and an IDR.
             if (firstParams == null && flags != (FLAG_KEYFRAME | FLAG_CONFIG)) {
                 counts.discardedBeforeKeyframe++;
+                // Done with it, so the hub may send more (protocol 6).
+                sendAck(u.seq);
                 continue;
             }
 

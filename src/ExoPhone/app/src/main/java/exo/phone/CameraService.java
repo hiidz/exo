@@ -78,7 +78,7 @@ public class CameraService extends Service {
                     }
 
                     @Override
-                    public Decoder newDecoder(String conn) {
+                    public Decoder newDecoder(String conn, java.util.function.LongConsumer acks) {
                         throw new IllegalStateException("camera role has no decoder");
                     }
 
