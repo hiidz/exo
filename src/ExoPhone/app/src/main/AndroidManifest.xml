@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- The camera role. Granted by the hub over adb before launch
-         (pm grant), so nothing asks on screen. -->
+    <!-- The camera role. MainActivity asks for it the first time the user
+         picks "Use as webcam". -->
     <uses-permission android:name="android.permission.CAMERA" />
     <!-- CameraService, so capture goes on with the screen off (D2a). The
          camera type needs its own permission from Android 14. The
-         notification permission is granted by the hub too. -->
+         notification permission is asked for with the camera's. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
@@ -19,16 +19,23 @@
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
         <!-- sensorLandscape: either landscape, whichever way up the device
              is held. A 180 degree turn keeps the size and orientation, so
-             the activity is not recreated and the link stays up. -->
+             the activity is not recreated and the link stays up. The home
+             screen too, so the webcam's first rotation is read in landscape
+             (DECISIONS 6.4). -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTop"
             android:screenOrientation="sensorLandscape">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".DisplayActivity"
+            android:exported="false"
+            android:screenOrientation="sensorLandscape" />
         <service
             android:name=".CameraService"
             android:exported="false"

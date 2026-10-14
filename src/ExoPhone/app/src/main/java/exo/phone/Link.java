@@ -24,7 +24,8 @@ import java.util.concurrent.TimeUnit;
  * the hub's port. Connects, runs the handshake in DECISIONS 5.7, then serves
  * its role until the connection ends, and starts again a second later,
  * forever. The one exception is a version refusal, which does not fix
- * itself, so the loop stops and says so on screen.
+ * itself, so the loop stops. Every change of state goes to the listener as
+ * a sentence for the screen.
  *
  * Display role: reads FRAMEs into a decoder. Camera role: a CameraRole per
  * connection, whose frames this thread writes up, while a second thread
@@ -35,8 +36,12 @@ import java.util.concurrent.TimeUnit;
  */
 final class Link implements Runnable {
     interface Listener {
-        /** The hub refused, or this end refused the hub. Any thread. */
-        void onRefused(String reason);
+        /**
+         * What the user should know, as a sentence: waiting for the PC, or why
+         * the PC refused. Null once the hub accepts. Only on a change. Link
+         * thread.
+         */
+        void onStatus(String sentence);
 
         /** A decoder for one accepted connection, not yet started. name tells runs apart. */
         Decoder newDecoder(String name);
@@ -79,9 +84,14 @@ final class Link implements Runnable {
     static final byte[] MAGIC = {'E', 'X', 'O', 0};
     // 2 added CURSOR_SHAPE, CURSOR_POS and TOUCH on the display connection.
     // 3 added HELLO's rotation byte, after the serial (DECISIONS 6.4).
-    static final int VERSION = 3;
-    static final int ROLE_CAMERA = 1, ROLE_DISPLAY = 2, UP = 1, DOWN = 2;
-    static final int ACCEPTED = 0, VERSION_MISMATCH = 1;
+    // 4: the role is picked here, HELLO carries this app's identity and
+    // name in place of the serial, and each side states the oldest version
+    // it speaks. HELLO's layout is in the hub's Wire.cs.
+    static final int VERSION = 4, OLDEST = 4;
+    static final int ROLE_CAMERA = 1, ROLE_DISPLAY = 2;
+    static final int ACCEPTED = 0, VERSION_MISMATCH = 1, BAD_HELLO = 2, ROLE_TAKEN = 3;
+    static final int CAMERA_UNAVAILABLE = 4, DISPLAY_UNAVAILABLE = 5;
+    static final String WAITING = "Waiting for the PC. Plug this phone in by USB, with Exo running on the PC.";
     static final int FRAME = 1, PING = 2, PONG = 3, FLAG_KEYFRAME = 1, FLAG_CONFIG = 2;
     static final int CURSOR_SHAPE = 4, CURSOR_POS = 5, TOUCH = 6, FLAG_VISIBLE = 1;
     private static final int PING_MS = 1000, SILENCE_MS = 3000;
@@ -89,8 +99,8 @@ final class Link implements Runnable {
     static final int HEADER_SIZE = 8, MAX_BODY = 4 << 20;
     private static final int WELCOME_TIMEOUT_MS = 2000, RETRY_MS = 1000;
 
-    private final String serial;
-    private final int version;
+    private final Identity me;
+    private final int version, oldest;
     private final int role;
     private final Listener listener;
     private final Thread thread = new Thread(this, "link");
@@ -99,14 +109,44 @@ final class Link implements Runnable {
     private boolean refused;
     private int attempts;
     private String lastFailure;
+    private String lastStatus = "";  // never a sentence, so the first status is passed on
     private int connections;
 
-    /** version is VERSION except to prove a mismatch is refused. role is ROLE_CAMERA or ROLE_DISPLAY. */
-    Link(String serial, int version, int role, Listener listener) {
-        this.serial = serial == null ? "" : serial;
+    /**
+     * version is VERSION except to prove a mismatch is refused; then this end
+     * speaks only that version. role is ROLE_CAMERA or ROLE_DISPLAY.
+     */
+    Link(Identity me, int version, int role, Listener listener) {
+        this.me = me;
         this.version = version;
+        this.oldest = version == VERSION ? OLDEST : version;
         this.role = role;
         this.listener = listener;
+    }
+
+    private void status(String sentence) {
+        if (java.util.Objects.equals(sentence, lastStatus)) return;
+        lastStatus = sentence;
+        listener.onStatus(sentence);
+    }
+
+    /** The hub's refusal as the user should read it. text is the WELCOME body. */
+    private String sentence(int status, int hubVersion, String text) {
+        switch (status) {
+            case VERSION_MISMATCH:
+                return hubVersion < oldest ? "Exo on the PC is too old for this app. Update Exo on the PC."
+                        : "This app is too old for Exo on the PC. Update the Exo app.";
+            case ROLE_TAKEN:
+                return (role == ROLE_DISPLAY ? "The PC's display" : "The PC's webcam") + " is in use by " + text + ".";
+            case CAMERA_UNAVAILABLE:
+                return "Exo's webcam is not set up on the PC. Reinstall Exo on the PC.";
+            case DISPLAY_UNAVAILABLE:
+                return "Exo's display driver is not working on the PC. Reinstall Exo on the PC.";
+            case BAD_HELLO:
+                return "Exo on the PC did not understand this app. Update Exo on both.";
+            default:
+                return "Exo on the PC refused this phone, error " + status + ". Update Exo on both.";
+        }
     }
 
     void start() {
@@ -146,6 +186,7 @@ final class Link implements Runnable {
                     Log.i(Codecs.TAG, "link attempt " + attempts + ": " + what);
                     lastFailure = what;
                 }
+                if (!stopped) status(WAITING);
             }
             if (stopped || refused) break;
             try {
@@ -174,14 +215,15 @@ final class Link implements Runnable {
             DataInputStream in = new DataInputStream(new BufferedInputStream(s.getInputStream()));
             DataOutputStream out = new DataOutputStream(new BufferedOutputStream(s.getOutputStream()));
 
-            byte[] id = serial.getBytes(StandardCharsets.US_ASCII);
+            byte[] myName = me.nameBytes();
             out.write(MAGIC);
             out.writeShort(version);
-            out.writeShort(3 + id.length + 1);
+            out.writeShort(2 + 1 + Identity.ID_SIZE + 1 + myName.length + 1);
+            out.writeShort(oldest);
             out.writeByte(role);
-            out.writeByte(role == ROLE_CAMERA ? UP : DOWN);
-            out.writeByte(id.length);
-            out.write(id);
+            out.write(me.id);
+            out.writeByte(myName.length);
+            out.write(myName);
             out.writeByte(listener.rotation());
             out.flush();
 
@@ -201,27 +243,27 @@ final class Link implements Runnable {
             double welcomeMs = (System.nanoTime() - connectedNs) / 1e6;
 
             if (status != ACCEPTED) {
-                String reason = new String(body, StandardCharsets.UTF_8);
+                String text = new String(body, StandardCharsets.UTF_8);
                 Log.e(Codecs.TAG, "link REFUSED by hub, status " + status + ", hub protocol " + hubVersion
-                        + ", ours " + version + ": " + reason);
-                if (status == VERSION_MISMATCH) {
-                    refused = true;
-                    listener.onRefused("Refused by the hub: " + reason);
-                }
+                        + ", ours " + oldest + " to " + version + ": " + text);
+                // Any other refusal may clear, so the loop tries again.
+                refused = status == VERSION_MISMATCH;
+                status(sentence(status, hubVersion, text));
                 return;
             }
-            if (hubVersion != version) {
-                String reason = "hub accepted at protocol " + hubVersion + ", this app speaks " + version;
-                Log.e(Codecs.TAG, "link REFUSED the hub: " + reason);
+            if (hubVersion < oldest || hubVersion > version) {
+                Log.e(Codecs.TAG, "link REFUSED the hub: it accepted at protocol " + hubVersion
+                        + ", this app speaks " + oldest + " to " + version);
                 refused = true;
-                listener.onRefused("Refused the hub: " + reason);
+                status("Exo on the PC and this app do not agree on a version. Update Exo on both.");
                 return;
             }
             Log.i(Codecs.TAG, String.format("link accepted after %d attempts, WELCOME in %.1fms, protocol %d,"
-                    + " session %016x, serial \"%s\"", attempts, welcomeMs, hubVersion,
-                    ByteBuffer.wrap(body).getLong(), serial));
+                    + " session %016x, identity %s \"%s\"", attempts, welcomeMs, hubVersion,
+                    ByteBuffer.wrap(body).getLong(), Identity.hex(me.id), me.name));
             attempts = 0;
             lastFailure = null;
+            status(null);
 
             // Nothing at all for this long and the connection is dead. PONGs
             // arrive every second, so a static screen does not trip it.

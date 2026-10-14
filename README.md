@@ -31,13 +31,11 @@ install, with a tray app and Wi-Fi, is planned.
    with `dotnet build src/ExoHub/ExoHub.csproj -c Release`, and the phone
    app with `./gradlew assembleDebug` in `src/ExoPhone`.
 3. **Phones:** enable USB debugging, plug in, unlock, accept the PC.
-4. **Install:** `src/ExoSetup/setup.ps1 -Camera <serial> -Display
-   <serial>`. It asks for administrator, registers the camera, makes the
-   log folder, installs the app on every attached phone, and puts an Exo
-   shortcut on the desktop with those roles. Leave out either flag to
-   leave that role empty. The monitor is 2944x1840, the TB375FC's panel;
-   for another display phone, add `--panel WxH` (landscape) to the
-   shortcut.
+4. **Install:** `src/ExoSetup/setup.ps1`. It asks for administrator,
+   registers the camera, makes the log folder, installs the app on every
+   attached phone, and puts an Exo shortcut on the desktop. The monitor
+   is 2944x1840, the TB375FC's panel; for another display phone, add
+   `--panel WxH` (landscape) to the shortcut.
 
 To remove everything: `src/ExoSetup/setup.ps1 -Uninstall`, then
 `src/ExoDisplay/install.ps1 -Uninstall`.
@@ -45,10 +43,11 @@ To remove everything: `src/ExoSetup/setup.ps1 -Uninstall`, then
 ## Each time
 
 Double-click **Exo** on the desktop. Plug the phones in, in any order.
-The hub starts the app on each phone itself. Ctrl+C in the hub's window
-stops it, and nothing it started is left running.
-
-To change roles, run `setup.ps1` again with the new serials.
+On each phone, open Exo and tap **Use as display** or **Use as webcam**,
+or both. The webcam asks for the camera the first time. A role another
+phone already holds is refused, and the phone says which one has it.
+Ctrl+C in the hub's window stops it, and nothing it started is left
+running.
 
 ## What you will notice
 

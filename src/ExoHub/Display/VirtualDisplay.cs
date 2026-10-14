@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
+using ExoHub.Link;
 using Microsoft.Win32.SafeHandles;
 using static ExoHub.Display.ExoDisplayDriver;
 
@@ -33,14 +34,14 @@ sealed class VirtualDisplay : IDisposable
     readonly Thread thread;
     readonly AutoResetEvent wake = new(false);
     readonly object gate = new();
-    string wanted;    // under gate: the serial whose monitor should exist, or null
+    Phone wanted;     // under gate: the phone whose monitor should exist, or null
     long leftQpc;     // under gate: when wanted last became null
     bool disposed;    // under gate
 
-    // The thread's own.
+    // The thread's own, but for openError, which the device listener reads.
     SafeFileHandle device;
-    string openError;           // the last reason the driver could not be opened, logged once
-    string plugged;             // the serial whose monitor is plugged, or null
+    volatile string openError;  // the last reason the driver could not be opened, logged once
+    Phone plugged;              // the phone whose monitor is plugged, or null
     Guid pluggedId;
     uint luidLow, target;
     int luidHigh;
@@ -91,20 +92,24 @@ sealed class VirtualDisplay : IDisposable
 
     void Log(string line) => Console.WriteLine($"{clock.Elapsed.TotalSeconds,8:F3}s vdisp {line}");
 
+    // Why the driver cannot be opened, or null. The device listener refuses
+    // the display role while it is set, so the phone says so.
+    public string Unavailable => openError;
+
     // From the device listener, when a display connection is accepted and
     // when it ends.
-    public void Connected(string serial)
+    public void Connected(Phone phone)
     {
         lock (gate)
-            wanted = serial;
+            wanted = phone;
         wake.Set();
     }
 
-    public void Disconnected(string serial)
+    public void Disconnected(Phone phone)
     {
         lock (gate)
         {
-            if (wanted != serial)
+            if (wanted?.Id != phone.Id)
                 return;
             wanted = null;
             leftQpc = Stopwatch.GetTimestamp();
@@ -116,7 +121,7 @@ sealed class VirtualDisplay : IDisposable
     {
         while (true)
         {
-            string want;
+            Phone want;
             long left;
             lock (gate)
             {
@@ -133,11 +138,11 @@ sealed class VirtualDisplay : IDisposable
         device?.Dispose();
     }
 
-    void Step(string want, long left)
+    void Step(Phone want, long left)
     {
         if (device == null && !Open())
             return;
-        if (plugged != null && want != null && want != plugged)
+        if (plugged != null && want != null && want.Id != plugged.Id)
             Unplug($"{want} took the display role");
         if (plugged != null && want == null && Stopwatch.GetElapsedTime(left).TotalMilliseconds >= GraceMs)
             Unplug($"{GraceMs / 1000} s after its connection ended");
@@ -171,19 +176,19 @@ sealed class VirtualDisplay : IDisposable
         return true;
     }
 
-    // Plugs serial's monitor: the panel at 60 and 30, 60 preferred. Its Id
-    // comes from the serial, so Windows sees the same monitor each time and
+    // Plugs the phone's monitor: the panel at 60 and 30, 60 preferred. Its Id
+    // comes from its identity, so Windows sees the same monitor each time and
     // keeps its position and scale. Retried each tick on failure, logged
     // once: an orphaned monitor from a hub that died is gone within 3 s.
-    void Plug(string serial)
+    void Plug(Phone phone)
     {
-        Guid id = new(MD5.HashData(Encoding.UTF8.GetBytes("exo.display:" + serial)));
+        Guid id = new(MD5.HashData(Encoding.UTF8.GetBytes("exo.display:" + phone.Id)));
         var output = new byte[12];
-        int e = Ioctl(IoctlAdd, AddParams(id, serial), output);
+        int e = Ioctl(IoctlAdd, AddParams(id, phone.Id), output);
         if (e != 0)
         {
             if (!plugFailing)
-                Log($"{serial} plug FAILED, error {e}; retrying each second");
+                Log($"{phone} plug FAILED, error {e}; retrying each second");
             plugFailing = true;
             CloseDevice();
             return;
@@ -193,12 +198,12 @@ sealed class VirtualDisplay : IDisposable
         luidHigh = BinaryPrimitives.ReadInt32LittleEndian(output.AsSpan(4));
         target = BinaryPrimitives.ReadUInt32LittleEndian(output.AsSpan(8));
         Publish(true);
-        plugged = serial;
+        plugged = phone;
         pluggedId = id;
         pluggedQpc = Stopwatch.GetTimestamp();
         settled = false;
         enforcements = 0;
-        Log($"{serial} plugged {MonitorId} {panelWidth}x{panelHeight} at 60 and 30, " +
+        Log($"{phone} plugged {MonitorId} {panelWidth}x{panelHeight} at 60 and 30, " +
             $"target {target} on adapter {luidHigh:X8}:{luidLow:X8}");
     }
 

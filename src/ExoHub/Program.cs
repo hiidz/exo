@@ -7,8 +7,11 @@
 // texture and reopens it, forever. The pointer comes from the driver on its
 // own thread (DriverCursor). Ctrl+C stops it and prints totals.
 //
-// Usage: ExoHub [--debug] [--seconds N] [--dump F] [--fps N] [--out F] [--display SERIAL]
-//               [--panel WxH] [--camera SERIAL | --camera-file F] [--camera-geometry W H S]
+// Every device that reaches adb gets the reverse to the hub's port; the
+// role is picked in the app on the phone, which then connects.
+//
+// Usage: ExoHub [--debug] [--seconds N] [--dump F] [--fps N] [--out F] [--panel WxH]
+//               [--camera-file F | --test-pattern [--camera-geometry W H S]] [--no-reverse]
 // --panel WxH the display phone's panel, landscape, which the monitor
 //             offers at 60 and 30. 2944x1840, the TB375FC's, until the
 //             phone sends its own (build step 2).
@@ -19,16 +22,16 @@
 //             without it.
 // --fps N     the encoded frame rate, 30 by default (DECISIONS 11.2).
 // --out F     write the encoded stream to F as Annex-B H.264.
-// --display S the adb serial of the device that holds the display role
-//             (DECISIONS 5.8). Without it every device is tracked and none
-//             is set up. The hub owns adb and issues the reverse itself.
-// --camera S  the adb serial of the device that holds the camera role. Its
-//             stream is decoded into L7 (DECISIONS 10 item 4, increment D).
 // --camera-file F  decode the recorded H.264 stream F into L7, looping it,
-//             in place of the test pattern (DECISIONS 10 item 4, increment C).
+//             in place of a phone (DECISIONS 10 item 4, increment C). The
+//             camera role is refused.
+// --test-pattern  L7 gets the test pattern in place of a phone (increment
+//             B). The camera role is refused.
 // --camera-geometry W H S  the test pattern's width, height and stride,
 //             1280 720 1344 by default. Anything but 1280x720 is for
 //             watching ExoCamera.dll refuse it (TECHNICAL_DESIGN 3.3).
+// --no-reverse  track devices but set up no reverse, so no app connects.
+//             For the tools' collection runs after a measured one.
 // Whatever the flags, the hub registers the virtual camera for as long as
 // it runs and removes it on exit.
 
@@ -81,14 +84,12 @@ string dumpPath = null;
 // the H.264 level, so it is a flag, not a constant.
 uint fps = 30;
 string outPath = null;
-// The user's choice of display device, until a roles UI exists (FR-4.4).
-string displaySerial = null;
 // L7's test pattern (DECISIONS 10 item 4, increment B). The stride is wider
 // than the width on purpose: a reader that ignores it shows a shear.
+bool testPattern = false;
 int camWidth = 1280, camHeight = 720, camStride = 1344;
 string cameraFile = null;
-// The user's choice of camera device, as displaySerial is for the display.
-string cameraSerial = null;
+bool reverse = true;
 for (int i = 0; i < args.Length; i++)
 {
     switch (args[i])
@@ -98,7 +99,6 @@ for (int i = 0; i < args.Length; i++)
         case "--seconds": seconds = double.Parse(args[++i]); break;
         case "--dump": dumpPath = args[++i]; break;
         case "--out": outPath = args[++i]; break;
-        case "--display": displaySerial = args[++i]; break;
         case "--panel":
             string[] wh = args[++i].Split('x');
             panelWidth = uint.Parse(wh[0]);
@@ -110,7 +110,8 @@ for (int i = 0; i < args.Length; i++)
             camStride = int.Parse(args[++i]);
             break;
         case "--camera-file": cameraFile = args[++i]; break;
-        case "--camera": cameraSerial = args[++i]; break;
+        case "--test-pattern": testPattern = true; break;
+        case "--no-reverse": reverse = false; break;
         default:
             Console.WriteLine($"unknown argument {args[i]}");
             return 2;
@@ -125,7 +126,7 @@ Job.JoinNew();
 // Once per process, before any other Media Foundation call. This early so
 // the camera decoder exists before the device listener can accept a camera.
 MediaFactory.MFStartup(false).CheckError();
-// L7 next, independent of the display path and of --display. Its port is
+// L7 next, independent of the display path. Its port is
 // fixed and held exclusively, so an orphaned hub fails this one here.
 CameraLink camera;
 try
@@ -146,16 +147,19 @@ using VirtualCamera vcam = VirtualCamera.Register(clock, camera);
 // file, or else the test pattern.
 CameraDecoder decoder = null;
 TestPattern pattern = null;
-if (cameraSerial != null || cameraFile != null)
+if (testPattern)
+{
+    pattern = new TestPattern(camera, clock, camWidth, camHeight, camStride);
+}
+else
 {
     decoder = new CameraDecoder(camera, clock);
     if (cameraFile != null)
         decoder.PlayFile(cameraFile);
 }
-else
-{
-    pattern = new TestPattern(camera, clock, camWidth, camHeight, camStride);
-}
+// The decoder the camera connection feeds, or null to refuse the camera
+// role: no virtual camera for it to reach, or L7 has another producer.
+CameraDecoder cameraRole = vcam != null && cameraFile == null ? decoder : null;
 var adb = new AdbServer(clock);
 string refused = adb.CheckForeign() ?? adb.Start();
 if (refused != null)
@@ -170,25 +174,15 @@ var touch = new TouchInjector(clock);
 // Before the listener, which tells it when the display connection comes
 // and goes.
 using var monitor = new VirtualDisplay(clock, panelWidth, panelHeight);
-using var devices = new DeviceListener(0, clock, display, touch, cameraSerial != null ? decoder : null, monitor);
-Console.WriteLine($"listening on 127.0.0.1:{devices.Port}, session {devices.SessionId:x16}");
-// One setup per device, holding every role it was given, so a phone with
-// both is launched once (DECISIONS 10 item 4, D2b).
-var setups = new List<RoleSetup>();
-if (displaySerial != null)
-    setups.Add(new RoleSetup(displaySerial, true, displaySerial == cameraSerial, devices.Port, clock));
-if (cameraSerial != null && cameraSerial != displaySerial)
-    setups.Add(new RoleSetup(cameraSerial, false, true, devices.Port, clock));
-Console.WriteLine(displaySerial != null ? $"display role: {displaySerial}"
-                                        : "display role: none chosen; pass --display <serial>");
-Console.WriteLine(cameraSerial != null ? $"camera role: {cameraSerial}"
-                                       : "camera role: none chosen; pass --camera <serial>");
-if (displaySerial != null && displaySerial == cameraSerial)
-    Console.WriteLine($"{displaySerial} holds both roles: one launch, two connections");
+using var devices = new DeviceListener(0, clock, display, touch, cameraRole, monitor);
+Console.WriteLine($"listening on 127.0.0.1:{devices.Port}, session {devices.SessionId:x16}, " +
+                  $"camera role {(cameraRole != null ? "open" : "REFUSED")}, " +
+                  $"reverse {(reverse ? "for every device" : "for none")}");
+var reverses = new ReverseSetup(devices.Port, clock);
 var tracker = new DeviceTracker(adb, clock, (serial, state) =>
 {
-    foreach (RoleSetup setup in setups)
-        setup.OnState(serial, state);
+    if (reverse)
+        reverses.OnState(serial, state);
 });
 int exitCode = 0;
 

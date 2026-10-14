@@ -1,11 +1,11 @@
 # ExoSetup (TECHNICAL_DESIGN 5, PROJECT_SPEC SC-13). Installs Exo from this
 # repository's build outputs, in place, or with -Uninstall reverses it.
 #
-#   setup.ps1 -Camera <serial> -Display <serial>    install
-#   setup.ps1 -Uninstall                            uninstall
+#   setup.ps1              install
+#   setup.ps1 -Uninstall   uninstall
 #
-# Either serial may be left out to leave that role empty, and one phone may
-# hold both. Build first: src/ExoCamera/build.bat, the hub in Release, and
+# Roles are picked in the app on each phone. Build first:
+# src/ExoCamera/build.bat, the hub in Release, and
 # the phone app (app-debug.apk). Phones to get the app must be plugged in
 # and unlocked, and no hub may be running, since the install uses the hub's
 # pinned adb.exe and starts its own short-lived server.
@@ -13,12 +13,12 @@
 # Install does four things, and uninstall undoes each:
 #   1. the DLL's log folder, with a DACL LOCAL SERVICE can write to (3.4)
 #   2. regsvr32 on exocam.dll, HKLM, so the Frame Server can load it
-#   3. a desktop shortcut that starts the hub with the chosen roles
+#   3. a desktop shortcut that starts the hub
 #   4. the phone app on every attached phone
 #
 # Not done here, by hand once: the display driver, src/ExoDisplay's
 # build.bat and install.ps1. Printed at the end of an install.
-param([string]$Camera, [string]$Display, [switch]$Uninstall)
+param([switch]$Uninstall)
 
 $root = (Resolve-Path "$PSScriptRoot\..\..").Path
 $dll = "$root\src\ExoCamera\out\exocam.dll"
@@ -34,8 +34,6 @@ $shortcut = [Environment]::GetFolderPath('Desktop') + '\Exo.lnk'
 $me = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     $pass = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
-    if ($Camera) { $pass += '-Camera', $Camera }
-    if ($Display) { $pass += '-Display', $Display }
     if ($Uninstall) { $pass += '-Uninstall' }
     $p = Start-Process powershell -Verb RunAs -ArgumentList $pass -Wait -PassThru
     exit $p.ExitCode
@@ -100,15 +98,12 @@ $p = Start-Process regsvr32 -ArgumentList '/s', "`"$dll`"" -Wait -PassThru
 if ($p.ExitCode -ne 0) { exit 1 }
 
 Step 'desktop shortcut'
-$roles = @()
-if ($Camera) { $roles += '--camera', $Camera }
-if ($Display) { $roles += '--display', $Display }
 $lnk = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcut)
 $lnk.TargetPath = $hub
-$lnk.Arguments = $roles -join ' '
+$lnk.Arguments = ''
 $lnk.WorkingDirectory = $hubDir
 $lnk.Save()
-"$shortcut -> ExoHub.exe $($lnk.Arguments)"
+"$shortcut -> ExoHub.exe"
 
 Step 'phone app'
 OnEachPhone { param($s) "$s install: $(& $adb -s $s install -r $apk 2>&1 | Select-Object -Last 1)" }

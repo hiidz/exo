@@ -17,15 +17,23 @@ import java.io.IOException;
  * The camera role as a foreground service of type camera (DECISIONS 10 item
  * 4, D2a), so capture goes on with the screen off. Android lets such a
  * service use the camera only if it was started while the app was visible,
- * which is why MainActivity shows itself over the lock screen and starts it.
+ * which is why MainActivity starts it, from "Use as webcam".
  *
  * A partial wake lock keeps the CPU running with the screen off (traps-phone).
- * The service runs until the app is force-stopped, which the hub does with
- * am start -S on every launch.
+ * The service runs until MainActivity stops it or the app is force-stopped.
+ * Its status, the link's sentence, is in the notification and on
+ * MainActivity's screen.
  */
 public class CameraService extends Service {
     private static final String CHANNEL = "camera";
     private static final int NOTIFICATION = 1;
+    static final String CONNECTED = "Connected. The PC has a webcam called Exo.";
+
+    // For MainActivity, which shows them. Main thread writes running; the
+    // link thread writes status, then posts onChange to the main thread.
+    static volatile boolean running;
+    static volatile String status;
+    static volatile Runnable onChange;
 
     private Link link;
     private PowerManager.WakeLock wakeLock;
@@ -39,23 +47,20 @@ public class CameraService extends Service {
         }
         NotificationManager nm = getSystemService(NotificationManager.class);
         nm.createNotificationChannel(new NotificationChannel(CHANNEL, "Exo camera", NotificationManager.IMPORTANCE_LOW));
-        Notification n = new Notification.Builder(this, CHANNEL)
-                .setContentTitle("Exo camera")
-                .setContentText("Sending the camera to the PC")
-                .setSmallIcon(android.R.drawable.presence_video_online)
-                .setOngoing(true)
-                .build();
         try {
-            startForeground(NOTIFICATION, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA);
+            startForeground(NOTIFICATION, notification(Link.WAITING), ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA);
         } catch (RuntimeException e) {
             // Android 12 and later throw if the app was not allowed to start
             // a foreground service from where it was; Android 14 if the camera
             // type was not allowed. Either way there is no camera role.
             Log.e(Codecs.TAG, "camera service startForeground FAILED: " + e);
+            setStatus("Android did not let the webcam start: " + e.getMessage());
             stopSelf();
             return START_NOT_STICKY;
         }
         Log.i(Codecs.TAG, "camera service in the foreground, type camera");
+        running = true;
+        setStatus(Link.WAITING);
 
         wakeLock = getSystemService(PowerManager.class)
                 .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "exo:camera");
@@ -63,11 +68,13 @@ public class CameraService extends Service {
 
         File dir = getExternalFilesDir(null);
         String run = String.format("%tH%<tM%<tS-camera", System.currentTimeMillis());
-        link = new Link(intent.getStringExtra("serial"), intent.getIntExtra("proto", Link.VERSION), Link.ROLE_CAMERA,
+        link = new Link(Identity.of(this), intent.getIntExtra("proto", Link.VERSION), Link.ROLE_CAMERA,
                 new Link.Listener() {
                     @Override
-                    public void onRefused(String reason) {
-                        // No screen to show it on; the log has it.
+                    public void onStatus(String sentence) {
+                        String s = sentence == null ? CONNECTED : sentence;
+                        setStatus(s);
+                        nm.notify(NOTIFICATION, notification(s));
                     }
 
                     @Override
@@ -106,10 +113,34 @@ public class CameraService extends Service {
         return START_NOT_STICKY;
     }
 
+    private Notification notification(String text) {
+        return new Notification.Builder(this, CHANNEL)
+                .setContentTitle("Exo webcam")
+                .setContentText(text)
+                .setStyle(new Notification.BigTextStyle().bigText(text))
+                .setSmallIcon(android.R.drawable.presence_video_online)
+                .setOngoing(true)
+                .build();
+    }
+
+    private static void setStatus(String s) {
+        status = s;
+        changed();
+    }
+
+    private static void changed() {
+        Runnable r = onChange;
+        if (r != null) r.run();
+    }
+
     @Override
     public void onDestroy() {
         if (link != null) link.stop();
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
+        // A failed start keeps its status, so the screen says why.
+        if (running) status = null;
+        running = false;
+        changed();
         Log.i(Codecs.TAG, "camera service destroyed");
         super.onDestroy();
     }

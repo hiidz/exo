@@ -40,14 +40,16 @@ sealed class DeviceListener : IDisposable
     public ulong SessionId { get; } = BinaryPrimitives.ReadUInt64BigEndian(RandomNumberGenerator.GetBytes(8));
     public int Port => ((IPEndPoint)listener.LocalEndpoint).Port;
 
-    sealed class Connection(Socket socket, string serial, byte role, byte rotation)
+    sealed class Connection(Socket socket, Phone phone, byte role, byte rotation)
     {
         public readonly Socket Socket = socket;
-        public readonly string Serial = serial;
+        public readonly Phone Phone = phone;
         public readonly byte Role = role;
         public readonly byte Rotation = rotation;  // clockwise quarter turns, 0 or 2
     }
 
+    // camera is null when the hub has no virtual camera to feed, so the
+    // camera role is refused.
     public DeviceListener(int port, Stopwatch clock, DisplaySender sender, TouchInjector touch, CameraDecoder camera,
                           VirtualDisplay monitor)
     {
@@ -106,14 +108,14 @@ sealed class DeviceListener : IDisposable
                 }
                 finally
                 {
-                    camera.EndStream(conn.Serial);
+                    camera.EndStream(conn.Phone.ToString());
                 }
                 return;
             }
             s.SendBufferSize = SendBufferBytes;
-            Log($"{conn.Serial} send buffer {s.SendBufferSize} bytes, nodelay {s.NoDelay}");
-            monitor.Connected(conn.Serial);
-            sender.Attach(net, conn.Serial);
+            Log($"{conn.Phone} send buffer {s.SendBufferSize} bytes, nodelay {s.NoDelay}");
+            monitor.Connected(conn.Phone);
+            sender.Attach(net, conn.Phone.ToString());
             try
             {
                 ReadMessages(net, conn);
@@ -121,7 +123,7 @@ sealed class DeviceListener : IDisposable
             finally
             {
                 sender.Detach(net);
-                monitor.Disconnected(conn.Serial);
+                monitor.Disconnected(conn.Phone);
                 touch.ConnectionEnded();
             }
         }
@@ -129,7 +131,7 @@ sealed class DeviceListener : IDisposable
         {
             // IOException wraps the SocketException for a reset or a timeout.
             string why = ex.InnerException is SocketException se ? se.SocketErrorCode.ToString() : ex.GetType().Name;
-            Log($"{conn?.Serial ?? who} closed: {why}");
+            Log($"{conn?.Phone.ToString() ?? who} closed: {why}");
         }
         finally
         {
@@ -155,45 +157,56 @@ sealed class DeviceListener : IDisposable
             Log($"{who} REFUSED: bad magic {Convert.ToHexString(head[..4])}, closed without reply");
             return null;
         }
-        ushort version = BinaryPrimitives.ReadUInt16BigEndian(head[4..]);
+        ushort newest = BinaryPrimitives.ReadUInt16BigEndian(head[4..]);
         ushort length = BinaryPrimitives.ReadUInt16BigEndian(head[6..]);
         if (length > Wire.MaxHelloBody)
             return Refuse(net, who, Wire.BadHello, $"hello body {length} bytes, limit {Wire.MaxHelloBody}");
         byte[] body = new byte[length];
         net.ReadExactly(body);
 
-        // Checked before the body is parsed: another version's body may not
-        // have this layout. Its length is in the frozen prefix, so it was
-        // read whole and the refusal goes out on a clean stream.
-        if (version != Wire.Version)
-            return Refuse(net, who, Wire.VersionMismatch, $"hub speaks protocol {Wire.Version}, device sent {version}");
+        // Its length is in the frozen prefix, so the body was read whole and
+        // a refusal goes out on a clean stream. Before 4 there is no oldest:
+        // the device speaks only its newest.
+        ushort oldest = newest >= 4 && length >= 2 ? BinaryPrimitives.ReadUInt16BigEndian(body) : newest;
+        if (newest < Wire.Oldest || oldest > Wire.Version)
+            return Refuse(net, who, Wire.VersionMismatch,
+                          $"device speaks protocol {oldest} to {newest}, hub {Wire.Oldest} to {Wire.Version}: " +
+                          $"update {(newest < Wire.Oldest ? "the app" : "the hub")}");
+        // The version both speak. Every version since the oldest the hub
+        // speaks keeps 4's body as its start, so it parses the same.
+        ushort version = Math.Min(newest, Wire.Version);
 
-        if (length < 4 || length < 4 + body[2] || body[2] > Wire.MaxSerial)
+        int nameAt = 2 + 1 + Wire.IdSize + 1;
+        if (length < nameAt || body[nameAt - 1] > Wire.MaxName || length < nameAt + body[nameAt - 1] + 1)
             return Refuse(net, who, Wire.BadHello, $"hello body malformed, {length} bytes");
-        byte role = body[0], direction = body[1], rotation = body[3 + body[2]];
-        string serial = Encoding.ASCII.GetString(body, 3, body[2]);
-        string name = serial == "" ? $"{who} (serial not supplied)" : serial;
+        byte role = body[2], rotation = body[nameAt + body[nameAt - 1]];
+        var phone = new Phone(Convert.ToHexString(body, 3, Wire.IdSize).ToLowerInvariant(),
+                              Encoding.UTF8.GetString(body, nameAt, body[nameAt - 1]));
+        string name = $"{phone} \"{phone.Name}\"";
         if (role != Wire.RoleDisplay && role != Wire.RoleCamera)
             return Refuse(net, name, Wire.BadHello, $"role {role} unknown");
         string roleName = role == Wire.RoleCamera ? "camera" : "display";
-        byte want = role == Wire.RoleCamera ? Wire.Up : Wire.Down;
-        if (direction != want)
-            return Refuse(net, name, Wire.BadHello, $"{roleName} role must be direction {want}, got {direction}");
         if (role == Wire.RoleCamera && camera == null)
-            return Refuse(net, name, Wire.BadHello, "this hub has no camera role; start it with --camera");
+            return Refuse(net, name, Wire.CameraUnavailable, "this hub has no virtual camera");
+        if (role == Wire.RoleDisplay && monitor.Unavailable is string why)
+            return Refuse(net, name, Wire.DisplayUnavailable, $"ExoDisplay {why}");
         // Landscape only: a quarter turn would make the picture 720x1280,
         // which ExoCamera.dll refuses (TECHNICAL_DESIGN 3.3).
         if (rotation != 0 && rotation != 2)
             return Refuse(net, name, Wire.BadHello, $"rotation {rotation * 90} degrees, only 0 and 180 are supported");
 
-        var conn = new Connection(s, serial, role, rotation);
+        var conn = new Connection(s, phone, role, rotation);
         Connection replaced;
         lock (gate)
         {
             Connection held = role == Wire.RoleCamera ? cameraConn : display;
-            if (held != null && held.Serial != serial)
-                return Refuse(net, name, Wire.RoleTaken, $"{roleName} role held by {held.Serial}");
-            // Same serial: the app restarted before this end saw the old
+            if (held != null && held.Phone.Id != phone.Id)
+            {
+                Log($"{name} REFUSED status {Wire.RoleTaken}: {roleName} role held by {held.Phone} \"{held.Phone.Name}\"");
+                SendWelcome(net, Wire.Version, Wire.RoleTaken, Encoding.UTF8.GetBytes(held.Phone.Name));
+                return null;
+            }
+            // The same phone: the app restarted before this end saw the old
             // connection go. The new one wins (DECISIONS 5.7).
             replaced = held;
             if (role == Wire.RoleCamera)
@@ -209,8 +222,9 @@ sealed class DeviceListener : IDisposable
 
         Span<byte> session = stackalloc byte[8];
         BinaryPrimitives.WriteUInt64BigEndian(session, SessionId);
-        SendWelcome(net, Wire.Version, Wire.Accepted, session);
-        Log($"{name} accepted: protocol {version}, role {roleName}, rotation {rotation * 90}, session {SessionId:x16}");
+        SendWelcome(net, version, Wire.Accepted, session);
+        Log($"{name} accepted: protocol {version} (device {oldest} to {newest}), role {roleName}, " +
+            $"rotation {rotation * 90}, session {SessionId:x16}");
         return conn;
     }
 
@@ -247,7 +261,7 @@ sealed class DeviceListener : IDisposable
             uint length = BinaryPrimitives.ReadUInt32BigEndian(head[4..]);
             if (length > Wire.MaxBody)
             {
-                Log($"{conn.Serial} protocol error: message type {type} claims {length} bytes, dropping");
+                Log($"{conn.Phone} protocol error: message type {type} claims {length} bytes, dropping");
                 return;
             }
             if (body.Length < length)
@@ -263,13 +277,13 @@ sealed class DeviceListener : IDisposable
             {
                 if (!touch.Post(body.AsSpan(0, (int)length)))
                 {
-                    Log($"{conn.Serial} protocol error: malformed TOUCH, {length} bytes, dropping");
+                    Log($"{conn.Phone} protocol error: malformed TOUCH, {length} bytes, dropping");
                     return;
                 }
                 continue;
             }
             if (skipped++ == 0)
-                Log($"{conn.Serial} skipping message type {type}, {length} bytes; logged once per connection");
+                Log($"{conn.Phone} skipping message type {type}, {length} bytes; logged once per connection");
         }
     }
 
@@ -281,7 +295,7 @@ sealed class DeviceListener : IDisposable
     void ReadCamera(NetworkStream net, Connection conn)
     {
         const int FrameFields = 4 + 3 * 8;  // seq; present, encoded, sent
-        camera.BeginStream(conn.Serial, flip: conn.Rotation == 2);
+        camera.BeginStream(conn.Phone.ToString(), flip: conn.Rotation == 2);
         Span<byte> head = stackalloc byte[Wire.HeaderSize];
         Span<byte> pong = stackalloc byte[Wire.HeaderSize + 24];
         byte[] body = new byte[256 * 1024];  // grows to the largest keyframe, once
@@ -296,7 +310,7 @@ sealed class DeviceListener : IDisposable
             uint length = BinaryPrimitives.ReadUInt32BigEndian(head[4..]);
             if (length > Wire.MaxBody)
             {
-                Log($"{conn.Serial} protocol error: message type {type} claims {length} bytes, dropping");
+                Log($"{conn.Phone} protocol error: message type {type} claims {length} bytes, dropping");
                 return;
             }
             if (body.Length < length)
@@ -318,14 +332,14 @@ sealed class DeviceListener : IDisposable
             if (type != Wire.TypeFrame || length < FrameFields)
             {
                 if (skipped++ == 0)
-                    Log($"{conn.Serial} skipping message type {type}, {length} bytes; logged once per connection");
+                    Log($"{conn.Phone} skipping message type {type}, {length} bytes; logged once per connection");
                 continue;
             }
 
             uint seq = BinaryPrimitives.ReadUInt32BigEndian(body);
             bool key = (flags & DisplaySender.FlagKeyframe) != 0, config = (flags & DisplaySender.FlagConfig) != 0;
             if (total++ == 0)
-                Log($"{conn.Serial} camera first frame: seq {seq}, {length - FrameFields} bytes, " +
+                Log($"{conn.Phone} camera first frame: seq {seq}, {length - FrameFields} bytes, " +
                     $"{(key ? "KEYFRAME" : "not a keyframe")}, {(config ? "CONFIG" : "no config")}");
             gaps += lastSeq != 0 && seq != lastSeq + 1 ? 1 : 0;
             lastSeq = seq;
@@ -334,7 +348,7 @@ sealed class DeviceListener : IDisposable
             bytes += length;
             if (!camera.Submit(body.AsSpan(FrameFields, (int)length - FrameFields), key, config))
             {
-                Log($"{conn.Serial} camera decoder has failed ({camera.Error}); closing");
+                Log($"{conn.Phone} camera decoder has failed ({camera.Error}); closing");
                 return;
             }
 
@@ -342,7 +356,7 @@ sealed class DeviceListener : IDisposable
             if (now - windowStart >= Stopwatch.Frequency * 5)
             {
                 double s = (now - windowStart) / (double)Stopwatch.Frequency;
-                Log($"{conn.Serial} camera last 5s: {frames} frames, {frames / s:F1}fps, {keyframes} keyframes, " +
+                Log($"{conn.Phone} camera last 5s: {frames} frames, {frames / s:F1}fps, {keyframes} keyframes, " +
                     $"{bytes * 8 / s / 1e6:F2} Mbps, {gaps} seq gaps");
                 windowStart = now;
                 frames = keyframes = gaps = 0;

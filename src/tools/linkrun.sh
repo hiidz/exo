@@ -1,7 +1,7 @@
 #!/bin/sh
 # One live run over the link (DECISIONS 5.7, 5.8). Moving content on the EXO monitor,
-# the hub for N seconds holding the display role for SERIAL, so it sets the
-# reverse and launches the app itself, SurfaceFlinger timestats around it,
+# the hub for N seconds, and the app on SERIAL started with the display role,
+# SurfaceFlinger timestats around it,
 # then the phone's CSVs pulled and LinkTimes run on them. Pull the cable
 # during the run for the replug test; the hub log records every cycle.
 # Needs the hub built in Release, ExoPhone installed, and 5037 free.
@@ -12,7 +12,8 @@
 # Every adb command here runs while a hub owns 5037. Run with no hub, adb
 # would start a server of its own, and the hub refuses a server it did not
 # start (DECISIONS 5.8). So the collection afterwards goes through a second,
-# short hub run with no role, whose server dies with it.
+# short hub run that sets no reverse, so the app cannot reconnect, and whose
+# server dies with it.
 export MSYS_NO_PATHCONV=1
 S=$1; TAG=$2; SERIAL=$3; CONTENT=${4:-moving}; RELAUNCH=${5:-0}
 STATIC=; [ "$CONTENT" = static ] && STATIC=-Static
@@ -34,7 +35,8 @@ hub() {
     done
 }
 
-hub $T/hub.log --display $SERIAL --seconds $S
+hub $T/hub.log --seconds $S
+adb -s $SERIAL shell am start -S -n exo.phone/.MainActivity --es role display >/dev/null
 # The EXO monitor exists once the phone connects; the content goes on it then.
 until grep -q "vdisp EXO0001 on the desktop" $T/hub.log; do sleep 0.2; done
 powershell -NoProfile -ExecutionPolicy Bypass -File C:/Dev/Exo/src/tools/vddcontent.ps1 -Seconds $S $STATIC > $T/content.log 2>&1 &
@@ -46,7 +48,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:/Dev/Exo/src/tools/vddcont
 START=$(( $(adb -s $SERIAL wait-for-device shell date +%s | tr -d '\r') - 3 ))
 adb -s $SERIAL logcat -T $START.000 -s ExoPhone:V AndroidRuntime:E > $T/logcat-live.txt 2>/dev/null &
 LOGPID=$!
-# The hub launches the app as soon as the device is listed. The live
+# The app connects once the hub has set its reverse. The live
 # connection writes its CSV only when it ends, so old ones can go now.
 adb -s $SERIAL shell "rm -f $FILES/*-link-*.csv"
 adb -s $SERIAL shell dumpsys SurfaceFlinger --timestats -disable -clear >/dev/null
@@ -55,14 +57,14 @@ adb -s $SERIAL shell dumpsys SurfaceFlinger --timestats -enable >/dev/null
 # running app, so the connection it ends leaves no CSV; logcat has its times.
 for i in $(seq 1 $RELAUNCH); do
     sleep $((S / (RELAUNCH + 1)))
-    adb -s $SERIAL shell am start -S -n exo.phone/.MainActivity --es serial $SERIAL >/dev/null
+    adb -s $SERIAL shell am start -S -n exo.phone/.MainActivity --es role display >/dev/null
 done
 wait $HUBPID; sleep 2
 # The stream ends with the hub's server, possibly before the phone logged
 # its end-of-connection stats; the dump below catches that tail.
 kill $LOGPID 2>/dev/null; wait $LOGPID 2>/dev/null
 
-hub $T/collect.log --seconds 30
+hub $T/collect.log --no-reverse --seconds 30
 adb -s $SERIAL shell dumpsys SurfaceFlinger --timestats -dump > $T/ts.txt
 adb -s $SERIAL shell dumpsys SurfaceFlinger --timestats -disable >/dev/null
 adb -s $SERIAL logcat -d -T $START.000 -s ExoPhone:V AndroidRuntime:E > $T/logcat-tail.txt

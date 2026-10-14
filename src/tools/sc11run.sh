@@ -2,7 +2,7 @@
 # PROJECT_SPEC SC-11, an hour of both. The S21 as camera feeding Chrome, the
 # TB375FC as display with moving content on the EXO monitor, one hub for N seconds.
 # Shaped like linkrun.sh: hub, live logcat from a device time, timestats,
-# then a second hub with no role to collect. Adds the Chrome page
+# then a second hub that sets no reverse to collect. Adds the Chrome page
 # (campage.ps1) and a once-a-minute heat and battery sample per phone.
 # Usage: sc11run.sh <seconds> <tag>
 #
@@ -44,7 +44,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:/Dev/Exo/src/tools/campage
     -Log "$(cygpath -w $T/page.log)" -Seconds $((S + 300)) > $T/campage.txt 2>&1 &
 PAGEPID=$!
 say "hub start, --seconds $S"
-hub $T/hub.log --camera $CAM --display $DISP --seconds $S
+hub $T/hub.log --seconds $S
+"$ADB" -s $CAM shell am start -S -n exo.phone/.MainActivity --es role camera >/dev/null
+"$ADB" -s $DISP shell am start -S -n exo.phone/.MainActivity --es role display >/dev/null
 # The EXO monitor exists once the phone connects; the content goes on it then.
 until grep -q "vdisp EXO0001 on the desktop" $T/hub.log; do sleep 0.2; done
 powershell -NoProfile -ExecutionPolicy Bypass -File C:/Dev/Exo/src/tools/vddcontent.ps1 -Seconds $((S + 60)) > $T/content.log 2>&1 &
@@ -86,9 +88,10 @@ wait $SAMPLERPID
 sleep 2
 kill $LOGPID_PHONESERIAL $LOGPID_TABLETSERIAL 2>/dev/null
 
-# Collection, through a hub with no role. The tablet writes its CSV after the
-# connection ends; with ~100k rows that takes a while, so wait for it.
-hub $T/collect.log --seconds 180
+# Collection, through a hub that sets no reverse, so neither app reconnects.
+# The tablet writes its CSV after the connection ends; with ~100k rows that
+# takes a while, so wait for it.
+hub $T/collect.log --no-reverse --seconds 180
 say "collect hub up"
 sample
 for i in $(seq 1 60); do

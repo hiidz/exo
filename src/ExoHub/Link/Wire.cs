@@ -9,14 +9,25 @@ static class Wire
     // 2 added CURSOR_SHAPE, CURSOR_POS and TOUCH. Both roles share it, so a
     // version 1 app is refused on either connection. 3 added HELLO's
     // rotation byte after the serial, clockwise quarter turns (DECISIONS 6.4).
-    public const ushort Version = 3;
+    // 4: the role is picked on the phone, which names itself with an
+    // identity it made, and each side states the oldest version it speaks.
+    public const ushort Version = 4, Oldest = 4;
 
-    public const int MaxHelloBody = 256, MaxSerial = 64;
+    // HELLO is frozen up to its body: magic, the newest version the device
+    // speaks u16, body length u16. From 4 on the body starts with the oldest
+    // version it speaks u16, then role u8, identity [16], name length u8 and
+    // UTF-8 name, rotation u8. Later versions only append to it.
+    public const int MaxHelloBody = 256, IdSize = 16, MaxName = 64;
     public const byte RoleCamera = 1, RoleDisplay = 2;
-    public const byte Up = 1, Down = 2;
 
-    // WELCOME status.
+    // WELCOME: magic, version u16, status u8, body length u16, body. Accepted
+    // carries the version both sides now speak and the session ID; a refusal
+    // carries the hub's newest version and UTF-8 text. The phone turns each
+    // status into a sentence. On VersionMismatch it compares the hub's
+    // version with its own oldest to say which side to update. RoleTaken's
+    // text is the holder's name; the rest are detail for the phone's log.
     public const byte Accepted = 0, VersionMismatch = 1, BadHello = 2, RoleTaken = 3;
+    public const byte CameraUnavailable = 4, DisplayUnavailable = 5;
 
     // Every message after the handshake: type, flags, reserved u16, body length u32.
     public const int HeaderSize = 8;
