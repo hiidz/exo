@@ -4,13 +4,13 @@
 # Shaped like linkrun.sh: hub, live logcat from a device time, timestats,
 # then a second hub that sets no reverse to collect. Adds the Chrome page
 # (campage.ps1) and a once-a-minute heat and battery sample per phone.
-# Usage: sc11run.sh <seconds> <tag>
+# Usage: sc11run.sh <seconds> <tag> [display fps, 30]
 #
 # Every adb call uses the hub's own adb.exe and runs only while a hub owns
 # 5037 (DECISIONS 5.8). The sampler stops 60s before --seconds runs out, so
 # it cannot race the hub's exit and leave a server the next hub refuses.
 export MSYS_NO_PATHCONV=1
-S=$1; TAG=$2
+S=$1; TAG=$2; RATE=${3:-30}
 CAM=PHONESERIAL; DISP=TABLETSERIAL
 T=C:/Dev/Exo/src/ExoPhone/testdata/sc11/$TAG; mkdir -p $T
 BIN=C:/Dev/Exo/src/ExoHub/bin/Release/net10.0-windows
@@ -47,9 +47,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:/Dev/Exo/src/tools/campage
 PAGEPID=$!
 say "hub start, --seconds $S"
 hub $T/hub.log --seconds $S
-"$ADB" -s $CAM shell am start -S -n exo.phone/.MainActivity --es role camera >/dev/null
-"$ADB" -s $DISP shell am start -S -n exo.phone/.MainActivity --es role display \
-    --ei rate 30 --es orientation landscape --es size full >/dev/null
+"$ADB" -s $CAM shell am start -S -n exo.phone/.MainActivity --es role camera --es via usb >/dev/null
+"$ADB" -s $DISP shell am start -S -n exo.phone/.MainActivity --es role display --es via usb \
+    --ei rate $RATE --es orientation landscape --es size full >/dev/null
 # The EXO monitor exists once the phone connects; the content goes on it then.
 until grep -q "vdisp EXO0001 on the desktop" $T/hub.log; do sleep 0.2; done
 powershell -NoProfile -ExecutionPolicy Bypass -File C:/Dev/Exo/src/tools/vddcontent.ps1 -Seconds $((S + 60)) > $T/content.log 2>&1 &
