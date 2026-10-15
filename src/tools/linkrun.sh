@@ -24,6 +24,7 @@
 # short hub run that sets no reverse, so the app cannot reconnect, and whose
 # server dies with it.
 export MSYS_NO_PATHCONV=1
+sh C:/Dev/Exo/src/tools/preflight.sh || exit 1
 S=$1; TAG=$2; SERIAL=$3; CONTENT=${4:-moving}; RELAUNCH=${5:-0}; RATE=${6:-30}; SMOOTH=${7:-0}
 ROLE="--es role display --ei rate $RATE --es orientation landscape --es size full --ei smoothing $SMOOTH $PHONEARGS"
 STATIC=; [ "$CONTENT" = static ] && STATIC=-Static

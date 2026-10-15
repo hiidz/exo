@@ -10,6 +10,7 @@
 # 5037 (DECISIONS 5.8). The sampler stops 60s before --seconds runs out, so
 # it cannot race the hub's exit and leave a server the next hub refuses.
 export MSYS_NO_PATHCONV=1
+sh C:/Dev/Exo/src/tools/preflight.sh || exit 1
 S=$1; TAG=$2; RATE=${3:-30}
 CAM=PHONESERIAL; DISP=TABLETSERIAL
 T=C:/Dev/Exo/src/ExoPhone/testdata/sc11/$TAG; mkdir -p $T
