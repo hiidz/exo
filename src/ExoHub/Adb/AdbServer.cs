@@ -37,7 +37,7 @@ sealed class AdbServer
             (foreign == null ? "free" : $"answered protocol {foreign}"));
         return foreign == null ? null
             : $"FOREIGN adb server on {AdbWire.ServerPort}, protocol {foreign}; Exo does not share adb " +
-              "(PROJECT_SPEC 1). Stop it and start the hub again.";
+              "(PROJECT_SPEC 1). Stop it, then turn adb connections off and on in the window.";
     }
 
     // Spawns the server and returns once it answers host:version. Returns

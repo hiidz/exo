@@ -15,6 +15,8 @@
 #   2. regsvr32 on exocam.dll, HKLM, so the Frame Server can load it
 #   3. a desktop shortcut that starts the hub
 #   4. the phone app on every attached phone
+# Uninstall also removes what the hub wrote itself: its Run value and its
+# settings in HKCU.
 #
 # Not done here, by hand once: the display driver, src/ExoDisplay's
 # build.bat and install.ps1. Printed at the end of an install.
@@ -67,6 +69,12 @@ if ($Uninstall) {
     OnEachPhone { param($s) "$s uninstall: $(& $adb -s $s uninstall exo.phone 2>&1)" }
     Step 'desktop shortcut'
     Remove-Item $shortcut -ErrorAction SilentlyContinue
+    # The hub's own HKCU settings and its Run value. This hive is the
+    # elevating account's, so on another account the hub's toggle removes
+    # its Run value instead.
+    Step 'start with Windows and settings'
+    Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name Exo -ErrorAction SilentlyContinue
+    Remove-Item 'HKCU:\Software\Exo' -Recurse -ErrorAction SilentlyContinue
     Step 'DLL registration'
     # The Frame Server keeps the DLL and its log file open after the last
     # camera goes. It starts again by itself when an app next wants one.

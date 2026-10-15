@@ -25,11 +25,18 @@ sealed class DeviceTracker
     // Called on the tracker thread with the serial and its new state, or
     // null for a departure.
     readonly Action<string, string> onState;
-    Dictionary<string, string> devices = new();
+    volatile Dictionary<string, string> devices = new();
 
-    // Set when the hub must stop: a foreign server took 5037. Read by the
-    // main loop, as encoder.Error is.
+    // Set when tracking stops for good: a foreign server took 5037. adb
+    // then stays off, and the window says why (AdbControl).
     public volatile string Fatal;
+
+    // Each serial and its state, as of the last list. Replaced, never
+    // changed, so a reader on another thread sees one whole list.
+    public IReadOnlyDictionary<string, string> Devices => devices;
+
+    volatile bool stopped;
+    volatile NetworkStream held;  // the tracking socket, closed by Stop
 
     public DeviceTracker(AdbServer server, Stopwatch clock, Action<string, string> onState)
     {
@@ -49,9 +56,15 @@ sealed class DeviceTracker
             {
                 Track();
             }
-            catch (Exception ex) when (ex is IOException or SocketException or AdbFailException or InvalidDataException)
+            catch (Exception ex) when (ex is IOException or SocketException or AdbFailException or InvalidDataException
+                                           or ObjectDisposedException)
             {
                 Log($"tracking ended: {ex.GetType().Name}: {ex.Message}");
+            }
+            if (stopped)
+            {
+                Apply(new Dictionary<string, string>());
+                return;
             }
 
             // The socket ended, so the server has gone or is going.
@@ -68,10 +81,21 @@ sealed class DeviceTracker
         }
     }
 
+    // Ends tracking and, through the departures it reports, every reverse
+    // setup still retrying. The server is the caller's to end.
+    public void Stop()
+    {
+        stopped = true;
+        held?.Dispose();
+    }
+
     // One held socket, from request to EOF.
     void Track()
     {
         using var net = AdbWire.Connect();
+        held = net;
+        if (stopped)
+            return;
         AdbWire.Send(net, "host:track-devices");
         AdbWire.ReadStatus(net);
         Log("holding host:track-devices");
@@ -121,19 +145,24 @@ sealed class DeviceTracker
         devices = next;
     }
 
-    // Starts the server again. False when the hub must stop.
+    // Starts the server again. False when tracking must end: stopped, or a
+    // foreign server took 5037.
     bool Restart()
     {
         for (int failed = 0; ; failed++)
         {
+            if (stopped)
+                return false;
             if (failed > 0)
                 Thread.Sleep(Math.Min(FirstRetryMs << Math.Min(failed - 1, 10), MaxRetryMs));
             string refused = server.CheckForeign();
             if (refused == null)
             {
                 refused = server.Start();
+                if (refused == null && stopped)
+                    server.Child.Kill();  // Stop ended the one before it
                 if (refused == null)
-                    return true;
+                    return !stopped;
                 if (!refused.StartsWith("FOREIGN"))
                 {
                     Log($"restart {failed + 1} failed: {refused}");

@@ -35,6 +35,8 @@ hub() {
     HUBPID=$!
     until grep -q "holding host:track-devices" $LOG 2>/dev/null; do
         kill -0 $HUBPID 2>/dev/null || { echo "hub exited:"; grep REFUSED $LOG; exit 1; }
+        # A foreign adb on 5037 no longer ends the hub; it runs on without.
+        grep -q "adb REFUSED" $LOG && { echo "hub refused adb:"; grep REFUSED $LOG; kill $HUBPID; exit 1; }
         sleep 0.2
     done
 }

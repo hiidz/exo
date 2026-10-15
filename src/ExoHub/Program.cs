@@ -5,13 +5,18 @@
 // (DriverFrameSource), converts it to NV12 on the GPU while it is held, and
 // offers it to the hardware encoder once it is released. Any loss drops the
 // texture and reopens it, forever. The pointer comes from the driver on its
-// own thread (DriverCursor). Ctrl+C stops it and prints totals.
+// own thread (DriverCursor). Quit in the tray, or Ctrl+C where there is a
+// console, stops it and prints totals.
 //
 // Every device that reaches adb gets the reverse to the hub's port; the
 // role is picked in the app on the phone, which then connects.
 //
+// One hub per Windows session: a second start shows the first one's window
+// and exits. Its lines go to stdout when whoever started it reads that, and
+// otherwise to a log file (HubLog).
+//
 // Usage: ExoHub [--debug] [--seconds N] [--dump F [--dump-after S]] [--out F]
-//               [--camera-file F | --test-pattern [--camera-geometry W H S]] [--no-reverse]
+//               [--camera-file F | --test-pattern [--camera-geometry W H S]] [--no-reverse] [--tray]
 // --debug     D3D11 debug layer on, messages printed as they arrive. Slow.
 // --seconds N stop after N seconds, as if Ctrl+C was pressed.
 // --dump F    write the first converted frame to F as raw NV12. The one
@@ -30,6 +35,8 @@
 //             watching ExoCamera.dll refuse it (TECHNICAL_DESIGN 3.3).
 // --no-reverse  track devices but set up no reverse, so no app connects.
 //             For the tools' collection runs after a measured one.
+// --tray      start in the tray with no window: how Start with Windows
+//             starts it. With no stdout, the window opens otherwise.
 // Whatever the flags, the hub registers the virtual camera for as long as
 // it runs and removes it on exit.
 
@@ -65,6 +72,32 @@ const double HeartbeatMs = 500;
 // frame, 80 Mbps, so text stays as sharp while it moves (2026-10-14).
 const uint BitrateAt30 = 40_000_000;
 
+// One hub per Windows session. A second asks the first to show its window
+// and exits. Held until the hub exits.
+using var single = new Mutex(true, @"Local\ExoHub", out bool firstHub);
+if (!firstHub)
+{
+    Console.WriteLine("another hub runs in this session; asked it to show its window");
+    if (EventWaitHandle.TryOpenExisting(@"Local\ExoHub.Show", out EventWaitHandle other))
+        other.Set();
+    return 0;
+}
+using var showAsked = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\ExoHub.Show");
+
+// Before any other line, so a hub with no stdout logs every one. After the
+// check above, which would otherwise empty the running hub's file.
+HubLog.Start();
+// The encoder and pool failures below throw on purpose. With no console the
+// hub would vanish, so the exception goes to the log, and is shown.
+AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+{
+    Console.WriteLine($"FATAL {e.ExceptionObject}");
+    if (HubLog.FilePath != null)
+        System.Windows.Forms.MessageBox.Show($"Exo stopped: {(e.ExceptionObject as Exception)?.Message}\n\nLog: {HubLog.FilePath}",
+                                             "Exo", System.Windows.Forms.MessageBoxButtons.OK,
+                                             System.Windows.Forms.MessageBoxIcon.Error);
+};
+
 // 2 is PROCESS_PER_MONITOR_DPI_AWARE. Anything else means the manifest did
 // not apply, and every rectangle printed below is suspect.
 int awareness = Win32.GetAwarenessFromDpiAwarenessContext(Win32.GetThreadDpiAwarenessContext());
@@ -85,6 +118,7 @@ bool testPattern = false;
 int camWidth = 1280, camHeight = 720, camStride = 1344;
 string cameraFile = null;
 bool reverse = true;
+bool trayOnly = false;
 for (int i = 0; i < args.Length; i++)
 {
     switch (args[i])
@@ -102,6 +136,7 @@ for (int i = 0; i < args.Length; i++)
         case "--camera-file": cameraFile = args[++i]; break;
         case "--test-pattern": testPattern = true; break;
         case "--no-reverse": reverse = false; break;
+        case ExoHub.Ui.Settings.TrayFlag: trayOnly = true; break;
         default:
             Console.WriteLine($"unknown argument {args[i]}");
             return 2;
@@ -110,7 +145,6 @@ for (int i = 0; i < args.Length; i++)
 
 var clock = Stopwatch.StartNew();
 
-// The adb owner comes first, so a refusal exits before the display opens.
 // The job first of all: every process started after it is born inside.
 Job.JoinNew();
 // Once per process, before any other Media Foundation call. This early so
@@ -125,9 +159,8 @@ try
 }
 catch (SocketException ex)
 {
-    Console.WriteLine($"{clock.Elapsed.TotalSeconds,8:F3}s camera REFUSED: port {Wire.CameraPort}: {ex.SocketErrorCode}. " +
-                      "Another hub, or an orphan of one, holds it.");
-    return 2;
+    return Refuse($"{clock.Elapsed.TotalSeconds,8:F3}s camera REFUSED: port {Wire.CameraPort}: {ex.SocketErrorCode}. " +
+                  "Another hub, or an orphan of one, holds it.");
 }
 // The virtual camera, held for the hub's lifetime (DECISIONS 10 item 4).
 // After L7, so an orphaned hub fails on the port before registering a
@@ -150,13 +183,6 @@ else
 // The decoder the camera connection feeds, or null to refuse the camera
 // role: no virtual camera for it to reach, or L7 has another producer.
 CameraDecoder cameraRole = vcam != null && cameraFile == null ? decoder : null;
-var adb = new AdbServer(clock);
-string refused = adb.CheckForeign() ?? adb.Start();
-if (refused != null)
-{
-    Console.WriteLine($"{clock.Elapsed.TotalSeconds,8:F3}s adb REFUSED: {refused}");
-    return 2;
-}
 // Port 0: Windows picks it, and this instance holds it exclusively. With
 // the session ID in WELCOME it is the per-session identifier (5.7, 5.8).
 using var display = new DisplaySender(clock);
@@ -169,25 +195,50 @@ Console.WriteLine($"listening on 127.0.0.1:{devices.Port}, session {devices.Sess
                   $"camera role {(cameraRole != null ? "open" : "REFUSED")}, " +
                   $"reverse {(reverse ? "for every device" : "for none")}");
 var reverses = new ReverseSetup(devices.Port, clock);
-var tracker = new DeviceTracker(adb, clock, (serial, state) =>
+// Off from the window, or refused while a foreign adb holds 5037; the hub
+// runs on without it either way (AdbControl).
+var adb = new AdbControl(clock, (serial, state) =>
 {
     if (reverse)
         reverses.OnState(serial, state);
 });
-int exitCode = 0;
+if (ExoHub.Ui.Settings.AdbEnabled)
+    adb.Start();
+else
+    Console.WriteLine($"{clock.Elapsed.TotalSeconds,8:F3}s adb off in settings");
 
 using var source = new DriverFrameSource(monitor, debugLayer);
 // The pointer the phone draws (DECISIONS 11.1), from the driver.
 using var pointer = new DriverCursor(clock, display, () => source.Output);
 Console.WriteLine($"target monitor {VirtualDisplay.MonitorId}, heartbeat {HeartbeatMs}ms, wake {WakeMs}ms, " +
                   $"debug layer {(debugLayer ? "ON" : "off")}, " +
-                  $"{(seconds > 0 ? $"stopping after {seconds}s" : "Ctrl+C to stop")}");
+                  $"{(seconds > 0 ? $"stopping after {seconds}s" : "Quit in the tray to stop")}");
 Console.WriteLine();
 
 var stop = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; stop.Cancel(); };
 if (seconds > 0)
     stop.CancelAfter(TimeSpan.FromSeconds(seconds));
+
+// Launched as an app, not by a tool reading stdout: Start with Windows is
+// on from the first run, and the window opens unless started at sign-in.
+if (HubLog.FilePath != null)
+    ExoHub.Ui.Settings.FirstRun();
+var tray = new ExoHub.Ui.Tray(
+    () => new ExoHub.Ui.HubState(devices.Snapshot(), adb.Devices, adb.Problem, monitor.Unavailable,
+                                 vcam == null ? "the camera could not be registered" : null),
+    () => stop.Cancel(),
+    on =>
+    {
+        if (!on)
+        {
+            adb.Stop();
+            return null;
+        }
+        return adb.Start();
+    },
+    show: HubLog.FilePath != null && !trayOnly);
+ThreadPool.RegisterWaitForSingleObject(showAsked, (_, _) => tray.Show(), null, -1, executeOnlyOnce: false);
 
 
 // 1ms timers for the encoder's rate gate. How late the timer actually fires
@@ -262,13 +313,6 @@ int resends = 0, moves = 0;
 while (!stop.IsCancellationRequested)
 {
     string t = $"{clock.Elapsed.TotalSeconds,8:F3}s";
-
-    if (tracker.Fatal != null)
-    {
-        Console.WriteLine($"{t} adb REFUSED: {tracker.Fatal}");
-        exitCode = 2;
-        break;
-    }
 
     if (!source.IsOpen)
     {
@@ -490,6 +534,8 @@ while (!stop.IsCancellationRequested)
                       $" copied={f.Copied} waited={f.Waited}" + blt);
 }
 
+// First, so the icon leaves the tray while the rest shuts down.
+tray.Close();
 Console.WriteLine();
 Console.WriteLine($"totals {clock.Elapsed.TotalSeconds:F1}s  losses={losses} timeouts={timeouts} newImages={newImages} " +
                   $"frames skipped={frameGaps} moves={moves}");
@@ -569,7 +615,18 @@ MediaFactory.MFShutdown();
 Win32.timeEndPeriod(1);
 if (outPath != null)
     Console.WriteLine($"wrote {outPath}");
-return exitCode;
+return 0;
+
+// A refusal before the window exists. With no stdout it is also shown, or
+// the hub would vanish without a word.
+static int Refuse(string line)
+{
+    Console.WriteLine(line);
+    if (HubLog.FilePath != null)
+        System.Windows.Forms.MessageBox.Show(line.Trim(), "Exo", System.Windows.Forms.MessageBoxButtons.OK,
+                                             System.Windows.Forms.MessageBoxIcon.Error);
+    return 2;
+}
 
 // The one debug readback (DECISIONS 4.1). Writes the frame just converted
 // as raw NV12, then has ffmpeg make a PNG of it. Throwaway inspection, so

@@ -6,7 +6,7 @@ single adb connection and runs both at once. That is the point: two
 separate products each brought their own adb and could not run together.
 
 Personal tool for now, USB only, set up by hand. A version anyone can
-install, with a tray app and Wi-Fi, is planned.
+install, with Wi-Fi, is planned.
 
 ## What you get
 
@@ -42,7 +42,8 @@ To remove everything: `src/ExoSetup/setup.ps1 -Uninstall`, then
 
 ## Each time
 
-Double-click **Exo** on the desktop. Plug the phones in, in any order.
+Double-click **Exo** on the desktop the first time; after that it starts
+with Windows, in the tray. Plug the phones in, in any order.
 On each phone, open Exo and tap **Use as display** or **Use as webcam**,
 or both. The webcam asks for the camera the first time. A role another
 phone already holds is refused, and the phone says which one has it.
@@ -54,8 +55,21 @@ the front or back camera, the lens, the size and frame rate the PC's
 camera offers apps, a torch where there is one, and zoom, exposure and
 focus (left at the start for auto), which change the picture as you
 move them.
-Ctrl+C in the hub's window stops it, and nothing it started is left
-running.
+
+Exo lives in the tray. Its window, opened from the tray icon or the
+shortcut, shows each connected phone, its role and whether it works, and
+any USB phone waiting for its USB debugging prompt. It also holds:
+
+- **Start with Windows,** on from the first run.
+- **Enable adb connections (USB).** Off frees adb for Android Studio or
+  another tool; Exo cannot share adb with one. If another adb is running
+  when Exo starts, the window says so: close it, then turn this off and on.
+- **Windows display settings,** where the extra monitor is placed and
+  scaled.
+
+Closing the window leaves Exo running. **Quit** in the tray icon's menu
+stops it, and nothing it started is left running. Its log is
+`C:\Windows\Temp\Exo\logs\exo-hub.log`.
 
 ## What you will notice
 

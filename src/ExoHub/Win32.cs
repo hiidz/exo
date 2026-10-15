@@ -85,6 +85,13 @@ static class Win32
     [DllImport("winmm.dll")]
     public static extern uint timeEndPeriod(uint ms);
 
+    // Null, or INVALID_HANDLE_VALUE, when the hub was started with no
+    // stdout: a WinExe from the shortcut or at sign-in (HubLog).
+    public const int STD_OUTPUT_HANDLE = -11;
+
+    [DllImport("kernel32.dll")]
+    public static extern nint GetStdHandle(int which);
+
     // ExoDisplay's device interface, found by its GUID and opened like a
     // file. The list is a multi-string: paths separated by NUL, ending in two.
     [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]

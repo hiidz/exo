@@ -48,6 +48,26 @@ sealed class DeviceListener : IDisposable
         public readonly byte Role = role;
         public readonly byte Rotation = rotation;  // clockwise quarter turns, 0 or 2
         public readonly DisplayMode Mode = mode;   // the display role's; default for the camera
+        public CameraFormat Format;                // the camera role's
+        public int Frames;                         // the camera role's, received so far
+    }
+
+    // One accepted connection as the window shows it. Progress moves while
+    // it works: frames the display phone acked, or camera frames received.
+    public readonly record struct Link(Phone Phone, bool Camera, string Detail, int Progress);
+
+    public List<Link> Snapshot()
+    {
+        var links = new List<Link>();
+        lock (gate)
+        {
+            if (display != null)
+                links.Add(new Link(display.Phone, false, $"{display.Mode.Width}x{display.Mode.Height} at {display.Mode.Fps}fps",
+                                   Volatile.Read(ref sender.Acked)));
+            if (cameraConn != null)
+                links.Add(new Link(cameraConn.Phone, true, cameraConn.Format.ToString(), Volatile.Read(ref cameraConn.Frames)));
+        }
+        return links;
     }
 
     // camera is null when the hub has no virtual camera to feed, so the
@@ -228,7 +248,7 @@ sealed class DeviceListener : IDisposable
                 return Refuse(net, name, Wire.BadHello, $"display mode {mode} unsupported");
         }
 
-        var conn = new Connection(s, phone, role, rotation, mode);
+        var conn = new Connection(s, phone, role, rotation, mode) { Format = format };
         Connection replaced;
         lock (gate)
         {
@@ -386,6 +406,7 @@ sealed class DeviceListener : IDisposable
             gaps += lastSeq != 0 && seq != lastSeq + 1 ? 1 : 0;
             lastSeq = seq;
             frames++;
+            Volatile.Write(ref conn.Frames, total);
             keyframes += key ? 1 : 0;
             bytes += length;
             if (!camera.Submit(body.AsSpan(FrameFields, (int)length - FrameFields), key, config))

@@ -1,7 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <OutputType>Exe</OutputType>
+    <!-- No console: a tray icon and a window (PLAN.md, Goal). The tools
+         redirect stdout and still read it; otherwise see HubLog.cs. -->
+    <OutputType>WinExe</OutputType>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationIcon>Exo.ico</ApplicationIcon>
     <TargetFramework>net10.0-windows</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>disable</Nullable>
@@ -9,6 +13,9 @@
     <RootNamespace>ExoHub</RootNamespace>
     <!-- Declares per-monitor DPI awareness before any code runs. See app.manifest. -->
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- WinForms asks for DPI in code instead; the manifest stays, since the
+         awareness must be set before any display call. -->
+    <NoWarn>$(NoWarn);WFO0003</NoWarn>
     <!-- CodecApi.cs calls ICodecAPI through raw function pointers. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
@@ -34,6 +41,13 @@
     <Error Condition="!$(AdbSourcePropertiesText.Contains(';Pkg.Revision=$(AdbRevision);'))"
            Text="adb in $(AdbSource) is not platform-tools $(AdbRevision), the pinned revision. Set AdbSource to a $(AdbRevision) copy." />
   </Target>
+
+  <!-- Only the UI uses these; global, Cursor and Timer would be ambiguous. -->
+  <ItemGroup>
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+    <EmbeddedResource Include="Exo.ico" LogicalName="ExoHub.Exo.ico" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Vortice.DXGI" Version="3.8.3" />
