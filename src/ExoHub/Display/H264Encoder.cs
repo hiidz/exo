@@ -88,7 +88,8 @@ sealed class H264Encoder : IDisposable
     public uint Width { get; }
     public uint Height { get; }
     public uint Fps { get; }
-    public uint Bitrate { get; }
+    public uint Bitrate { get; }   // as built, the sender's identity for it
+    uint runningBitrate;           // the CBR target now, under the lock
     public string Name { get; }
 
     // What the encoder reported once configured. Printed by the caller.
@@ -142,7 +143,7 @@ sealed class H264Encoder : IDisposable
         Width = width;
         Height = height;
         Fps = fps;
-        Bitrate = bitrate;
+        Bitrate = runningBitrate = bitrate;
         this.sink = sink;
         this.sender = sender;
         sender?.SetKick(Kick);
@@ -342,10 +343,19 @@ sealed class H264Encoder : IDisposable
         // frame is actually going in to carry it.
         bool force = forceRequested | (sender?.TakeKeyframeRequest(Fps, Bitrate) ?? false);
         forceRequested = false;
+        // Over Wi-Fi the sender moves the CBR target. The AMD MFT takes it
+        // on the running encoder, from the next frame on, with no keyframe
+        // (2026-10-16, s5-ratetest-r1).
+        uint target = sender?.TargetFor(Fps, Bitrate) ?? 0;
+        bool retarget = target != 0 && target != runningBitrate;
+        if (retarget)
+            runningBitrate = target;
         f.Owner.Submit(f, sample =>
         {
             sample.SampleTime = time;
             sample.SampleDuration = duration;
+            if (retarget)
+                codec.Set(CodecApi.MeanBitRate, target, CodecApi.VT_UI4);
             // Set immediately before the input it applies to, so there is
             // no doubt which frame the encoder makes the IDR.
             if (force)

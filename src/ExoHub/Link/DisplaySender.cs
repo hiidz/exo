@@ -50,7 +50,7 @@ sealed class DisplaySender : IDisposable
     readonly Queue<(long t1, long t2)> pongs = new();  // under gate
     readonly Stack<Frame> free = new();     // under gate
     // Sent and not yet acked, oldest first, with when each was taken to send.
-    readonly Queue<(uint seq, long qpc)> inFlight = new();  // under gate
+    readonly Queue<(uint seq, long qpc, int bytes)> inFlight = new();  // under gate
     readonly Timer stallCheck;
     readonly Thread thread;
     NetworkStream stream;  // under gate; null with no device
@@ -106,16 +106,46 @@ sealed class DisplaySender : IDisposable
 
     // CBR for the attached phone, which the capture loop builds the encoder
     // at, matched as the rate is. NFR-3: 40 Mbps at 30fps, not to be tuned
-    // down, and at 60 the same bits a frame. Over Wi-Fi at most 40 Mbps,
-    // which is what got through (PLAN.md, Wi-Fi as built in step 4).
-    public const uint BitrateAt30 = 40_000_000, WifiCap = 40_000_000;
+    // down, and at 60 the same bits a frame. Over Wi-Fi it starts at 40 Mbps,
+    // which got through here (PLAN.md, Wi-Fi as built in step 4), and moves.
+    public const uint BitrateAt30 = 40_000_000, WifiStart = 40_000_000;
     // --bitrate, for measurements: per 30fps, whatever the transport.
     public uint BitrateOverride;
     public uint Bitrate { get { lock (gate) return bitrate; } }
     uint bitrate;  // under gate
 
     public uint BitrateFor(uint rate, bool wifi) =>
-        BitrateOverride != 0 ? BitrateOverride * rate / 30 : Math.Min(BitrateAt30 * rate / 30, wifi ? WifiCap : uint.MaxValue);
+        BitrateOverride != 0 ? BitrateOverride * rate / 30 : Math.Min(BitrateAt30 * rate / 30, wifi ? WifiStart : uint.MaxValue);
+
+    // Over Wi-Fi the CBR target follows the network (PLAN.md, Transport
+    // and Wi-Fi): the encoder is built at BitrateFor, which is where the
+    // target starts, and takes each new target on the running encoder
+    // (TargetFor). Bitrate stays the encoder's identity. A queue is the
+    // median ack time of a 250ms tick more than two frame intervals over
+    // the lowest tick median of the last 5s; one ack is too noisy, 12 to
+    // 92ms on an idle USB link (s5-ratetest-r1). Or the 6-frame cap hit in
+    // the tick, which a link slow from the start shows when its floor is
+    // already high. On a queue the target drops to three quarters of what
+    // was acked in the last second, then waits a second for the queue to
+    // drain; after 2s with none it rises 8% a second, up to USB's rate.
+    public const uint WifiFloor = 10_000_000;
+    const double RiseFactor = 1.08, CutFactor = 0.75;
+    bool adaptive;    // under gate, as all below
+    uint target, ceiling;
+    long holdUntilQpc, calmSinceQpc, riseAtQpc;
+    readonly List<double> tickAcks = new();
+    readonly Queue<(long qpc, double median)> tickMedians = new();
+    readonly Queue<(long qpc, int bytes)> ackedBytes = new();
+    bool tickAtCap;
+    public int TargetCuts, TargetRises;
+
+    // The target the encoder is to run at, or 0 for an encoder not built
+    // for this connection.
+    public uint TargetFor(uint encoderFps, uint encoderBitrate)
+    {
+        lock (gate)
+            return encoderFps == fps && encoderBitrate == bitrate ? target : 0;
+    }
 
     // The display connection, once its handshake is done. Discards until a
     // keyframe carrying SPS and PPS, and asks the encoder for one (5.3).
@@ -126,7 +156,10 @@ sealed class DisplaySender : IDisposable
             stream = net;
             serial = who;
             fps = rate;
-            bitrate = BitrateFor(rate, wifi);
+            bitrate = target = BitrateFor(rate, wifi);
+            adaptive = wifi && BitrateOverride == 0;
+            ceiling = BitrateAt30 * rate / 30;
+            ResetSignal();
             keyframeWanted = waitForKeyframe = true;
             paused = false;
             Connections++;
@@ -204,6 +237,7 @@ sealed class DisplaySender : IDisposable
             if (stream != net || !paused)
                 return;
             paused = false;
+            ResetSignal();
             keyframeWanted = waitForKeyframe = true;
             shapePending = shape != null;
             posPending = cursorKnown;
@@ -231,6 +265,7 @@ sealed class DisplaySender : IDisposable
                 if (inFlight.Count < MaxInFlight)
                     return false;
                 AtCap++;
+                tickAtCap = true;
                 return true;
             }
         }
@@ -250,7 +285,11 @@ sealed class DisplaySender : IDisposable
             long now = Stopwatch.GetTimestamp();
             while (inFlight.Count > 0 && (int)(seq - inFlight.Peek().seq) >= 0)
             {
-                AckMs.Add(Ms(now - inFlight.Dequeue().qpc));
+                var done = inFlight.Dequeue();
+                double ms = Ms(now - done.qpc);
+                AckMs.Add(ms);
+                tickAcks.Add(ms);
+                ackedBytes.Enqueue((now, done.bytes));
                 Acked++;
                 k = kick;
             }
@@ -266,6 +305,11 @@ sealed class DisplaySender : IDisposable
     {
         Action k = null;
         string why = null;
+        string change = null;
+        lock (gate)
+            change = Adapt();
+        if (change != null)
+            Log(change);
         lock (gate)
         {
             if (stream == null || paused || inFlight.Count < MaxInFlight)
@@ -282,6 +326,61 @@ sealed class DisplaySender : IDisposable
         Log(why);
         k?.Invoke();
     }
+
+    // Under gate. A new connection or a resume starts the signal again,
+    // since the old acks say nothing about the link now.
+    void ResetSignal()
+    {
+        tickAcks.Clear();
+        tickMedians.Clear();
+        ackedBytes.Clear();
+        holdUntilQpc = 0;
+        tickAtCap = false;
+        calmSinceQpc = riseAtQpc = Stopwatch.GetTimestamp();
+    }
+
+    // Under gate, each 250ms tick: the target over Wi-Fi. Returns a line to
+    // log when it changed.
+    string Adapt()
+    {
+        if (!adaptive || stream == null || paused || tickAcks.Count == 0)
+            return null;
+        long now = Stopwatch.GetTimestamp();
+        tickAcks.Sort();
+        double median = tickAcks[tickAcks.Count / 2];
+        tickAcks.Clear();
+        tickMedians.Enqueue((now, median));
+        while (now - tickMedians.Peek().qpc > 5 * Stopwatch.Frequency)
+            tickMedians.Dequeue();
+        while (now - ackedBytes.Peek().qpc > Stopwatch.Frequency)
+            ackedBytes.Dequeue();
+        double floorMs = tickMedians.Min(m => m.median);
+        double frameMs = 1000.0 / fps;
+        uint was = target;
+        bool atCap = tickAtCap;
+        tickAtCap = false;
+        if (median > floorMs + 2 * frameMs || atCap)
+        {
+            calmSinceQpc = now;
+            if (now < holdUntilQpc)
+                return null;
+            long acked = ackedBytes.Sum(a => (long)a.bytes) * 8;
+            target = (uint)Math.Clamp(acked * CutFactor, WifiFloor, was);
+            holdUntilQpc = now + Stopwatch.Frequency;
+            if (target == was)
+                return null;
+            TargetCuts++;
+            return $"{serial} Wi-Fi target {was / 1e6:F1} -> {target / 1e6:F1} Mbps: ack median {median:F0}ms{(atCap ? ", at the cap" : "")}, " +
+                   $"floor {floorMs:F0}ms, acked {acked / 1e6:F1} Mbps in the last second";
+        }
+        if (target >= ceiling || now - calmSinceQpc < 2 * Stopwatch.Frequency || now < riseAtQpc)
+            return null;
+        riseAtQpc = now + Stopwatch.Frequency;
+        target = (uint)Math.Min(target * RiseFactor, ceiling);
+        TargetRises++;
+        return $"{serial} Wi-Fi target {was / 1e6:F1} -> {target / 1e6:F1} Mbps, ack median {median:F0}ms";
+    }
+
     public bool TakeKeyframeRequest(uint encoderFps, uint encoderBitrate)
     {
         lock (gate)
@@ -393,7 +492,7 @@ sealed class DisplaySender : IDisposable
                     f = waiting.Dequeue();
                     // Counted before the write, so an ack can never come
                     // for a frame not yet in the queue.
-                    inFlight.Enqueue((f.Seq, Stopwatch.GetTimestamp()));
+                    inFlight.Enqueue((f.Seq, Stopwatch.GetTimestamp(), f.Length));
                     k = kick;
                     first = firstOfConnection;
                     firstOfConnection = false;

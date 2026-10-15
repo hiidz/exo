@@ -5,6 +5,10 @@
 # then a second hub that sets no reverse to collect. Adds the Chrome page
 # (campage.ps1) and a once-a-minute heat and battery sample per phone.
 # Usage: sc11run.sh <seconds> <tag> [display fps, 30]
+# DISPVIA and CAMVIA in the environment, usb (the default) or wifi, pick
+# each phone's transport; the phone keeps it for later starts.
+# DISPVIA and CAMVIA in the environment, usb (the default) or wifi, pick
+# each phone's transport; the phone keeps it for later starts.
 #
 # Every adb call uses the hub's own adb.exe and runs only while a hub owns
 # 5037 (DECISIONS 5.8). The sampler stops 60s before --seconds runs out, so
@@ -48,8 +52,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:/Dev/Exo/src/tools/campage
 PAGEPID=$!
 say "hub start, --seconds $S"
 hub $T/hub.log --seconds $S
-"$ADB" -s $CAM shell am start -S -n exo.phone/.MainActivity --es role camera --es via usb >/dev/null
-"$ADB" -s $DISP shell am start -S -n exo.phone/.MainActivity --es role display --es via usb \
+"$ADB" -s $CAM shell am start -S -n exo.phone/.MainActivity --es role camera --es via ${CAMVIA:-usb} >/dev/null
+"$ADB" -s $DISP shell am start -S -n exo.phone/.MainActivity --es role display --es via ${DISPVIA:-usb} \
     --ei rate $RATE --es orientation landscape --es size full >/dev/null
 # The EXO monitor exists once the phone connects; the content goes on it then.
 until grep -q "vdisp EXO0001 on the desktop" $T/hub.log; do sleep 0.2; done

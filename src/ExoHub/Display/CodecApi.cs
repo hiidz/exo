@@ -26,6 +26,7 @@ sealed unsafe class CodecApi : IDisposable
     public static readonly Guid Quality = new("fcbf57a3-7ea5-4b0c-9644-69b40c39c391");  // AVEncCommonQuality
     public static readonly Guid GopSize = new("95f31b26-95a4-41aa-9303-246a7fc6eef1");
     public static readonly Guid ForceKeyFrame = new("398c1b98-8353-475a-9ef2-8f265d260345");
+    public static readonly Guid MeanBitRate = new("f7222374-2144-4815-b550-a37f8e12ee52");  // AVEncCommonMeanBitRate
 
     public const ushort VT_BOOL = 11;
     public const ushort VT_UI4 = 19;

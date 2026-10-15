@@ -28,7 +28,8 @@
 // --no-reverse  track devices but set up no reverse, so no app connects.
 //             For the tools' collection runs after a measured one.
 // --bitrate M  CBR at M Mbps at 30fps, in place of 40. For the Wi-Fi rate
-//             control measurement; the phone's transport does not change it.
+//             control measurement; the phone's transport does not change it,
+//             and over Wi-Fi it stays fixed.
 // --quality Q  the encoder's quality mode at Q, 1 to 100, in place of CBR.
 //             Also a measurement flag.
 // --tray      start in the tray with no window: how Start with Windows
@@ -607,7 +608,7 @@ Console.WriteLine($"sender cursor: shapes sent={display.ShapesSent} positions gi
                   $"sent={display.PositionsSent} replaced before sending={display.PositionsReplaced}");
 Console.WriteLine($"encoded->sent   ms {Spread(display.WaitMs)}");
 Console.WriteLine($"sender acks: messages={display.Acks} frames acked={display.Acked} busy at the cap={display.AtCap} " +
-                  $"stall write-offs={display.StallReleases}");
+                  $"stall write-offs={display.StallReleases} Wi-Fi target cuts={display.TargetCuts} rises={display.TargetRises}");
 Console.WriteLine($"sent->acked     ms {Spread(display.AckMs)}");
 Console.WriteLine($"write blocked   ms {Spread(display.WriteMs)}");
 if (converter?.Pool is Nv12Pool pool)
