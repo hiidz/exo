@@ -2,9 +2,11 @@
 # plus motion, repainting as fast as possible, then closes itself after
 # $Seconds. -Static paints the
 # text once, with no motion, so DWM presents nothing more (DECISIONS 5.4).
+# -Fast paints only the moving strip, no text, so the picture changes
+# several times a vsync whatever clock the painter keeps.
 # -Screen picks a display by name (\\.\DISPLAYn) when more than one is not
 # primary.
-param([int]$Seconds = 150, [switch]$Static, [string]$Screen)
+param([int]$Seconds = 150, [switch]$Static, [switch]$Fast, [string]$Screen)
 
 Add-Type @"
 using System;
@@ -40,7 +42,7 @@ $form.Add_Paint({
     param($s, $e)
     $g = $e.Graphics
     $y = 20
-    foreach ($pt in $sizes) {
+    if (-not $Fast) { foreach ($pt in $sizes) {
         $font = New-Object System.Drawing.Font('Segoe UI', $pt)
         $x = 20
         foreach ($c in $colors) {
@@ -48,7 +50,7 @@ $form.Add_Paint({
             $y += [int]($font.GetHeight($g) * 1.2)
         }
         $font.Dispose()
-    }
+    } }
     $script:n++
     if ($Static) { return }
     # Motion: a bar sweeping across the bottom, and a frame counter.

@@ -5,8 +5,9 @@
 # then the phone's CSVs pulled and LinkTimes run on them. Pull the cable
 # during the run for the replug test; the hub log records every cycle.
 # Needs the hub built in Release, ExoPhone installed, and 5037 free.
-# Usage: linkrun.sh <seconds> <tag> <serial> [moving|static|browser] [relaunches] [fps] [smoothing]
+# Usage: linkrun.sh <seconds> <tag> <serial> [moving|static|browser|fast] [relaunches] [fps] [smoothing]
 # browser shows content60.html in Edge on the EXO monitor, one image a vsync.
+# fast paints only the moving strip, several images a vsync.
 # static paints the text once and nothing moves (DECISIONS 5.4). relaunches
 # restarts the app that many times, evenly spaced, each a new connection.
 # fps is 30 or 60, 30 by default; the display is landscape at full size.
@@ -26,6 +27,7 @@ export MSYS_NO_PATHCONV=1
 S=$1; TAG=$2; SERIAL=$3; CONTENT=${4:-moving}; RELAUNCH=${5:-0}; RATE=${6:-30}; SMOOTH=${7:-0}
 ROLE="--es role display --ei rate $RATE --es orientation landscape --es size full --ei smoothing $SMOOTH $PHONEARGS"
 STATIC=; [ "$CONTENT" = static ] && STATIC=-Static
+[ "$CONTENT" = fast ] && STATIC=-Fast
 # Output is local evidence, gitignored with the rest of testdata.
 T=C:/Dev/Exo/src/ExoPhone/testdata/link/$TAG; mkdir -p $T
 HUB=C:/Dev/Exo/src/ExoHub/bin/Release/net10.0-windows/ExoHub.exe
