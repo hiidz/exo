@@ -43,6 +43,11 @@ public class CameraService extends Service {
     private Link link;
     private PowerManager.WakeLock wakeLock;
     private volatile int lastTurns;  // the last landscape HELLO rotation; link thread writes
+    // When this webcam first read a landscape way, 0 before. A fixed turn
+    // locks lastTurns SETTLE_NS after it: started from a dark screen, the S21
+    // reads the other landscape for about 0.35s first (turned).
+    private volatile long firstReadNs;
+    private static final long SETTLE_NS = 2_000_000_000L;
     private DisplayManager displays;
     private volatile CameraRole current;    // the connection's camera, or null
     private static volatile CameraService instance;
@@ -60,8 +65,19 @@ public class CameraService extends Service {
         if (camera == null) return;
         CameraSettings s = CameraSettings.load(context);
         String opens = CameraRole.opens(s);
+        // Fixed holds the way it lies now; back to Auto, it follows the phone.
+        int turns = service.lastTurns;
+        if (!service.locked(s)) {
+            try {
+                turns = service.turns(s);
+            } catch (IOException e) {
+                Log.w(Codecs.TAG, "camera rotation on a settings change: " + e);
+            }
+        }
         if (opens != null && !opens.equals(camera.opened())) {
             camera.restart("the webcam changed to " + opens);
+        } else if (turns != service.lastTurns) {
+            camera.restart("the webcam's turn changed, hub turns " + turns * 90);
         } else {
             camera.update(s);
         }
@@ -130,18 +146,12 @@ public class CameraService extends Service {
 
                     @Override
                     public int rotation() throws IOException {
-                        // Away from the app, on the home screen or with the
-                        // screen off, the display reads portrait, a quarter
-                        // turn the hub refuses. The last landscape stands in
-                        // (DECISIONS 6.4); before any landscape, 0, which
-                        // turned() puts right.
-                        int turns = CameraRole.rotation(CameraService.this, CameraSettings.load(CameraService.this));
-                        if (turns % 2 == 0) {
-                            lastTurns = turns;
-                            return turns;
+                        CameraSettings s = CameraSettings.load(CameraService.this);
+                        if (locked(s)) {
+                            Log.i(Codecs.TAG, "camera rotation: fixed, hub turns " + lastTurns * 90);
+                        } else {
+                            lastTurns = turns(s);
                         }
-                        Log.i(Codecs.TAG, "camera rotation: display not landscape, sending the last landscape, hub turns "
-                                + lastTurns * 90);
                         return lastTurns;
                     }
                 });
@@ -149,6 +159,32 @@ public class CameraService extends Service {
         displays = getSystemService(DisplayManager.class);
         displays.registerDisplayListener(turned, new Handler(Looper.getMainLooper()));
         return START_NOT_STICKY;
+    }
+
+    /**
+     * HELLO's rotation for settings s. Away from the app, on the home screen
+     * or with the screen off, the display reads portrait, a quarter turn the
+     * hub refuses, so with Auto the last landscape stands in (DECISIONS
+     * 6.4); before any landscape, 0, which turned() puts right.
+     */
+    private int turns(CameraSettings s) throws IOException {
+        int turns = CameraRole.rotation(this, s);
+        if (turns % 2 == 0) {
+            if (firstReadNs == 0) firstReadNs = System.nanoTime();
+            return turns;
+        }
+        Log.i(Codecs.TAG, "camera rotation: display not landscape, sending the last landscape, hub turns "
+                + lastTurns * 90);
+        return lastTurns;
+    }
+
+    /**
+     * Whether the turn is held at lastTurns: fixed, and settled since this
+     * webcam first read a landscape way. Held until the webcam stops, so a
+     * reconnect keeps it.
+     */
+    private boolean locked(CameraSettings s) {
+        return s.turn == CameraSettings.TURN_FIXED && firstReadNs != 0 && System.nanoTime() - firstReadNs > SETTLE_NS;
     }
 
     /**
@@ -171,7 +207,9 @@ public class CameraService extends Service {
             CameraRole camera = current;
             if (camera == null || r % 2 == 0) return;
             try {
-                int turns = CameraRole.rotation(CameraService.this, CameraSettings.load(CameraService.this));
+                CameraSettings s = CameraSettings.load(CameraService.this);
+                if (locked(s)) return;
+                int turns = turns(s);
                 if (turns != lastTurns) camera.restart("the phone turned, hub turns " + turns * 90);
             } catch (IOException e) {
                 Log.w(Codecs.TAG, "camera rotation on turning: " + e);

@@ -371,6 +371,16 @@ sealed class DeviceListener : IDisposable
                 sender.Ack(net, BinaryPrimitives.ReadUInt32BigEndian(body));
                 continue;
             }
+            if (type == Wire.TypePause && length == 0)
+            {
+                sender.Pause(net);
+                continue;
+            }
+            if (type == Wire.TypeResume && length == 0)
+            {
+                sender.Resume(net);
+                continue;
+            }
             if (type == Wire.TypeTouch)
             {
                 if (!touch.Post(body.AsSpan(0, (int)length)))

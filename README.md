@@ -81,12 +81,20 @@ Then tap **Use as display** or **Use as webcam**, or both. The webcam
 asks for the camera the first time. A role another phone already holds is
 refused, and the phone says which one has it.
 
+Going back from the display keeps it connected: the PC's monitor and
+its windows stay where they are. Exo's screen then shows **Back to
+display** and **Stop display**; the webcam can start from there too.
+The home screen or another app keeps it too, with a notification that
+says so. Settings changed
+meanwhile apply when you go back to the display, which then reconnects
+in about a second.
+
 Settings are on the phone:
 
 - Under **Use as display**: the resolution, landscape or portrait, 30 or
-  60 fps (60 at first), and smoothing (off, 20 or 50 ms; 50 at first),
-  which holds each frame a little to show them at an even pace. The PC's
-  monitor takes exactly that mode the next time the display starts, and
+  60 fps (60 at first). The phone holds each frame 50 ms to show them at
+  an even pace. The PC's
+  monitor takes exactly that mode when the display starts or shows again, and
   while it shows, the phone's screen refreshes at a rate the frame rate
   fits evenly. A tablet on Android 16 or
   later ignores landscape or portrait: Android lets no app turn it, so
@@ -94,7 +102,10 @@ Settings are on the phone:
 - Under **Use as webcam**: the front or back camera, the lens, the size
   and frame rate the PC's camera offers apps, a torch where there is one,
   and zoom, exposure and focus (left at the start for auto), which change
-  the picture as you move them.
+  the picture as you move them. The turn: Auto keeps the picture upright
+  whichever way the phone lies on its side; Fixed keeps the way the phone
+  lay when the webcam started, so it never flips. To change it, lie the
+  phone the other way and start the webcam again.
 
 On the PC, Exo lives in the tray. Its window, opened from the tray icon
 or the Start menu, shows each connected phone, its role and whether it

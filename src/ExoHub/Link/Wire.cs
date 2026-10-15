@@ -18,7 +18,10 @@ static class Wire
     // 8: over Wi-Fi the hub may answer HELLO with Pending first, while the
     // PC asks its user, then Accepted or Denied. Only Wi-Fi sends it, and
     // no 7 app reaches Wi-Fi, so 7 is still spoken.
-    public const ushort Version = 8, Oldest = 7;
+    // 9: the display phone sends PAUSE when its display goes out of view and
+    // RESUME when it shows again unchanged. A phone below 9 never pauses; it
+    // drops the connection instead, so 7 and 8 are still spoken.
+    public const ushort Version = 9, Oldest = 7;
 
     // HELLO is frozen up to its body: magic, the newest version the device
     // speaks u16, body length u16. From 4 on the body starts with the oldest
@@ -63,6 +66,12 @@ static class Wire
     // or discarded. Cumulative, so a frame the decoder drops is covered by
     // the next one's ack.
     public const byte TypeAck = 7;
+    // From 9, device to hub, on the display connection, no body. PAUSE: the
+    // display is out of view; the hub sends no frames and no cursor, and
+    // the connection, and so the monitor, stays. RESUME: it shows again
+    // with the same mode; the hub starts again with a forced IDR. A changed
+    // mode connects again instead (PLAN.md, Decide, Phone and protocol).
+    public const byte TypePause = 8, TypeResume = 9;
 
     // Discovery over Wi-Fi, UDP on DiscoveryPort, the one fixed LAN port
     // (PLAN.md, Wi-Fi as built in step 4). Its own version. QUERY, phone to

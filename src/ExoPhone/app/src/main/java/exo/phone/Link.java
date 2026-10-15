@@ -111,8 +111,11 @@ final class Link implements Runnable {
     // panel size. 6: the display connection acks each frame (ACK), and
     // the hub caps the frames in flight. 7: the camera role's HELLO carries
     // its size and rate. 8: over Wi-Fi the hub may answer PENDING, then
-    // ACCEPTED or DENIED. HELLO's layout is in the hub's Wire.cs.
-    static final int VERSION = 8, OLDEST = 7;
+    // ACCEPTED or DENIED. 9: the display sends PAUSE when it goes out of
+    // view and RESUME when it shows again unchanged. HELLO's layout is in
+    // the hub's Wire.cs.
+    static final int VERSION = 9, OLDEST = 7;
+    static final int PAUSES_FROM = 9;
     static final int ROLE_CAMERA = 1, ROLE_DISPLAY = 2;
     static final int ACCEPTED = 0, VERSION_MISMATCH = 1, BAD_HELLO = 2, ROLE_TAKEN = 3;
     static final int CAMERA_UNAVAILABLE = 4, DISPLAY_UNAVAILABLE = 5;
@@ -126,7 +129,7 @@ final class Link implements Runnable {
     static final String BLOCKED = "Android does not let Exo use the network. Allow network data for Exo in Settings, Apps.";
     private static final int CONNECT_TIMEOUT_MS = 3000, FIND_MS = 1000;
     static final int FRAME = 1, PING = 2, PONG = 3, FLAG_KEYFRAME = 1, FLAG_CONFIG = 2;
-    static final int CURSOR_SHAPE = 4, CURSOR_POS = 5, TOUCH = 6, ACK = 7, FLAG_VISIBLE = 1;
+    static final int CURSOR_SHAPE = 4, CURSOR_POS = 5, TOUCH = 6, ACK = 7, PAUSE = 8, RESUME = 9, FLAG_VISIBLE = 1;
     private static final int PING_MS = 1000, SILENCE_MS = 3000;
     static final int FRAME_FIELDS = 4 + 3 * 8; // seq, present, encoded, sent
     static final int HEADER_SIZE = 8, MAX_BODY = 4 << 20;
@@ -146,6 +149,19 @@ final class Link implements Runnable {
     private String lastFailure;
     private String lastStatus = "";  // never a sentence, so the first status is passed on
     private int connections;
+
+    // The display role's view of its connection, under view. paused: the
+    // display is out of view (pause()), kept across connections, so one
+    // made meanwhile starts paused. decoder: the one frames go to, null
+    // while paused or between connections. displayName: the connection's,
+    // null between them. spoken: the version the last accepted connection
+    // speaks, 0 before one.
+    private final Object view = new Object();
+    private boolean paused;
+    private Decoder decoder;
+    private String displayName;
+    private int resumes;
+    private volatile int spoken;
 
     /**
      * version is VERSION except to prove a mismatch is refused; then this end
@@ -430,6 +446,7 @@ final class Link implements Runnable {
                     ByteBuffer.wrap(body).getLong(), Identity.hex(me.id), me.name));
             attempts = 0;
             lastFailure = null;
+            spoken = hubVersion;
             status(null);
 
             // Nothing at all for this long and the connection is dead. PONGs
@@ -440,22 +457,37 @@ final class Link implements Runnable {
                 cameraSession(s, in, out, name);
                 return;
             }
-            Decoder decoder = listener.newDecoder(name, this::sendAck);
-            decoder.start();
             Counts counts = new Counts();
             ArrayList<long[]> pongs = new ArrayList<>();
             ScheduledExecutorService pinger = Executors.newSingleThreadScheduledExecutor();
             pinger.scheduleAtFixedRate(() -> ping(out), 0, PING_MS, TimeUnit.MILLISECONDS);
             upward = new Upward(pinger, out);
+            Decoder first;
+            synchronized (view) {
+                displayName = name;
+                resumes = 0;
+                first = decoder = paused ? null : listener.newDecoder(name, this::sendAck);
+                if (paused) {
+                    Log.i(Codecs.TAG, "link connection " + connections + " starts paused");
+                    sendUp(PAUSE, new byte[0]);
+                }
+            }
+            if (first != null) first.start();
             try {
-                readMessages(in, decoder, counts, pongs);
+                readMessages(in, true, counts, pongs);
             } finally {
                 upward = null;
                 pinger.shutdownNow();
                 // The next connection replays the shape and position.
                 listener.onCursorPos(false, 0, 0, 0);
                 Log.i(Codecs.TAG, "link connection " + connections + " ended: " + counts + ", pongs " + pongs.size());
-                decoder.stop();
+                Decoder last;
+                synchronized (view) {
+                    last = decoder;
+                    decoder = null;
+                    displayName = null;
+                }
+                if (last != null) last.stop();
                 writePongs(listener.file(name + "-pongs.csv"), pongs);
                 listener.onLinkEnded(name);
             }
@@ -474,7 +506,7 @@ final class Link implements Runnable {
         ArrayList<long[]> pongs = new ArrayList<>();
         Thread reader = new Thread(() -> {
             try {
-                readMessages(in, null, new Counts(), pongs);
+                readMessages(in, false, new Counts(), pongs);
             } catch (IOException e) {
                 Log.i(Codecs.TAG, "link camera reader ended: " + e);
             } finally {
@@ -582,6 +614,65 @@ final class Link implements Runnable {
         sendUp(ACK, ByteBuffer.allocate(4).putInt((int) seq).array());
     }
 
+    /**
+     * The display went out of view: its decoder lets go of the Surface
+     * before this returns, the hub is told to pause, and the connection,
+     * and so the PC's monitor, stays. False, changing nothing, before any
+     * connection was accepted or with a hub below protocol 9; then stop the
+     * link instead. UI thread.
+     */
+    boolean pause() {
+        Decoder d;
+        synchronized (view) {
+            if (spoken < PAUSES_FROM) return false;
+            if (paused) return true;
+            paused = true;
+            d = decoder;
+            decoder = null;
+            sendUp(PAUSE, new byte[0]);
+        }
+        Log.i(Codecs.TAG, "link paused" + (displayName == null ? ", between connections" : ""));
+        if (d != null) d.stop();
+        return true;
+    }
+
+    /** Whether pause() would keep the connection. */
+    boolean canPause() {
+        return spoken >= PAUSES_FROM;
+    }
+
+    boolean paused() {
+        synchronized (view) {
+            return paused;
+        }
+    }
+
+    /**
+     * Back in view with the same mode: a new decoder, on the Surface the
+     * listener hands it now, and the hub sends a keyframe. With no
+     * connection at the moment, the next one starts unpaused. False when
+     * the connection now up speaks below protocol 9, made while paused with
+     * a hub since replaced by an older one: it never sends the keyframe, so
+     * connect again instead. UI thread.
+     */
+    boolean resume() {
+        Decoder d;
+        synchronized (view) {
+            if (!paused) return true;
+            if (displayName != null && spoken < PAUSES_FROM) return false;
+            paused = false;
+            if (displayName == null) {
+                Log.i(Codecs.TAG, "link resumed, between connections");
+                return true;
+            }
+            d = decoder = listener.newDecoder(displayName + "-resume" + (++resumes), this::sendAck);
+            sendUp(RESUME, new byte[0]);
+        }
+        Log.i(Codecs.TAG, "link resumed");
+        d.start();
+        return true;
+    }
+
     private boolean sendUp(int type, byte[] body) {
         Upward u = upward;
         if (u == null) return false;
@@ -634,17 +725,17 @@ final class Link implements Runnable {
 
     /** Per connection. Read by the log line when the connection ends. */
     private static final class Counts {
-        int received, discardedBeforeKeyframe, flagMismatch, paramChanges, skipped;
+        int received, discardedBeforeKeyframe, droppedPaused, flagMismatch, paramChanges, skipped;
         int cursorShapes, cursorPositions;
         long seqGaps, lastSeq = -1;
         final ArrayList<Long> scanNs = new ArrayList<>();
 
         @Override
         public String toString() {
-            return String.format("received %d, discarded before keyframe %d, seq gaps %d,"
+            return String.format("received %d, discarded before keyframe %d, dropped while paused %d, seq gaps %d,"
                             + " CONFIG flag disagreeing with the bytes %d, SPS/PPS changes %d,"
                             + " other messages skipped %d, cursor shapes %d, cursor positions %d", received,
-                    discardedBeforeKeyframe, seqGaps, flagMismatch, paramChanges, skipped, cursorShapes,
+                    discardedBeforeKeyframe, droppedPaused, seqGaps, flagMismatch, paramChanges, skipped, cursorShapes,
                     cursorPositions) + ", header scan ms " + scanStats();
         }
 
@@ -680,10 +771,16 @@ final class Link implements Runnable {
         listener.onCursorShape(Bitmap.createBitmap(argb, w, h, Bitmap.Config.ARGB_8888), hotX, hotY);
     }
 
-    private void readMessages(DataInputStream in, Decoder decoder, Counts counts, ArrayList<long[]> pongs)
+    /**
+     * display: the display connection, whose frames go to the decoder of
+     * the moment, or are acked and dropped while paused; else the camera's,
+     * which only takes PONGs.
+     */
+    private void readMessages(DataInputStream in, boolean display, Counts counts, ArrayList<long[]> pongs)
             throws IOException {
         byte[] skip = new byte[256];
         ByteBuffer firstParams = null;
+        Decoder fed = null;  // the decoder firstParams belongs to
         while (true) {
             int type = in.readUnsignedByte();
             int flags = in.readUnsignedByte();
@@ -697,19 +794,19 @@ final class Link implements Runnable {
                 pongs.add(new long[] {t1, t2, t3, System.nanoTime()});
                 continue;
             }
-            if (type == CURSOR_SHAPE && decoder != null) {
+            if (type == CURSOR_SHAPE && display) {
                 readCursorShape(in, length);
                 counts.cursorShapes++;
                 continue;
             }
-            if (type == CURSOR_POS && length == 16 && decoder != null) {
+            if (type == CURSOR_POS && length == 16 && display) {
                 int x = in.readInt(), y = in.readInt();
                 long hubUs = in.readLong();
                 counts.cursorPositions++;
                 listener.onCursorPos((flags & FLAG_VISIBLE) != 0, x, y, hubUs);
                 continue;
             }
-            if (type != FRAME || length < FRAME_FIELDS || decoder == null) {
+            if (type != FRAME || length < FRAME_FIELDS || !display) {
                 // Unknown types are skipped by their length (DECISIONS 5.7),
                 // and so is any FRAME on a camera connection, which has no decoder.
                 if (skip.length < length) skip = new byte[length];
@@ -731,6 +828,21 @@ final class Link implements Runnable {
             counts.received++;
             if (counts.lastSeq >= 0) counts.seqGaps += u.seq - counts.lastSeq - 1;
             counts.lastSeq = u.seq;
+
+            Decoder dec;
+            synchronized (view) {
+                dec = decoder;
+            }
+            if (dec != fed) {
+                // Paused, or a new decoder after RESUME, which starts at a keyframe.
+                fed = dec;
+                firstParams = null;
+            }
+            if (dec == null) {
+                counts.droppedPaused++;
+                sendAck(u.seq);
+                continue;
+            }
 
             // DECISIONS 5.3, receiver side: nothing before SPS, PPS and an IDR.
             if (firstParams == null && flags != (FLAG_KEYFRAME | FLAG_CONFIG)) {
@@ -765,7 +877,14 @@ final class Link implements Runnable {
             // output back to its frame.
             u.ptsUs = u.presentUs;
             try {
-                decoder.offer(u);
+                dec.offer(u);
+            } catch (IOException e) {
+                // A decoder pause() stopped meanwhile drops the frame; any
+                // other's failure ends the connection.
+                synchronized (view) {
+                    if (decoder == dec) throw e;
+                }
+                sendAck(u.seq);
             } catch (InterruptedException e) {
                 throw new IOException("interrupted");
             }

@@ -35,6 +35,11 @@ final class CameraSettings {
      */
     static final int[][] SIZES = {{1920, 1080}, {1280, 720}, {640, 360}};
     static final int[] RATES = {30, 60};
+    // The turn: Auto follows the phone between its two landscape ways; Fixed
+    // holds the way it lay as the webcam started (CameraService.locked;
+    // PLAN.md, Decide, Phone and protocol).
+    static final int TURN_AUTO = 0, TURN_FIXED = 1;
+    static final String[] TURNS = {"auto", "fixed"};
 
     static final class Lens {
         String id;
@@ -63,6 +68,7 @@ final class CameraSettings {
     float focus;        // 0: auto; otherwise 0..1 of the nearest focus distance
     int exposure;       // compensation steps
     boolean torch;
+    int turn;           // TURN_AUTO or TURN_FIXED
     int width = 1280, height = 720, fps = 30;  // as chosen; size() and fps() are what this lens gets
 
     static CameraSettings load(Context context) {
@@ -84,6 +90,7 @@ final class CameraSettings {
         s.focus = p.getFloat("camera.focus", 0);
         s.exposure = p.getInt("camera.exposure", 0);
         s.torch = p.getBoolean("camera.torch", false);
+        s.turn = p.getInt("camera.turn", TURN_AUTO) == TURN_FIXED ? TURN_FIXED : TURN_AUTO;
         s.width = p.getInt("camera.width", 1280);
         s.height = p.getInt("camera.height", 720);
         s.fps = p.getInt("camera.fps", 30);
@@ -147,6 +154,7 @@ final class CameraSettings {
                 .putFloat("camera.focus", focus)
                 .putInt("camera.exposure", exposure)
                 .putBoolean("camera.torch", torch)
+                .putInt("camera.turn", turn)
                 .putInt("camera.width", width)
                 .putInt("camera.height", height)
                 .putInt("camera.fps", fps)
@@ -201,8 +209,9 @@ final class CameraSettings {
     /**
      * The tools' extras, through the same fields as the controls: --es facing
      * front or back, --es lens ID, --ef zoom, --ef focus (0 auto, else 0..1),
-     * --ei exposure (steps), --ez torch, --es camsize WxH (one of SIZES), --ei
-     * camfps (30 or 60). Not size and rate, which are the display's.
+     * --ei exposure (steps), --ez torch, --es turn (one of TURNS), --es
+     * camsize WxH (one of SIZES), --ei camfps (30 or 60). Not size and rate,
+     * which are the display's.
      */
     void apply(Intent in) {
         String f = in.getStringExtra("facing");
@@ -213,6 +222,8 @@ final class CameraSettings {
         focus = in.getFloatExtra("focus", focus);
         exposure = in.getIntExtra("exposure", exposure);
         torch = in.getBooleanExtra("torch", torch);
+        int t = Arrays.asList(TURNS).indexOf(in.getStringExtra("turn"));
+        if (t >= 0) turn = t;
         String size = in.getStringExtra("camsize");
         if (size != null && size.matches("\\d+x\\d+")) {
             width = Integer.parseInt(size.split("x")[0]);
@@ -226,7 +237,7 @@ final class CameraSettings {
         Lens l = lens();
         return l == null ? "no camera" : (front ? "front" : "back") + " lens " + l.id + " (" + l.fov + "°), "
                 + size()[0] + "x" + size()[1] + " at " + fps() + "fps, zoom " + zoom
-                + ", focus " + (focus == 0 ? "auto" : focus) + ", exposure " + exposure + ", torch " + torch;
+                + ", focus " + (focus == 0 ? "auto" : focus) + ", exposure " + exposure + ", torch " + torch + ", turn " + TURNS[turn];
     }
 
     private static SharedPreferences prefs(Context context) {

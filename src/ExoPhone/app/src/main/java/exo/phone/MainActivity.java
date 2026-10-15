@@ -57,14 +57,14 @@ public class MainActivity extends Activity {
     private TextView viaStatus;
 
     private DisplaySettings settings;
-    private Spinner sizePicker, orientationPicker, ratePicker, smoothingPicker;
+    private Spinner sizePicker, orientationPicker, ratePicker;
     private CameraSettings camera;
-    private Spinner facingPicker, lensPicker, camSizePicker, camRatePicker;
+    private Spinner facingPicker, lensPicker, camSizePicker, camRatePicker, turnPicker;
     private final List<Integer> camRates = new ArrayList<>();  // the rate picker's, in its order
     private CheckBox torchBox;
     private SeekBar zoomBar, exposureBar, focusBar;
     private TextView focusLabel;
-    private Button webcamButton;
+    private Button webcamButton, displayButton, stopDisplayButton;
     private TextView webcamStatus;
     // A sentence of this screen's own, such as a refused permission, shown
     // in place of the service's until the next start.
@@ -140,19 +140,27 @@ public class MainActivity extends Activity {
         root.addView(viaStatus);
         bindVia();
 
-        Button display = new Button(this);
-        display.setText("Use as display");
-        display.setOnClickListener(v -> useDisplay());
-        root.addView(display);
+        // While the display runs, out of view, its button goes back to it and
+        // a second one ends it.
+        LinearLayout displayRow = new LinearLayout(this);
+        displayButton = new Button(this);
+        displayButton.setOnClickListener(v -> useDisplay());
+        displayRow.addView(displayButton, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        stopDisplayButton = new Button(this);
+        stopDisplayButton.setText("Stop display");
+        stopDisplayButton.setOnClickListener(v -> {
+            DisplayActivity.end();
+            bindDisplay(false);
+        });
+        displayRow.addView(stopDisplayButton, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        root.addView(displayRow);
         // The display's settings, under its button. The hub's monitor gets
-        // exactly this mode, and the decoder this smoothing, the next time the
-        // display starts.
+        // exactly this mode when the display starts, or shows again.
         settings = DisplaySettings.load(this);
         LinearLayout pickers = new LinearLayout(this);
         sizePicker = picker(pickers, this::picked);
         orientationPicker = picker(pickers, this::picked);
         ratePicker = picker(pickers, this::picked);
-        smoothingPicker = picker(pickers, this::picked);
         root.addView(pickers);
         bindPickers();
         webcamButton = new Button(this);
@@ -174,6 +182,7 @@ public class MainActivity extends Activity {
         lensPicker = picker(camPickers, this::cameraPicked);
         camSizePicker = picker(camPickers, this::cameraPicked);
         camRatePicker = picker(camPickers, this::cameraPicked);
+        turnPicker = picker(camPickers, this::cameraPicked);
         torchBox = new CheckBox(this);
         torchBox.setText("Torch");
         torchBox.setOnCheckedChangeListener((box, on) -> {
@@ -265,10 +274,7 @@ public class MainActivity extends Activity {
         int[] size = at >= 0 && at < settings.sizes.size() ? settings.sizes.get(at) : settings.size;
         boolean portrait = orientationPicker.getSelectedItemPosition() == 1;
         int fps = DisplaySettings.RATES[Math.max(0, ratePicker.getSelectedItemPosition())];
-        int smoothing = DisplaySettings.SMOOTHING[Math.max(0, smoothingPicker.getSelectedItemPosition())];
-        if (size == settings.size && portrait == settings.portrait && fps == settings.fps
-                && smoothing == settings.smoothing) return;
-        settings.smoothing = smoothing;
+        if (size == settings.size && portrait == settings.portrait && fps == settings.fps) return;
         settings.portrait = portrait;
         settings.fps = fps;
         settings.refresh(size == null ? null : size[0] + "x" + size[1]);
@@ -351,6 +357,7 @@ public class MainActivity extends Activity {
             rates.add(r + " fps");
         }
         bind(camRatePicker, rates, Math.max(0, camRates.indexOf(camera.fps())));
+        bind(turnPicker, Arrays.asList("Turn: auto", "Turn: fixed"), camera.turn);
         torchBox.setVisibility(any && lens.flash ? View.VISIBLE : View.INVISIBLE);
         torchBox.setChecked(camera.torch);
         zoomBar.setMax(100);
@@ -365,7 +372,7 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * The side, lens, size or rate picker moved. Spinners report
+     * The side, lens, size, rate or turn picker moved. Spinners report
      * bindCamera's selections too, which change nothing.
      */
     private void cameraPicked() {
@@ -376,6 +383,7 @@ public class MainActivity extends Activity {
         int at = lensPicker.getSelectedItemPosition();
         int s = camSizePicker.getSelectedItemPosition();
         int r = camRatePicker.getSelectedItemPosition();
+        int t = turnPicker.getSelectedItemPosition();
         if (front != camera.front) {
             camera.front = front;  // that side's lens is the one last chosen there
         } else if (at >= 0 && at < side.size() && side.get(at) != lens) {
@@ -385,6 +393,8 @@ public class MainActivity extends Activity {
             camera.height = lens.sizes.get(s)[1];
         } else if (r >= 0 && r < camRates.size() && camRates.get(r) != camera.fps()) {
             camera.fps = camRates.get(r);
+        } else if (t >= 0 && t != camera.turn) {
+            camera.turn = t;
         } else {
             return;
         }
@@ -406,8 +416,6 @@ public class MainActivity extends Activity {
         bind(sizePicker, sizes, Math.max(0, settings.sizes.indexOf(settings.size)));
         bind(orientationPicker, Arrays.asList("Landscape", "Portrait"), settings.portrait ? 1 : 0);
         bind(ratePicker, Arrays.asList("30 fps", "60 fps"), settings.fps == 60 ? 1 : 0);
-        bind(smoothingPicker, Arrays.asList("Smoothing off", "Smoothing 20 ms", "Smoothing 50 ms"),
-                Math.max(0, Arrays.binarySearch(DisplaySettings.SMOOTHING, settings.smoothing)));
     }
 
     private void bind(Spinner s, List<String> items, int selected) {
@@ -431,6 +439,7 @@ public class MainActivity extends Activity {
     }
 
     private void refresh() {
+        bindDisplay(DisplayActivity.running != null);
         webcamButton.setText(CameraService.running ? "Stop webcam" : "Use as webcam");
         String s = webcamProblem != null ? webcamProblem : CameraService.status;
         webcamStatus.setText(s);
@@ -519,8 +528,15 @@ public class MainActivity extends Activity {
                 .show();
     }
 
+    private void bindDisplay(boolean running) {
+        displayButton.setText(running ? "Back to display" : "Use as display");
+        stopDisplayButton.setVisibility(running ? View.VISIBLE : View.GONE);
+    }
+
+    /** Starts the display, or brings the one running back to the front: there is only ever one. */
     private void useDisplay() {
-        startActivity(new Intent(this, DisplayActivity.class).putExtras(getIntent()));
+        startActivity(new Intent(this, DisplayActivity.class).putExtras(getIntent())
+                .addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT));
     }
 
     private void useWebcam() {

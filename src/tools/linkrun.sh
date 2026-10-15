@@ -11,8 +11,8 @@
 # static paints the text once and nothing moves (DECISIONS 5.4). relaunches
 # restarts the app that many times, evenly spaced, each a new connection.
 # fps is 30 or 60, 30 by default; the display is landscape at full size.
-# smoothing is the phone's smoothing buffer in ms, 0 (off, the default),
-# 20 or 50; given every run, since the phone keeps the last one.
+# smoothing is the phone's smoothing buffer in ms, 0 (off, the default
+# here) or any other; the app alone uses 50 and keeps none given.
 # HUBARGS in the environment go to the measured hub, such as --bitrate 20
 # or --quality 70 for the Wi-Fi rate control runs.
 # PHONEARGS go to the app's start, such as "--es via wifi" or "--es via usb";

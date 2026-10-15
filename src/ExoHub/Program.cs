@@ -427,8 +427,17 @@ while (!stop.IsCancellationRequested)
             DumpAndDecode(converter, dumpPath, t);
             dumpPath = null;
         }
-        encoder.Offer(converted, presentQpc);
-        lastOfferQpc = Stopwatch.GetTimestamp();
+        // With no phone to send to, or its display paused, nothing is
+        // encoded; a phone that attaches or resumes gets a resend at once.
+        if (display.HasDevice)
+        {
+            encoder.Offer(converted, presentQpc);
+            lastOfferQpc = Stopwatch.GetTimestamp();
+        }
+        else
+        {
+            converted.Release();
+        }
         converted = null;
     }
     // Printed, not acted on: nothing yet says what recovery from a hung
@@ -584,7 +593,7 @@ decoder.Dispose();
 vcam?.Dispose();
 camera.Dispose();
 display.Dispose();
-Console.WriteLine($"sender connections={display.Connections} sent={display.Sent} bytes={display.SentBytes} " +
+Console.WriteLine($"sender connections={display.Connections} pauses={display.Pauses} sent={display.Sent} bytes={display.SentBytes} " +
                   $"discarded: no device={display.DiscardedNoDevice} before keyframe={display.DiscardedBeforeKeyframe} other rate={display.DiscardedOtherRate}; " +
                   $"max waiting={display.MaxWaiting}");
 touch.Dispose();

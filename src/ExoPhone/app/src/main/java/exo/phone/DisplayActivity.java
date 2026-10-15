@@ -41,7 +41,8 @@ import java.util.Arrays;
  * The display role, started by MainActivity's "Use as display". Logs the
  * decoder capabilities, then either decodes the file named by the "file"
  * extra to a full-screen SurfaceView, or, without one, connects to the hub
- * through Link, over USB or Wi-Fi, until the user leaves. MainActivity
+ * through Link, over USB or Wi-Fi, until MainActivity's "Stop display";
+ * out of view, the connection pauses and stays. MainActivity
  * passes its extras on, so the tools reach both through it:
  *
  *   adb shell am start -S -n exo.phone/.MainActivity --es role display [--ei proto 3]
@@ -167,6 +168,11 @@ public class DisplayActivity extends Activity {
         setRequestedOrientation(name == null && settings.portrait ? ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
                 : ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
         if (name == null) {
+            running = this;
+            if (Build.VERSION.SDK_INT >= 33) {
+                getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                        android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::back);
+            }
             statusView = new TextView(this);
             statusView.setTextSize(24);
             statusView.setTextColor(Color.WHITE);
@@ -192,27 +198,34 @@ public class DisplayActivity extends Activity {
         view.getHolder().addCallback(new SurfaceHolder.Callback() {
             @Override
             public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
-                if (name != null || link != null) return;
+                if (name != null) return;
                 boolean held = height > width;
-                if (held != settings.portrait) {
-                    // Android 16 ignores an app's orientation on a screen
-                    // 600dp or more across, for targetSdk 36 and later, with
-                    // no opt-out at 37: a tablet faces the way it is held,
-                    // so the display takes that orientation. A phone turns.
-                    if (Build.VERSION.SDK_INT < 36 || getResources().getConfiguration().smallestScreenWidthDp < 600) return;
-                    // The largest the decoder took stays the largest it takes
-                    // this way; any other size is kept if it still fits.
-                    boolean largest = settings.size == null || settings.size == settings.sizes.get(0);
-                    settings.portrait = held;
-                    settings.refresh(largest ? null : settings.size[0] + "x" + settings.size[1]);
-                    Log.i(Codecs.TAG, "held the other way; display settings: " + settings);
-                    if (settings.size == null) {
-                        showStatus("This tablet cannot decode the display at " + settings.fps
-                                + " fps held this way. Turn it, or pick another frame rate.");
-                        return;
+                if (link != null) {
+                    // Back in view. The same mode resumes the connection;
+                    // settings changed meanwhile connect again, as a new
+                    // start does (PLAN.md, Decide, Phone and protocol).
+                    if (!link.paused()) return;
+                    DisplayService.stop(DisplayActivity.this);
+                    DisplaySettings now = DisplaySettings.load(DisplayActivity.this);
+                    now.apply(getIntent());
+                    if (followHeld(now, held) && now.size != null && settings.size != null
+                            && Arrays.equals(now.helloTail(), settings.helloTail())) {
+                        if (!link.resume()) {
+                            Log.i(Codecs.TAG, "the hub now speaks below protocol 9; connecting again");
+                            recreate();
+                        }
+                    } else {
+                        Log.i(Codecs.TAG, "display settings changed while away: " + now + "; connecting again");
+                        recreate();
                     }
+                    return;
                 }
-                Surface surface = holder.getSurface();
+                if (!followHeld(settings, held)) return;
+                if (settings.size == null) {
+                    showStatus("This tablet cannot decode the display at " + settings.fps
+                            + " fps held this way. Turn it, or pick another frame rate.");
+                    return;
+                }
                 link = new Link(DisplayActivity.this, Identity.of(DisplayActivity.this), in.getIntExtra("proto", Link.VERSION),
                         Link.ROLE_DISPLAY, new Link.Listener() {
                             @Override
@@ -228,7 +241,7 @@ public class DisplayActivity extends Activity {
                             @Override
                             public Decoder newDecoder(String conn, java.util.function.LongConsumer acks) {
                                 return Decoder.ofLink(file(conn + ".csv"), settings.width(), settings.height(), settings.fps,
-                                        lowLatency, codec, surface, DisplayActivity.this::fit, acks,
+                                        lowLatency, codec, view.getHolder().getSurface(), DisplayActivity.this::fit, acks,
                                         settings.smoothing);
                             }
 
@@ -294,8 +307,13 @@ public class DisplayActivity extends Activity {
 
             @Override
             public void surfaceDestroyed(SurfaceHolder holder) {
-                if (link != null) link.stop();
-                link = null;
+                // Out of view: the connection pauses and stays, or, before
+                // one was accepted or with an older hub, ends as before.
+                if (link != null && !link.pause()) {
+                    link.stop();
+                    link = null;
+                }
+                if (link != null) DisplayService.start(DisplayActivity.this);
                 if (decoder != null) decoder.stop();
             }
         });
@@ -507,9 +525,66 @@ public class DisplayActivity extends Activity {
         });
     }
 
+    /**
+     * Android 16 ignores an app's orientation on a screen 600dp or more
+     * across, for targetSdk 36 and later, with no opt-out at 37: a tablet
+     * faces the way it is held, so s takes that orientation. The largest
+     * size the decoder took stays the largest it takes this way; any other
+     * is kept if it still fits. False on a phone held the other way, which
+     * turns: wait for the window to.
+     */
+    private boolean followHeld(DisplaySettings s, boolean held) {
+        if (held == s.portrait) return true;
+        if (Build.VERSION.SDK_INT < 36 || getResources().getConfiguration().smallestScreenWidthDp < 600) return false;
+        boolean largest = s.size == null || s.size == s.sizes.get(0);
+        s.portrait = held;
+        s.refresh(largest ? null : s.size[0] + "x" + s.size[1]);
+        Log.i(Codecs.TAG, "held the other way; display settings: " + s);
+        return true;
+    }
+
+    /** MainActivity's "Back to display" brings this one to the front. */
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+    }
+
+    /**
+     * Back goes to the app's screen and keeps the connection, paused, once
+     * the hub has accepted it at protocol 9 or later; there "Stop display"
+     * ends it. Before that, back ends the display as before.
+     */
+    private void back() {
+        if (link != null && link.canPause()) {
+            startActivity(new Intent(this, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT));
+        } else {
+            finish();
+        }
+    }
+
+    @Override
+    @SuppressWarnings("deprecation")
+    public void onBackPressed() {
+        back();  // below Android 13; from 13 the callback in onCreate
+    }
+
+    /** The display role's activity while it lives, connected or paused; else null. */
+    static volatile DisplayActivity running;
+
+    /** "Stop display": ends the display and its connection. Main thread. */
+    static void end() {
+        DisplayActivity a = running;
+        if (a != null) a.finish();
+    }
+
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        if (running == this) running = null;
+        DisplayService.stop(this);
+        if (link != null) link.stop();
+        link = null;
         cursorThread.quitSafely();
     }
 }

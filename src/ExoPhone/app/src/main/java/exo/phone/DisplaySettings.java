@@ -23,9 +23,9 @@ import java.util.List;
  */
 final class DisplaySettings {
     static final int[] RATES = {30, 60};
-    // Smoothing's buffer in ms, as SuperDisplay offers it; 50 by default,
-    // the one even at 60 on the tablet (PLAN.md, v3 step 2, smoothness).
-    static final int[] SMOOTHING = {0, 20, 50};
+    // Smoothing.s buffer in ms, fixed: the one even at 60 on the tablet
+    // (PLAN.md, Decide, Phone and protocol).
+    static final int SMOOTHING = 50;
     // All of the panel, then three quarters, two thirds and half of it.
     private static final int[][] STEPS = {{1, 1}, {3, 4}, {2, 3}, {1, 2}};
 
@@ -33,7 +33,7 @@ final class DisplaySettings {
     final int mmW, mmH;        // the panel's size, landscape; 0 when not believable
     boolean portrait;
     int fps = 60;
-    int smoothing;             // ms, one of SMOOTHING; 0 is off
+    int smoothing = SMOOTHING; // ms, 0 is off; only the tools change it, not kept
     String codec;              // a decoder name from the tools, as Decoder takes it; not kept
     final List<int[]> sizes = new ArrayList<>();  // landscape, those the decoder takes now
     int[] size;                // one of sizes, or null when it takes none
@@ -65,7 +65,6 @@ final class DisplaySettings {
         SharedPreferences p = prefs(context);
         s.portrait = p.getBoolean("display.portrait", false);
         s.fps = p.getInt("display.fps", 60);
-        s.smoothing = p.getInt("display.smoothing", 50);
         s.refresh(p.getString("display.size", null));
         return s;
     }
@@ -74,7 +73,6 @@ final class DisplaySettings {
         prefs(context).edit()
                 .putBoolean("display.portrait", portrait)
                 .putInt("display.fps", fps)
-                .putInt("display.smoothing", smoothing)
                 .putString("display.size", size == null ? null : size[0] + "x" + size[1])
                 .apply();
     }
@@ -82,9 +80,9 @@ final class DisplaySettings {
     /**
      * The tools' extras, through the same fields as the pickers: --ei rate,
      * --es orientation portrait or landscape, --es size WxH (landscape) or
-     * full, the largest the decoder takes, --ei smoothing (ms, one of
-     * SMOOTHING), and DisplayActivity's -e codec.
-     * Kept, as a picker's change would be.
+     * full, the largest the decoder takes, --ei smoothing (ms, 0
+     * off), and DisplayActivity's -e codec. Kept, as a picker's change would
+     * be, but for smoothing and codec.
      */
     void apply(Intent in) {
         fps = in.getIntExtra("rate", fps);

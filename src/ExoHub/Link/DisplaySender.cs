@@ -56,6 +56,9 @@ sealed class DisplaySender : IDisposable
     NetworkStream stream;  // under gate; null with no device
     string serial;
     bool keyframeWanted, waitForKeyframe, disposed;
+    // The phone's display is out of view (PAUSE): only PONGs go, and the
+    // capture loop encodes nothing, until RESUME. Under gate.
+    bool paused;
     // The next frame written is the first of its connection. For the replug
     // timings in DECISIONS 5.8.
     bool firstOfConnection;
@@ -76,7 +79,7 @@ sealed class DisplaySender : IDisposable
     uint seq;
     int spsProfile = -1, spsLevel = -1;
     // Totals for the whole run, read at the end.
-    public int Sent, DiscardedNoDevice, DiscardedBeforeKeyframe, DiscardedOtherRate, MaxWaiting, Connections;
+    public int Sent, DiscardedNoDevice, DiscardedBeforeKeyframe, DiscardedOtherRate, MaxWaiting, Connections, Pauses;
     public long SentBytes;
     public readonly List<double> WaitMs = new();   // encoded to sent
     public readonly List<double> WriteMs = new();  // how long Write blocked
@@ -125,6 +128,7 @@ sealed class DisplaySender : IDisposable
             fps = rate;
             bitrate = BitrateFor(rate, wifi);
             keyframeWanted = waitForKeyframe = true;
+            paused = false;
             Connections++;
             ReturnAll();
             shapePending = shape != null;
@@ -175,8 +179,42 @@ sealed class DisplaySender : IDisposable
         }
     }
 
-    // The capture loop reads these to decide on a resend (DECISIONS 5.4).
-    public bool HasDevice { get { lock (gate) return stream != null; } }
+    // The listener's reader calls these for PAUSE and RESUME (protocol 9):
+    // the phone left its display and came back unchanged. Paused, frames
+    // in flight are written off, since the phone acks what still arrives
+    // but the stall check must not count them. Resumed, as a new
+    // connection: a forced IDR first, and the cursor replayed.
+    public void Pause(NetworkStream net)
+    {
+        lock (gate)
+        {
+            if (stream != net || paused)
+                return;
+            paused = true;
+            Pauses++;
+            ReturnAll();
+        }
+        Log($"{serial} paused, its display out of view");
+    }
+
+    public void Resume(NetworkStream net)
+    {
+        lock (gate)
+        {
+            if (stream != net || !paused)
+                return;
+            paused = false;
+            keyframeWanted = waitForKeyframe = true;
+            shapePending = shape != null;
+            posPending = cursorKnown;
+            Monitor.PulseAll(gate);
+        }
+        Log($"{serial} resumed, waiting for a forced IDR");
+    }
+
+    // The capture loop reads these to decide on a resend (DECISIONS 5.4),
+    // and encodes nothing without a device.
+    public bool HasDevice { get { lock (gate) return stream != null && !paused; } }
     public bool KeyframeWanted { get { lock (gate) return keyframeWanted; } }
 
     // The encoder's TrySubmit calls these under its own lock.
@@ -186,7 +224,7 @@ sealed class DisplaySender : IDisposable
         {
             lock (gate)
             {
-                if (stream == null)
+                if (stream == null || paused)
                     return false;
                 if (waiting.Count > 0)
                     return true;
@@ -230,7 +268,7 @@ sealed class DisplaySender : IDisposable
         string why = null;
         lock (gate)
         {
-            if (stream == null || inFlight.Count < MaxInFlight)
+            if (stream == null || paused || inFlight.Count < MaxInFlight)
                 return;
             double ms = Ms(Stopwatch.GetTimestamp() - inFlight.Peek().qpc);
             if (ms < StallMs)
@@ -274,7 +312,7 @@ sealed class DisplaySender : IDisposable
                 Log($"SPS profile_idc {profile} level_idc {level}");
             }
             uint n = seq++;
-            if (stream == null)
+            if (stream == null || paused)
             {
                 DiscardedNoDevice++;
                 return;
@@ -325,7 +363,7 @@ sealed class DisplaySender : IDisposable
             lock (gate)
             {
                 while (!disposed && (stream == null ||
-                                     (waiting.Count == 0 && pongs.Count == 0 && !shapePending && !posPending)))
+                                     (waiting.Count == 0 && pongs.Count == 0 && (paused || (!shapePending && !posPending)))))
                     Monitor.Wait(gate);
                 if (disposed)
                     return;
@@ -339,12 +377,12 @@ sealed class DisplaySender : IDisposable
                     pong = pongs.Dequeue();
                     isPong = true;
                 }
-                else if (shapePending)
+                else if (shapePending && !paused)
                 {
                     s = shape;
                     shapePending = false;
                 }
-                else if (posPending)
+                else if (posPending && !paused)
                 {
                     pos = (cursorVisible, cursorX, cursorY, cursorMouseQpc);
                     posPending = false;

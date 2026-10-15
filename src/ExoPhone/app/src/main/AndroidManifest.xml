@@ -17,6 +17,12 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- DisplayService, so a paused display keeps its connection, and
+         Android its network, out of view. The connected device type needs
+         its own permission and one of a list, of which CHANGE_NETWORK_STATE
+         is granted at install. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
 
     <!-- NoActionBar: the default theme draws an ActionBar over the content
          (spike 4 FINDINGS, traps). -->
@@ -48,6 +54,10 @@
             android:name=".CameraService"
             android:exported="false"
             android:foregroundServiceType="camera" />
+        <service
+            android:name=".DisplayService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
     </application>
 
 </manifest>
