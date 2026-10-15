@@ -20,15 +20,16 @@ sealed class DisplaySender : IDisposable
 {
     public const byte FlagKeyframe = 1, FlagConfig = 2;
     const int FrameHeader = Wire.HeaderSize + 4 + 3 * 8;  // seq, present, encoded, sent
-    // Frames sent and not yet acked. Every decoder seen emits a frame with
-    // only that one queued: the median depth at output was 1 on the
-    // TB375FC (d-driver, d-long, MTK, 2944x1840) and on the S21 (Exynos,
-    // 2400x1080 at 30 and 60), peaks of 4 and 3 in bursts. So a cap this
-    // low cannot starve the decoder; it bounds what queues behind it.
-    // Measured 2026-10-14 on the S21 at 60 over USB, 20 s each, back to
-    // back: no cap 548 frames; 3, 545 frames, at the cap twice; 2, 464
-    // frames, at the cap 312 times; 1, a frame per round trip, 15/s.
-    const int MaxInFlight = 3;
+    // Frames sent and not yet acked, 6 as SuperDisplay's fixed window
+    // (SUPERDISPLAY-RE.md, FrameDone). A frame counts from its send until
+    // the phone has decoded it, about 30ms on the TB375FC at 2944x1840@60,
+    // so bursts filled a cap of 3 there: 2026-10-15, 60 s over USB, 3 sent
+    // 50/s and was at the cap 1135 times (t-60-strip), 6 sent 56/s, never
+    // at the cap, and present to output fell from 40.1 to 35.7ms median
+    // (t-60-cap6). On the S21 at 2400x1080@60 the cap barely mattered
+    // (2026-10-14, 20 s: no cap 548 frames, 3 545). The cost lands on a
+    // decoder that cannot keep up: up to 6 frames queue behind it.
+    const int MaxInFlight = 6;
     // At the cap with no ack for this long, the frames in flight are
     // written off, so a decoder that holds frames or a lost ack cannot
     // freeze the display. Expected never to fire.

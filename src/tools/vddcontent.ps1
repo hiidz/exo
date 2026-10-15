@@ -58,7 +58,10 @@ $form.Add_Paint({
     $big = New-Object System.Drawing.Font('Consolas', 36)
     [System.Windows.Forms.TextRenderer]::DrawText($g, "frame $($script:n)  t=$($sw.Elapsed.TotalSeconds.ToString('0.000'))", $big, (New-Object System.Drawing.Point(20, ($s.ClientSize.Height - 320))), [System.Drawing.Color]::Black)
     $big.Dispose()
-    if ($sw.Elapsed.TotalSeconds -gt $Seconds) { $s.Close() } else { $s.Invalidate() }
+    # Only the moving strip is repainted: the text above it would come out
+    # the same pixels, and a full repaint at 2944x1840 held this to 48 a second.
+    $h = $s.ClientSize.Height
+    if ($sw.Elapsed.TotalSeconds -gt $Seconds) { $s.Close() } else { $s.Invalidate((New-Object System.Drawing.Rectangle(0, ($h - 330), $w, 330))) }
 })
 
 # With no Invalidate loop, a timer closes the static window.

@@ -13,6 +13,8 @@
 # 20 or 50; given every run, since the phone keeps the last one.
 # HUBARGS in the environment go to the measured hub, such as --bitrate 20
 # or --quality 70 for the Wi-Fi rate control runs.
+# PHONEARGS go to the app's start, such as "--es via wifi" or "--es via usb";
+# the phone keeps that choice for later runs.
 #
 # Every adb command here runs while a hub owns 5037. Run with no hub, adb
 # would start a server of its own, and the hub refuses a server it did not
@@ -21,7 +23,7 @@
 # server dies with it.
 export MSYS_NO_PATHCONV=1
 S=$1; TAG=$2; SERIAL=$3; CONTENT=${4:-moving}; RELAUNCH=${5:-0}; RATE=${6:-30}; SMOOTH=${7:-0}
-ROLE="--es role display --ei rate $RATE --es orientation landscape --es size full --ei smoothing $SMOOTH"
+ROLE="--es role display --ei rate $RATE --es orientation landscape --es size full --ei smoothing $SMOOTH $PHONEARGS"
 STATIC=; [ "$CONTENT" = static ] && STATIC=-Static
 # Output is local evidence, gitignored with the rest of testdata.
 T=C:/Dev/Exo/src/ExoPhone/testdata/link/$TAG; mkdir -p $T
