@@ -32,3 +32,6 @@ src/ExoPhone/testdata/
 # ExoDisplay: the WDK from NuGet, and build output (src/ExoDisplay/build.bat)
 src/ExoDisplay/packages/
 src/ExoDisplay/x64/
+
+# Release output (src/ExoSetup/release.ps1)
+dist/

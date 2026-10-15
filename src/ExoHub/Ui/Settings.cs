@@ -62,11 +62,16 @@ static class Settings
     }
 
     // Start with Windows is on from the first run. Only once, so turning it
-    // off stays off.
+    // off stays off. When on, every start points it at this exe, so an
+    // install in another folder does not leave it starting the old one.
     public static void FirstRun()
     {
         if (Read("Started", 0) != 0)
+        {
+            if (StartWithWindows)
+                StartWithWindows = true;
             return;
+        }
         StartWithWindows = true;
         Write("Started", 1);
     }

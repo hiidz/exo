@@ -1,12 +1,8 @@
 # Exo
 
-Turns Android phones, by USB or on the same Wi-Fi, into a webcam and a second
-monitor with touch for one Windows 11 PC. One program, the hub, owns the
-single adb connection and runs both at once. That is the point: two
-separate products each brought their own adb and could not run together.
-
-Personal tool for now, set up by hand. A version anyone can install is
-planned.
+Turns an Android phone into a webcam and a second monitor with touch for a
+Windows 11 PC, by USB or on the same Wi-Fi. One phone can be both, or two
+phones one role each.
 
 ## What you get
 
@@ -17,99 +13,165 @@ planned.
   resolution or a lower one set on the phone, landscape or portrait, 30
   or 60 fps, with touch acting as touch on that part of the desktop.
   About a tenth of a second behind the PC.
-- One phone can be both, or two phones one role each. Either role may be
-  left empty.
 
-## Setup, once
+## What you need
 
-1. **Display driver:** `src/ExoDisplay/build.bat`, then
-   `src/ExoDisplay/install.ps1`, which asks for administrator. It trusts
-   the build's test certificate and adds the Exo display adapter. Its
-   monitor appears only while the display phone is connected.
-   **Black screen risk:** Windows may move everything to the virtual
-   display. Recover blind with Win+P, arrow, Enter ("PC screen only").
-   Win+Ctrl+Shift+B resets the graphics stack.
-2. **Build** the other three parts: `src/ExoCamera/build.bat`, the hub
-   with `dotnet build src/ExoHub/ExoHub.csproj -c Release`, and the phone
-   app with `./gradlew assembleDebug` in `src/ExoPhone`.
-3. **Phones:** enable USB debugging, plug in, unlock, accept the PC.
-4. **Install:** `src/ExoSetup/setup.ps1`. It asks for administrator,
-   registers the camera, makes the log folder, installs the app on every
-   attached phone, lets Exo through the Windows firewall for Wi-Fi, and
-   puts an Exo shortcut on the desktop.
+- A PC with **Windows 11**, 64-bit. Windows 10 is not supported.
+- An Android phone or tablet with **Android 10** or later.
+- A USB cable, or the phone and the PC on the same Wi-Fi network.
 
-To remove everything: `src/ExoSetup/setup.ps1 -Uninstall`, then
-`src/ExoDisplay/install.ps1 -Uninstall`.
+## Install
 
-## Each time
+Download both files from the latest release on this project's
+**Releases** page: `Exo-<version>-setup.exe` for the PC and
+`Exo-<version>.apk` for the phone.
 
-Double-click **Exo** on the desktop the first time; after that it starts
-with Windows, in the tray. On each phone, open Exo and pick **USB** or
-**Wi-Fi** under **Connect by**. For USB, plug it in. For Wi-Fi, the phone
-must be on the PC's network: tap **Pick a PC** and choose it from those
-running Exo, or type its address. The first time, the PC asks whether to
-allow the phone; once allowed, it connects without asking. If you say no,
-the phone stops trying until you start its role again. Wi-Fi sends
-anything on the screen and camera unencrypted to anyone on the network
-who looks. Then tap **Use as display** or **Use as webcam**,
-or both. The webcam asks for the camera the first time. A role another
-phone already holds is refused, and the phone says which one has it.
-Under **Use as display** are its resolution, landscape or portrait, 30
-or 60 fps, and smoothing (off, 20 or 50 ms), which holds each frame a
-little to show them at an even pace; the PC's monitor takes exactly
-that mode the next time the display starts. Under **Use as webcam** are
-the front or back camera, the lens, the size and frame rate the PC's
-camera offers apps, a torch where there is one, and zoom, exposure and
-focus (left at the start for auto), which change the picture as you
-move them.
+### On the PC
 
-Exo lives in the tray. Its window, opened from the tray icon or the
-shortcut, shows each connected phone, its role and whether it works, and
-any USB phone waiting for its USB debugging prompt. It also holds:
+1. Run `Exo-<version>-setup.exe`. Exo is not code-signed yet, so Windows
+   shows **Windows protected your PC**: click **More info**, then **Run
+   anyway**. Allow it to make changes when asked.
+2. Leave **Start Exo** ticked at the end. Exo opens its window; closing
+   it leaves Exo in the tray, by the clock. From then on it starts with
+   Windows, in the tray.
+
+The installer adds the Exo webcam, Exo's display driver and a Windows
+firewall rule so phones can reach Exo over Wi-Fi. To trust the display
+driver, it adds a certificate named **Exo Release** to the PC's trusted
+certificates. Uninstalling removes all of these.
+
+**Smart App Control:** if it is on (Windows Security, App & browser
+control), Windows blocks Exo's unsigned webcam silently, and no app will
+show a picture from it. Exo cannot work with Smart App Control on until
+it is code-signed.
+
+### On the phone
+
+1. Open the release page in the phone's browser and download the APK.
+2. Open the download. Android asks to allow installs from the browser
+   the first time: allow it. On a Samsung phone, **Auto Blocker**
+   (Settings, Security and privacy) must be off first. If Play Protect
+   warns about an unknown app, choose to install anyway.
+3. Open **Exo**.
+
+### For USB only: USB debugging
+
+Exo uses Android's USB debugging to talk over the cable. Wi-Fi does not
+need it.
+
+1. On the phone, Settings, About phone: tap **Build number** seven times.
+   On a Samsung phone it is under Software information.
+2. Settings, Developer options (on some phones under System): turn on
+   **USB debugging**.
+3. Plug the phone into the PC and unlock it. When the phone asks to allow
+   USB debugging from this computer, tick **Always allow** and allow it.
+
+## Use
+
+On the phone, open Exo and pick **USB** or **Wi-Fi** under **Connect
+by**.
+
+- **USB:** plug the phone in.
+- **Wi-Fi:** tap **Pick a PC** and choose yours from those running Exo,
+  or type its address. The first time, the PC asks whether to allow the
+  phone; once allowed, it connects without asking. If you say no, the
+  phone stops trying until you start its role again.
+
+Then tap **Use as display** or **Use as webcam**, or both. The webcam
+asks for the camera the first time. A role another phone already holds is
+refused, and the phone says which one has it.
+
+Settings are on the phone:
+
+- Under **Use as display**: the resolution, landscape or portrait, 30 or
+  60 fps, and smoothing (off, 20 or 50 ms), which holds each frame a
+  little to show them at an even pace. The PC's monitor takes exactly
+  that mode the next time the display starts.
+- Under **Use as webcam**: the front or back camera, the lens, the size
+  and frame rate the PC's camera offers apps, a torch where there is one,
+  and zoom, exposure and focus (left at the start for auto), which change
+  the picture as you move them.
+
+On the PC, Exo lives in the tray. Its window, opened from the tray icon
+or the Start menu, shows each connected phone, its role and whether it
+works, and any USB phone waiting for its USB debugging prompt. It also
+holds:
 
 - **Start with Windows,** on from the first run.
 - **Allow Wi-Fi connections without asking.** Off by default.
-- **Enable adb connections (USB).** Off frees adb for Android Studio or
-  another tool; Exo cannot share adb with one. If another adb is running
-  when Exo starts, the window says so: close it, then turn this off and on.
+- **Enable adb connections (USB).** Off frees USB debugging for Android
+  Studio or another tool; Exo cannot share it with one. If another such
+  tool is running when Exo starts, the window says so: close it, then
+  turn this off and on.
 - **Windows display settings,** where the extra monitor is placed and
   scaled.
 
 Closing the window leaves Exo running. **Quit** in the tray icon's menu
-stops it, and nothing it started is left running. Its log is
-`C:\Windows\Temp\Exo\logs\exo-hub.log`.
+stops it. Its log is `C:\Windows\Temp\Exo\logs\exo-hub.log`.
 
 ## What you will notice
 
+- **Wi-Fi is not encrypted.** Anyone on the same network who looks can
+  see the screen and the camera, and with **Allow Wi-Fi connections
+  without asking** on, could send touches to the PC. Use Wi-Fi only on a
+  network you trust.
 - **One camera app at a time.** A second app gets "Camera Reserved By
   Another App". Windows' Multi-App Camera setting (Settings, Bluetooth &
   devices, Cameras, Exo, Advanced camera options) allows sharing, but it
-  turns itself off every time the hub starts, and whenever the webcam's
-  size or frame rate changes.
+  turns itself off every time Exo starts, and whenever the webcam's size
+  or frame rate changes.
 - **A new webcam size or frame rate cuts off the app using it.** Windows
   learns a camera's size only when it is added, so Exo adds it again:
   reopen the camera in the app to get the new one.
-- **No hub, no camera.** Exo exists only while the hub runs.
+- **No Exo running, no camera.** The Exo webcam exists only while Exo
+  runs on the PC.
 - **The extra monitor comes and goes with the display phone.** It
   appears when the phone connects, beside the PC's screen, and leaves 10
-  seconds after the phone does, or at once when the hub stops. Windows
-  then moves its windows to the PC's screen. Its scale is set in
-  Windows' display settings, like any monitor's.
+  seconds after the phone does, or at once when Exo stops. Windows then
+  moves its windows to the PC's screen.
+- **If the PC's screen goes black** because Windows put everything on the
+  phone's monitor: press Win+P, then an arrow key and Enter for "PC
+  screen only". Win+Ctrl+Shift+B restarts the graphics.
 - **Touch cannot reach administrator windows** (Task Manager, installers,
-  UAC prompts). Against those the tablet looks frozen.
+  UAC prompts). Against those the phone's screen looks frozen.
 - **Two-finger gestures** work only in apps that handle touch natively.
-- **The pointer runs slightly ahead of the picture** on the tablet, so a
-  dragged window trails it.
+- **The pointer runs slightly ahead of the picture,** so a dragged window
+  trails it.
 - **The display's resolution is set on the phone,** not in Windows'
-  display settings. The tablet keeps running through a UAC prompt. Unplugging a
-  phone stops only that phone's role; plugging it back resumes in about
-  a second.
+  display settings. Unplugging a phone stops only that phone's role;
+  plugging it back resumes in about a second.
+
+## Update
+
+Run the new setup on the PC, and install the new APK on the phone over the
+old one. If the two do not match, the phone says which one to update.
+
+## Uninstall
+
+On the PC: Settings, Apps, Installed apps, **Exo**, Uninstall. On the
+phone: uninstall the Exo app.
 
 ## How it works
 
-ExoHub (C#) talks to each phone over adb reverse, one connection per
-role. The camera phone sends H.264, which the hub decodes once and hands
-to ExoCamera.dll (C++), the media source Windows loads into its camera
+The Exo program on the PC talks to each phone over USB debugging or Wi-Fi,
+one connection per role. The camera phone sends H.264, which Exo decodes
+once and hands to its webcam, a media source Windows loads into its camera
 service. For the display, Exo's display driver hands each image of the
-virtual monitor to the hub on the GPU; the hub encodes it to H.264 and
-sends it to the phone, which decodes and shows it, and sends touches back. Details in `PLAN.md`.
+virtual monitor to Exo on the GPU; Exo encodes it to H.264 and sends it to
+the phone, which decodes and shows it, and sends touches back. Details in
+`PLAN.md`.
+
+## Building from source
+
+Windows 11 with Visual Studio 2026 (Desktop C++, the Windows Driver Kit),
+the .NET 10 SDK, Android Studio and Inno Setup 6. `CLAUDE.md` lists each
+part's build command; `src/ExoSetup/release.ps1` builds the installer and
+the APK into `dist\`.
+
+## Licence
+
+MIT, see `LICENSE`. The display driver is under the Microsoft Public
+License (`src/ExoDisplay/LICENSE`). adb, shipped with the PC installer, is
+under the Apache License 2.0. Their notices, and those of Vortice and the
+.NET runtime inside the hub, are installed in `C:\Program
+Files\Exo\licenses`.
