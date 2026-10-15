@@ -17,6 +17,8 @@ using Microsoft::WRL::ComPtr;
 // 5.7's limits and timeouts, which 5.9 applies to this link.
 static const DWORD kMaxBody = 4u << 20;
 static const DWORD kWelcomeTimeoutMs = 2000;
+// AskFormat's connect. With the hub up, the whole ask took 0.9 to 7.3ms (2026-10-15).
+static const DWORD kFormatConnectMs = 250;
 // No message for this long is a dead hub, or an orphan that accepts and
 // never sends (CLAUDE.md, Process handling): back to the card, and
 // reconnect. A live hub with no frame to send sends IDLE every second.
@@ -88,9 +90,10 @@ ExoLink::~ExoLink()
     delete[] m_scratch;
 }
 
-void ExoLink::Start(ExoStream* stream)
+void ExoLink::Start(ExoStream* stream, const ExoFormat& format)
 {
     AcquireSRWLockExclusive(&m_lock);
+    m_format = format;  // read only by the reader, which starts after this
     bool already = m_thread != nullptr;
     bool stopping = m_stopping;
     bool started = false;
@@ -253,16 +256,38 @@ bool ExoLink::Connect()
 
 ExoLink::Outcome ExoLink::Handshake()
 {
-    SOCKET s = (SOCKET)m_socket;
+    ExoFormat hub = {};
+    ULONGLONG session = 0;
+    Outcome outcome = Exchange(m_socket, false, m_scratch, &hub, &session);
+    if (outcome != Ready) {
+        return outcome;
+    }
+    ExoLog("link: WELCOME, protocol %u, session %016llx, hub's format %ux%u at %u", EXO_LINK_VERSION, session,
+           hub.width, hub.height, hub.fps);
+    if (hub.width != m_format.width || hub.height != m_format.height || hub.fps != m_format.fps) {
+        // The hub registers the camera again when its format changes, which
+        // shuts this source down; until then its frames are refused.
+        ExoLog("link: this camera advertises %ux%u at %u, so the hub's frames will be refused until it registers "
+               "the camera again", m_format.width, m_format.height, m_format.fps);
+    }
+    return Ready;
+}
+
+ExoLink::Outcome ExoLink::Exchange(UINT_PTR socketValue, bool formatOnly, BYTE* body, ExoFormat* format,
+                                   ULONGLONG* session)
+{
+    SOCKET s = (SOCKET)socketValue;
     DWORD timeout = kWelcomeTimeoutMs;
     setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
 
     // HELLO: 5.7's frozen prefix, then this process's ID, so the hub logs
-    // which host it is talking to.
-    BYTE hello[12] = { 'E', 'X', 'O', 0 };
+    // which host it is talking to, then what the connection is for: 0 for
+    // frames, 1 for the format alone, after which the hub closes it.
+    BYTE hello[13] = { 'E', 'X', 'O', 0 };
     PutU16(hello + 4, EXO_LINK_VERSION);
-    PutU16(hello + 6, 4);
+    PutU16(hello + 6, 5);
     PutU32(hello + 8, GetCurrentProcessId());
+    hello[12] = formatOnly ? 1 : 0;
     if (send(s, (const char*)hello, sizeof(hello), 0) != sizeof(hello)) {
         ExoLog("link: HELLO not sent, WSA %d", WSAGetLastError());
         return Retry;
@@ -270,14 +295,15 @@ ExoLink::Outcome ExoLink::Handshake()
 
     // WELCOME: magic, version, status, body length, body.
     BYTE head[9];
-    if (!RecvAll(head, sizeof(head))) {
-        ExoLog("link: no WELCOME, WSA %d (0 is EOF; 10060 is %lums with nothing)", m_lastError, kWelcomeTimeoutMs);
+    int error = 0;
+    if (!RecvAll(socketValue, head, sizeof(head), &error)) {
+        ExoLog("link: no WELCOME, WSA %d (0 is EOF; 10060 is %lums with nothing)", error, kWelcomeTimeoutMs);
         return Retry;
     }
     USHORT version = GetU16(head + 4);
     BYTE status = head[6];
     USHORT length = GetU16(head + 7);
-    if (memcmp(head, "EXO\0", 4) != 0 || length > 1024 || !RecvAll(m_scratch, length)) {
+    if (memcmp(head, "EXO\0", 4) != 0 || length > 1024 || !RecvAll(socketValue, body, length, &error)) {
         ExoLog("link: WELCOME malformed or cut short, body %u bytes", length);
         return Retry;
     }
@@ -285,8 +311,7 @@ ExoLink::Outcome ExoLink::Handshake()
         // A refusal's body is always UTF-8 text (5.7). A version mismatch
         // will not fix itself, so stop retrying, as the phone does.
         ExoLog("link: REFUSED by hub (protocol %u), status %u: %.*s%s", version, status, (int)length,
-               (const char*)m_scratch,
-               status == 1 ? "; not retrying until the camera is re-created" : "");
+               (const char*)body, status == 1 ? "; not retrying until the camera is re-created" : "");
         return status == 1 ? GiveUp : Retry;
     }
     if (version != EXO_LINK_VERSION) {
@@ -294,9 +319,73 @@ ExoLink::Outcome ExoLink::Handshake()
                EXO_LINK_VERSION);
         return GiveUp;
     }
-    unsigned long long session = length == 8 ? (ULONGLONG)GetU32(m_scratch) << 32 | GetU32(m_scratch + 4) : 0;
-    ExoLog("link: WELCOME, protocol %u, session %016llx", version, session);
+    // Accepted: session u64, then width, height and fps u32 each.
+    if (length < 20) {
+        ExoLog("link: WELCOME body %u bytes, no format", length);
+        return Retry;
+    }
+    *session = (ULONGLONG)GetU32(body) << 32 | GetU32(body + 4);
+    *format = { GetU32(body + 8), GetU32(body + 12), GetU32(body + 16) };
     return Ready;
+}
+
+ExoFormat ExoLink::AskFormat()
+{
+    InitOnceExecuteOnce(&g_wsaOnce, StartWinsock, nullptr, nullptr);
+    if (g_wsaResult != 0) {
+        return EXO_DEFAULT_FORMAT;
+    }
+    LONGLONG t0 = ExoQpcMicros();
+    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s == INVALID_SOCKET) {
+        ExoLog("link: format: socket() failed, WSA %d; the default", WSAGetLastError());
+        return EXO_DEFAULT_FORMAT;
+    }
+    sockaddr_in addr = {};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(EXO_LINK_PORT);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    ExoFormat format = EXO_DEFAULT_FORMAT;
+    ULONGLONG session = 0;
+    BYTE body[1024];
+    // Non-blocking, to cap the wait: a refused loopback connect blocks for
+    // 2034ms (dlltest, no hub), and this runs while the camera is created.
+    u_long nonBlocking = 1;
+    ioctlsocket(s, FIONBIO, &nonBlocking);
+    int rc = connect(s, (sockaddr*)&addr, sizeof(addr));
+    int err = rc == SOCKET_ERROR ? WSAGetLastError() : 0;
+    if (err == WSAEWOULDBLOCK) {
+        fd_set writable, failed;
+        FD_ZERO(&writable);
+        FD_ZERO(&failed);
+        FD_SET(s, &writable);
+        FD_SET(s, &failed);
+        timeval wait = { 0, (long)kFormatConnectMs * 1000 };
+        int n = select(0, nullptr, &writable, &failed, &wait);
+        int soError = 0, size = sizeof(soError);
+        getsockopt(s, SOL_SOCKET, SO_ERROR, (char*)&soError, &size);
+        err = n == 0 ? WSAETIMEDOUT : FD_ISSET(s, &failed) ? (soError ? soError : WSAECONNREFUSED) : 0;
+    }
+    nonBlocking = 0;
+    ioctlsocket(s, FIONBIO, &nonBlocking);
+    if (err != 0) {
+        ExoLog("link: format: connect failed, WSA %d, in %.1fms; the default", err, MsSince(t0));
+    } else if (Exchange((UINT_PTR)s, true, body, &format, &session) != Ready) {
+        format = EXO_DEFAULT_FORMAT;
+        ExoLog("link: format: no answer from the hub, in %.1fms; the default", MsSince(t0));
+    } else if (format.width < 2 || format.height < 2 || format.width % 2 || format.height % 2 ||
+               (ULONGLONG)format.width * format.height * 3 / 2 + kBodyPrefix > kMaxBody || format.fps < 1 ||
+               format.fps > 120) {
+        // Sized to what a FRAME can carry, so every frame of it fits.
+        ExoLog("link: format: the hub's %ux%u at %u cannot be served; the default", format.width, format.height,
+               format.fps);
+        format = EXO_DEFAULT_FORMAT;
+    } else {
+        ExoLog("link: format: %ux%u at %u from hub session %016llx, in %.1fms", format.width, format.height,
+               format.fps, session, MsSince(t0));
+    }
+    closesocket(s);
+    return format;
 }
 
 // Reads FRAMEs until the connection ends. Each one checked against the
@@ -357,12 +446,12 @@ void ExoLink::ReadFrames()
         // wrong stride is an out-of-bounds read inside svchost (traps-camera).
         // Computed in 64 bits, so no stride can wrap the size to a small one.
         ULONGLONG want = kBodyPrefix + (ULONGLONG)stride * h * 3 / 2;
-        bool fits = length >= kBodyPrefix && w == EXO_WIDTH && h == EXO_HEIGHT && stride >= w && want == length;
+        bool fits = length >= kBodyPrefix && w == m_format.width && h == m_format.height && stride >= w && want == length;
         if (!fits) {
             rejected++;
             if (w != badW || h != badH || stride != badStride || length != badLength) {
                 ExoLog("link: frame REJECTED, %lux%lu stride %lu in %lu bytes, advertised %ux%u (first of this kind)",
-                       w, h, stride, length, EXO_WIDTH, EXO_HEIGHT);
+                       w, h, stride, length, m_format.width, m_format.height);
                 badW = w;
                 badH = h;
                 badStride = stride;
@@ -405,7 +494,7 @@ void ExoLink::ReadFrames()
 }
 
 // One FRAME body whose geometry has been checked. Copied into a new buffer
-// at the advertised stride, EXO_WIDTH, the layout the stream's CopyPicture
+// at the advertised stride, its width, the layout the stream's CopyPicture
 // reads, and swapped in as the picture. A tick still copying the old one
 // holds its own reference to it. False if no buffer could be made.
 bool ExoLink::Accept(const BYTE* body)
@@ -414,7 +503,7 @@ bool ExoLink::Accept(const BYTE* body)
     LONGLONG stampUs = GetI64(body + 4);
     ComPtr<IMFMediaBuffer> picture;
     BYTE* out = nullptr;
-    HRESULT hr = MFCreateMemoryBuffer(EXO_FRAME_BYTES, &picture);
+    HRESULT hr = MFCreateMemoryBuffer(m_format.FrameBytes(), &picture);
     if (SUCCEEDED(hr)) hr = picture->Lock(&out, nullptr, nullptr);
     if (FAILED(hr)) {
         ExoLog("link: picture buffer failed, hr=0x%08lX", (unsigned long)hr);
@@ -422,11 +511,11 @@ bool ExoLink::Accept(const BYTE* body)
     }
     const BYTE* in = body + kBodyPrefix;
     // Y rows, then UV rows, which on the wire start at stride * height.
-    for (UINT32 row = 0; row < EXO_HEIGHT * 3 / 2; row++) {
-        memcpy(out + (size_t)row * EXO_WIDTH, in + (size_t)row * stride, EXO_WIDTH);
+    for (UINT32 row = 0; row < m_format.height * 3 / 2; row++) {
+        memcpy(out + (size_t)row * m_format.width, in + (size_t)row * stride, m_format.width);
     }
     picture->Unlock();
-    picture->SetCurrentLength(EXO_FRAME_BYTES);  // or the buffer reads as empty
+    picture->SetCurrentLength(m_format.FrameBytes());  // or the buffer reads as empty
     m_stream->SetPicture(picture.Get(), stampUs);
     return true;
 }
@@ -444,17 +533,15 @@ void ExoLink::CloseSocket()
     }
 }
 
-// Exactly length bytes, or false with m_lastError set: 0 for EOF, else the
-// WSA error, 10060 for a receive timeout.
-bool ExoLink::RecvAll(void* out, DWORD length)
+bool ExoLink::RecvAll(UINT_PTR socketValue, void* out, DWORD length, int* error)
 {
-    SOCKET s = (SOCKET)m_socket;
+    SOCKET s = (SOCKET)socketValue;
     char* p = static_cast<char*>(out);
     while (length > 0) {
         int chunk = length > 0x10000000 ? 0x10000000 : (int)length;
         int n = recv(s, p, chunk, 0);
         if (n <= 0) {
-            m_lastError = n == 0 ? 0 : WSAGetLastError();
+            *error = n == 0 ? 0 : WSAGetLastError();
             return false;
         }
         p += n;

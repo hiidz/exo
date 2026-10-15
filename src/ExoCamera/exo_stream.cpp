@@ -10,9 +10,6 @@
 
 using Microsoft::WRL::ComPtr;
 
-// Media Foundation time is in 100ns units.
-static const LONGLONG kFrameDuration = 10000000LL / EXO_FPS;
-
 // Samples in the pool taken from the Frame Server's allocator. The
 // prototype used 10 (ExoCamSource/MediaStream.cpp:150).
 static const DWORD kPoolSamples = 10;
@@ -34,7 +31,7 @@ ExoStream::~ExoStream()
     InterlockedDecrement(&g_objects);
 }
 
-HRESULT ExoStream::Create(IMFMediaSource* source, IMFStreamDescriptor* sd, ExoStream** out)
+HRESULT ExoStream::Create(IMFMediaSource* source, IMFStreamDescriptor* sd, const ExoFormat& format, ExoStream** out)
 {
     if (!source || !sd || !out) {
         return E_POINTER;
@@ -46,7 +43,8 @@ HRESULT ExoStream::Create(IMFMediaSource* source, IMFStreamDescriptor* sd, ExoSt
     }
     HRESULT hr = MFCreateEventQueue(&s->m_events);
     if (SUCCEEDED(hr)) {
-        hr = ExoCreateCard(&s->m_card);
+        s->m_format = format;
+        hr = ExoCreateCard(format, &s->m_card);
         s->m_current = s->m_card;
     }
     if (SUCCEEDED(hr)) {
@@ -78,9 +76,9 @@ HRESULT ExoStream::Start()
         // First tick one frame from now, then every frame. A negative due
         // time is relative, in 100ns units, as FILETIME is.
         LARGE_INTEGER due;
-        due.QuadPart = -kFrameDuration;
+        due.QuadPart = -m_format.FrameDuration();
         FILETIME ft = { due.LowPart, (DWORD)due.HighPart };
-        SetThreadpoolTimer(m_timer, &ft, (DWORD)(kFrameDuration / 10000), 0);
+        SetThreadpoolTimer(m_timer, &ft, (DWORD)(m_format.FrameDuration() / 10000), 0);
     }
     ReleaseSRWLockExclusive(&m_lock);
     if (SUCCEEDED(hr)) {
@@ -89,7 +87,7 @@ HRESULT ExoStream::Start()
     // Connect on the first Start, not at creation (TECHNICAL_DESIGN 3.2 (b)).
     // Later Starts, from the source or from SetStreamState, find it started.
     if (SUCCEEDED(hr)) {
-        m_link.Start(this);
+        m_link.Start(this, m_format);
     }
     return hr;
 }
@@ -254,7 +252,7 @@ VOID CALLBACK ExoStream::OnTimer(PTP_CALLBACK_INSTANCE, PVOID context, PTP_TIMER
 }
 
 // One frame interval has passed: answer the oldest waiting request with the
-// current picture. One per tick, so at most EXO_FPS samples a second.
+// current picture. One per tick, so at most fps samples a second.
 void ExoStream::Tick()
 {
     LARGE_INTEGER t0;
@@ -313,12 +311,12 @@ void ExoStream::Tick()
         }
         return;
     }
-    if (SUCCEEDED(hr)) hr = CopyPicture(picture.Get(), sample.Get());
+    if (SUCCEEDED(hr)) hr = CopyPicture(m_format, picture.Get(), sample.Get());
     // Stamped now, from the clock the pipeline compares against. Never from
     // zero, which gets every frame discarded (spike 1's root cause), and not
     // from a fixed step either, which drifted 6.5 minutes ahead.
     if (SUCCEEDED(hr)) hr = sample->SetSampleTime(MFGetSystemTime());
-    if (SUCCEEDED(hr)) hr = sample->SetSampleDuration(kFrameDuration);
+    if (SUCCEEDED(hr)) hr = sample->SetSampleDuration(m_format.FrameDuration());
     // The pipeline matches a delivery to its request by this token.
     if (SUCCEEDED(hr) && token) hr = sample->SetUnknown(MFSampleExtension_Token, token.Get());
     // Delivered as an event, not returned.
@@ -335,13 +333,13 @@ void ExoStream::Tick()
     Report(Count(Served, t1.QuadPart - t0.QuadPart, hr, ageUs));
 }
 
-// Copies src, NV12 in the advertised geometry with rows EXO_WIDTH bytes
+// Copies src, NV12 in the advertised geometry with rows f.width bytes
 // apart, into dst's buffer. dst's row pitch comes from the buffer itself:
 // the Frame Server's samples may be GPU surfaces whose rows are padded, and
 // a pitch assumed from a constant would write out of bounds inside svchost
 // (traps-camera). The UV plane follows pitch * height bytes after the first
 // row, as the prototype placed it (ExoCamSource/MediaStream.cpp:412).
-HRESULT ExoStream::CopyPicture(IMFMediaBuffer* src, IMFSample* dst)
+HRESULT ExoStream::CopyPicture(const ExoFormat& f, IMFMediaBuffer* src, IMFSample* dst)
 {
     ComPtr<IMFMediaBuffer> buffer;
     HRESULT hr = dst->GetBufferByIndex(0, &buffer);
@@ -360,12 +358,12 @@ HRESULT ExoStream::CopyPicture(IMFMediaBuffer* src, IMFSample* dst)
     hr = buffer2d->Lock2DSize(MF2DBuffer_LockFlags_Write, &row0, &pitch, &start, &length);
     if (SUCCEEDED(hr)) {
         // Room for every row at this pitch, counted from where row 0 starts.
-        size_t needed = (size_t)(row0 - start) + (size_t)pitch * (EXO_HEIGHT * 3 / 2);
-        if (pitch < (LONG)EXO_WIDTH || needed > length || inLength < EXO_FRAME_BYTES) {
+        size_t needed = (size_t)(row0 - start) + (size_t)pitch * (f.height * 3 / 2);
+        if (pitch < (LONG)f.width || needed > length || inLength < f.FrameBytes()) {
             hr = MF_E_BUFFERTOOSMALL;
         } else {
-            for (UINT32 row = 0; row < EXO_HEIGHT * 3 / 2; row++) {
-                memcpy(row0 + (size_t)row * pitch, in + (size_t)row * EXO_WIDTH, EXO_WIDTH);
+            for (UINT32 row = 0; row < f.height * 3 / 2; row++) {
+                memcpy(row0 + (size_t)row * pitch, in + (size_t)row * f.width, f.width);
             }
         }
         buffer2d->Unlock2D();

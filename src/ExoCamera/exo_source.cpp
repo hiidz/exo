@@ -51,7 +51,10 @@ HRESULT ExoSource::Init()
     if (FAILED(hr)) return hr;
     hr = MFCreateEventQueue(&m_events);
     if (FAILED(hr)) return hr;
-    hr = ExoCreateDescriptors(&m_pd, &m_sd);
+    // Asked once: the Frame Server reads the descriptors only at
+    // registration, so a new format comes with a new source.
+    m_format = ExoLink::AskFormat();
+    hr = ExoCreateDescriptors(m_format, &m_pd, &m_sd);
     if (FAILED(hr)) return hr;
 
     // A device source must describe itself with these, or registration
@@ -81,7 +84,7 @@ HRESULT ExoSource::Init()
     // Last, because the stream takes a reference to this source: if
     // anything after it could fail, Create's Release would leave the cycle
     // holding the source alive.
-    return ExoStream::Create(this, m_sd.Get(), &m_stream);
+    return ExoStream::Create(this, m_sd.Get(), m_format, &m_stream);
 }
 
 HRESULT ExoSource::CheckShutdown()

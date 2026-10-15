@@ -2,6 +2,7 @@
 // RequestSample. One stream, serving every app (DECISIONS 7.5).
 #pragma once
 
+#include "exo_format.h"
 #include "exo_ks.h"
 #include "exo_link.h"
 
@@ -18,13 +19,14 @@ public:
     // The stream holds its source strongly, and the source holds the stream:
     // a cycle, broken by Shutdown. A missed Shutdown therefore leaks rather
     // than leaving a dangling pointer inside a host process.
-    static HRESULT Create(IMFMediaSource* source, IMFStreamDescriptor* sd, ExoStream** out);
+    // format is the one the source advertises.
+    static HRESULT Create(IMFMediaSource* source, IMFStreamDescriptor* sd, const ExoFormat& format, ExoStream** out);
 
     // Called by the source, not through COM.
     HRESULT Start();   // queues MEStreamStarted, and starts the link once
     HRESULT Stop();    // queues MEStreamStopped; the link stays up
     void Shutdown();   // stops the link, refuses everything after, drops the source
-    // Called by the link's reader: a new picture, NV12 at EXO_WIDTH, and
+    // Called by the link's reader: a new picture, NV12 at the format's width, and
     // the hub's QPC microsecond stamp for it. Null puts the test card back.
     void SetPicture(IMFMediaBuffer* picture, LONGLONG stampUs);
     // The Frame Server's sample allocator, passed on by the source's
@@ -84,7 +86,7 @@ private:
     void Tick();
     void StopLocked();
 
-    static HRESULT CopyPicture(IMFMediaBuffer* src, IMFSample* dst);
+    static HRESULT CopyPicture(const ExoFormat& f, IMFMediaBuffer* src, IMFSample* dst);
     HRESULT CreatePoolLocked();
     void ReleasePoolLocked();
 
@@ -93,6 +95,7 @@ private:
     // Set in Create and never replaced, so read without the lock.
     Microsoft::WRL::ComPtr<IMFMediaEventQueue> m_events;
     Microsoft::WRL::ComPtr<IMFStreamDescriptor> m_sd;
+    ExoFormat m_format = EXO_DEFAULT_FORMAT;
     PTP_TIMER m_timer = nullptr;
     Microsoft::WRL::ComPtr<IMFMediaBuffer> m_card;  // the test card, "not connected"
     // L7. Has its own lock; called outside this stream's.

@@ -19,15 +19,23 @@ import java.util.List;
 
 /**
  * The webcam's settings, set on the phone and kept in the app's preferences:
- * front or back, which lens on that side, zoom, focus, exposure and torch.
- * The hub never sees them; CameraRole applies them, the lens on opening the
- * camera and the rest live, through the capture request.
+ * front or back, which lens on that side, size, frame rate, zoom, focus,
+ * exposure and torch. The hub sees only the size and rate, in HELLO, and
+ * offers apps exactly that; CameraRole applies the rest, the lens on opening
+ * the camera and the controls live, through the capture request.
  *
- * The lenses are the cameras Android gives apps that can send the webcam's
- * size to an encoder, labelled by their horizontal field of view, so the
- * same names work on any phone.
+ * The lenses are the cameras Android gives apps that can send one of SIZES
+ * to an encoder, labelled by their horizontal field of view, so the same
+ * names work on any phone.
  */
 final class CameraSettings {
+    /**
+     * The sizes on offer, largest first, all 16:9 as the sensor gives them.
+     * 1920x1080 is the most one hub-to-camera frame carries.
+     */
+    static final int[][] SIZES = {{1920, 1080}, {1280, 720}, {640, 360}};
+    static final int[] RATES = {30, 60};
+
     static final class Lens {
         String id;
         boolean front;
@@ -37,6 +45,8 @@ final class CameraSettings {
         float minFocus;       // diopters at the nearest focus; 0 for fixed focus
         int aeMin, aeMax;     // exposure compensation steps
         float aeStep = 1;     // EV a step
+        final List<int[]> sizes = new ArrayList<>();    // of SIZES, it can send to an encoder
+        final List<int[]> sizes60 = new ArrayList<>();  // of those, the ones it can at 60fps
 
         String label(List<Lens> side) {
             // Against the side's first lens, which Android lists as its main.
@@ -53,6 +63,7 @@ final class CameraSettings {
     float focus;        // 0: auto; otherwise 0..1 of the nearest focus distance
     int exposure;       // compensation steps
     boolean torch;
+    int width = 1280, height = 720, fps = 30;  // as chosen; size() and fps() are what this lens gets
 
     static CameraSettings load(Context context) {
         CameraSettings s = new CameraSettings();
@@ -73,18 +84,32 @@ final class CameraSettings {
         s.focus = p.getFloat("camera.focus", 0);
         s.exposure = p.getInt("camera.exposure", 0);
         s.torch = p.getBoolean("camera.torch", false);
+        s.width = p.getInt("camera.width", 1280);
+        s.height = p.getInt("camera.height", 720);
+        s.fps = p.getInt("camera.fps", 30);
         if (s.side().isEmpty()) s.front = !s.front;
         return s;
     }
 
-    /** Null for a camera that cannot send the webcam's size to an encoder. */
+    /** Null for a camera that can send none of SIZES to an encoder. */
     private static Lens lens(CameraCharacteristics c, String id) {
         StreamConfigurationMap map = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
         Integer facing = c.get(CameraCharacteristics.LENS_FACING);
         if (map == null || facing == null || facing == CameraCharacteristics.LENS_FACING_EXTERNAL) return null;
-        if (!Arrays.asList(map.getOutputSizes(MediaCodec.class))
-                .contains(new android.util.Size(CameraRole.WIDTH, CameraRole.HEIGHT))) return null;
         Lens l = new Lens();
+        // 60fps needs both an exposure range reaching 60 and a frame time
+        // short enough at that size.
+        boolean ae60 = false;
+        Range<Integer>[] ranges = c.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
+        if (ranges != null) for (Range<Integer> r : ranges) ae60 |= r.getUpper() == 60;
+        List<android.util.Size> out = Arrays.asList(map.getOutputSizes(MediaCodec.class));
+        for (int[] s : SIZES) {
+            android.util.Size size = new android.util.Size(s[0], s[1]);
+            if (!out.contains(size)) continue;
+            l.sizes.add(s);
+            if (ae60 && map.getOutputMinFrameDuration(MediaCodec.class, size) <= 1_000_000_000L / 60) l.sizes60.add(s);
+        }
+        if (l.sizes.isEmpty()) return null;
         l.id = id;
         l.front = facing == CameraCharacteristics.LENS_FACING_FRONT;
         float[] focal = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
@@ -122,6 +147,9 @@ final class CameraSettings {
                 .putFloat("camera.focus", focus)
                 .putInt("camera.exposure", exposure)
                 .putBoolean("camera.torch", torch)
+                .putInt("camera.width", width)
+                .putInt("camera.height", height)
+                .putInt("camera.fps", fps)
                 .apply();
     }
 
@@ -140,6 +168,31 @@ final class CameraSettings {
         return side.isEmpty() ? null : side.get(0);
     }
 
+    /**
+     * The size this lens sends: the one chosen if it can, else its largest.
+     * Null with no lens.
+     */
+    int[] size() {
+        Lens l = lens();
+        if (l == null) return null;
+        for (int[] s : l.sizes) if (s[0] == width && s[1] == height) return s;
+        return l.sizes.get(0);
+    }
+
+    /** The rate this lens sends at size(): 60 if chosen and it can, else 30. */
+    int fps() {
+        Lens l = lens();
+        return fps == 60 && l != null && l.sizes60.contains(size()) ? 60 : 30;
+    }
+
+    /** HELLO's camera fields: width u16, height u16, fps u8 (Wire.cs). */
+    byte[] helloTail() {
+        int[] s = size();
+        if (s == null) s = SIZES[1];
+        int r = fps();
+        return new byte[]{(byte) (s[0] >> 8), (byte) s[0], (byte) (s[1] >> 8), (byte) s[1], (byte) r};
+    }
+
     void chooseLens(String id) {
         if (front) frontLens = id;
         else backLens = id;
@@ -148,7 +201,8 @@ final class CameraSettings {
     /**
      * The tools' extras, through the same fields as the controls: --es facing
      * front or back, --es lens ID, --ef zoom, --ef focus (0 auto, else 0..1),
-     * --ei exposure (steps), --ez torch.
+     * --ei exposure (steps), --ez torch, --es camsize WxH (one of SIZES), --ei
+     * camfps (30 or 60). Not size and rate, which are the display's.
      */
     void apply(Intent in) {
         String f = in.getStringExtra("facing");
@@ -159,12 +213,19 @@ final class CameraSettings {
         focus = in.getFloatExtra("focus", focus);
         exposure = in.getIntExtra("exposure", exposure);
         torch = in.getBooleanExtra("torch", torch);
+        String size = in.getStringExtra("camsize");
+        if (size != null && size.matches("\\d+x\\d+")) {
+            width = Integer.parseInt(size.split("x")[0]);
+            height = Integer.parseInt(size.split("x")[1]);
+        }
+        fps = in.getIntExtra("camfps", fps);
     }
 
     @Override
     public String toString() {
         Lens l = lens();
-        return l == null ? "no camera" : (front ? "front" : "back") + " lens " + l.id + " (" + l.fov + "°), zoom " + zoom
+        return l == null ? "no camera" : (front ? "front" : "back") + " lens " + l.id + " (" + l.fov + "°), "
+                + size()[0] + "x" + size()[1] + " at " + fps() + "fps, zoom " + zoom
                 + ", focus " + (focus == 0 ? "auto" : focus) + ", exposure " + exposure + ", torch " + torch;
     }
 

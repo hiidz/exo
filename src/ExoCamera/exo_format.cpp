@@ -5,7 +5,7 @@
 
 using Microsoft::WRL::ComPtr;
 
-HRESULT ExoCreateMediaType(IMFMediaType** out)
+HRESULT ExoCreateMediaType(const ExoFormat& format, IMFMediaType** out)
 {
     if (!out) {
         return E_POINTER;
@@ -21,9 +21,9 @@ HRESULT ExoCreateMediaType(IMFMediaType** out)
     hr = type->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12);
     if (FAILED(hr)) return hr;
     // Size and rate are each one 64-bit attribute holding two 32-bit halves.
-    hr = MFSetAttributeSize(type.Get(), MF_MT_FRAME_SIZE, EXO_WIDTH, EXO_HEIGHT);
+    hr = MFSetAttributeSize(type.Get(), MF_MT_FRAME_SIZE, format.width, format.height);
     if (FAILED(hr)) return hr;
-    hr = MFSetAttributeRatio(type.Get(), MF_MT_FRAME_RATE, EXO_FPS, 1);
+    hr = MFSetAttributeRatio(type.Get(), MF_MT_FRAME_RATE, format.fps, 1);
     if (FAILED(hr)) return hr;
     hr = MFSetAttributeRatio(type.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
     if (FAILED(hr)) return hr;
@@ -33,16 +33,16 @@ HRESULT ExoCreateMediaType(IMFMediaType** out)
     if (FAILED(hr)) return hr;
     hr = type->SetUINT32(MF_MT_FIXED_SIZE_SAMPLES, TRUE);
     if (FAILED(hr)) return hr;
-    hr = type->SetUINT32(MF_MT_SAMPLE_SIZE, EXO_FRAME_BYTES);
+    hr = type->SetUINT32(MF_MT_SAMPLE_SIZE, format.FrameBytes());
     if (FAILED(hr)) return hr;
-    hr = type->SetUINT32(MF_MT_DEFAULT_STRIDE, EXO_WIDTH);
+    hr = type->SetUINT32(MF_MT_DEFAULT_STRIDE, format.width);
     if (FAILED(hr)) return hr;
 
     *out = type.Detach();  // the caller takes over our reference
     return S_OK;
 }
 
-HRESULT ExoCreateDescriptors(IMFPresentationDescriptor** outPd, IMFStreamDescriptor** outSd)
+HRESULT ExoCreateDescriptors(const ExoFormat& format, IMFPresentationDescriptor** outPd, IMFStreamDescriptor** outSd)
 {
     if (!outPd || !outSd) {
         return E_POINTER;
@@ -51,7 +51,7 @@ HRESULT ExoCreateDescriptors(IMFPresentationDescriptor** outPd, IMFStreamDescrip
     *outSd = nullptr;
 
     ComPtr<IMFMediaType> type;
-    HRESULT hr = ExoCreateMediaType(&type);
+    HRESULT hr = ExoCreateMediaType(format, &type);
     if (FAILED(hr)) return hr;
 
     IMFMediaType* types[] = { type.Get() };

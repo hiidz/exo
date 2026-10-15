@@ -48,8 +48,11 @@ sealed unsafe class CameraDecoder : IDisposable
     long time;                    // under gate: the next input's sample time
     bool flip;                    // under gate: this stream's picture turns 180 (DECISIONS 6.4)
 
-    // Set from the decoder's output type by SelectOutput.
-    int width, height, stride;
+    // Set from the decoder's output type by SelectOutput. width and height
+    // are the picture, the display aperture when set; codedHeight is the
+    // buffer's rows, a multiple of 16 (1080 decodes as 1088), so the UV
+    // plane starts stride * codedHeight in.
+    int width, height, codedHeight, stride;
     IMFSample output;  // ours, when the decoder does not provide samples
     int outputSize;
     bool providesSamples;
@@ -149,7 +152,7 @@ sealed unsafe class CameraDecoder : IDisposable
         using IMFMediaType current = mft.GetOutputCurrentType(0);
         ulong size = current.GetUInt64(MediaTypeAttributeKeys.FrameSize);
         width = (int)(size >> 32);
-        height = (int)(size & 0xFFFFFFFF);
+        height = codedHeight = (int)(size & 0xFFFFFFFF);
         // Unset means rows are packed, as Media Foundation defines it for
         // NV12; said so in the log rather than hidden.
         bool hasStride = current.GetUInt32(MediaTypeAttributeKeys.DefaultStride, out uint s).Success;
@@ -160,12 +163,21 @@ sealed unsafe class CameraDecoder : IDisposable
             // MFVideoArea: two 16.16 fixed offsets, then the size as two ints.
             byte[] a = current.GetBlob(MediaTypeAttributeKeys.MinimumDisplayAperture);
             aperture = $"{BitConverter.ToInt32(a, 8)}x{BitConverter.ToInt32(a, 12)} at {BitConverter.ToInt16(a, 2)},{BitConverter.ToInt16(a, 6)}";
+            // Only a top-left crop: the phone's encoder pads at the bottom
+            // and right. Anything else is left as it was, and logged.
+            int aw = BitConverter.ToInt32(a, 8), ah = BitConverter.ToInt32(a, 12);
+            if (BitConverter.ToInt32(a, 0) == 0 && BitConverter.ToInt32(a, 4) == 0 && aw > 0 && aw <= width &&
+                ah > 0 && ah <= codedHeight)
+            {
+                width = aw;
+                height = ah;
+            }
         }
 
         OutputStreamInfo info = mft.GetOutputStreamInfo(0);
         providesSamples = (info.Flags & (int)OutputStreamInfoFlags.OutputStreamProvidesSamples) != 0;
         outputSize = info.Size;
-        Log($"output {when}: NV12 {width}x{height}, stride {stride}{(hasStride ? "" : " (default stride unset, so the width)")}, " +
+        Log($"output {when}: NV12 {width}x{height} in {codedHeight} rows, stride {stride}{(hasStride ? "" : " (default stride unset, so the width)")}, " +
             $"aperture {aperture}, sample {info.Size} bytes, {(providesSamples ? "decoder's samples" : "our samples, a new one per frame")}");
     }
 
@@ -344,13 +356,14 @@ sealed unsafe class CameraDecoder : IDisposable
         buffer.Lock(out IntPtr p, out _, out int length);
         try
         {
-            // NV12 at the decoder's stride: height rows of Y, then the UV rows.
-            int ySize = stride * height, uvSize = stride * height / 2;
-            if (length < ySize + uvSize)
-                throw new InvalidOperationException($"decoded buffer {length} bytes, {width}x{height} stride {stride} needs {ySize + uvSize}");
+            // NV12 at the decoder's stride: codedHeight rows of Y, then the
+            // UV rows. Only the picture's rows of each go out.
+            int ySize = stride * height, uvAt = stride * codedHeight, uvSize = stride * height / 2;
+            if (length < uvAt + uvSize)
+                throw new InvalidOperationException($"decoded buffer {length} bytes, {width}x{height} in {codedHeight} rows stride {stride} needs {uvAt + uvSize}");
             link.Publish(outQpc, width, height, stride,
                          new ReadOnlySpan<byte>((void*)p, ySize),
-                         new ReadOnlySpan<byte>((byte*)p + ySize, uvSize), flip);
+                         new ReadOnlySpan<byte>((byte*)p + uvAt, uvSize), flip);
             windowCopyMs += (Stopwatch.GetTimestamp() - outQpc) * 1000.0 / Stopwatch.Frequency;
         }
         finally

@@ -70,50 +70,76 @@ sealed class VirtualCamera : IDisposable
         }
     }
 
-    VirtualCamera(Stopwatch clock, CameraLink link, IMFVirtualCamera cam)
+    readonly object gate = new();  // one registration change at a time
+    bool disposed;                 // under gate
+
+    VirtualCamera(Stopwatch clock, CameraLink link)
     {
         this.clock = clock;
         this.link = link;
-        this.cam = cam;
         callback = new Callback(this);
     }
 
-    // After MFStartup. Returns null after logging why, so the hub runs on
-    // without a camera: nothing else depends on it, and link keeps sending
-    // frames to any client, as before.
+    // After MFStartup, at link's format. Returns null after logging why, so
+    // the hub runs on without a camera: nothing else depends on it, and link
+    // keeps sending frames to any client, as before.
     public static VirtualCamera Register(Stopwatch clock, CameraLink link)
+    {
+        var v = new VirtualCamera(clock, link);
+        if (v.Add())
+            return v;
+        v.callback.Dispose();
+        return null;
+    }
+
+    // The camera phone's format. Windows reads a camera's formats only when
+    // it is registered, so a new one is registered again: an app streaming
+    // from the camera loses it, and the next to open it gets the new one
+    // (RESEARCH.md, Camera format). The DLL's new source asks link for it.
+    public void Use(CameraFormat format)
+    {
+        lock (gate)
+        {
+            if (disposed || cam == null || format == link.Format)
+                return;
+            Log($"format {link.Format} to {format}: registering again");
+            RemoveLocked();
+            link.Format = format;
+            Add();
+        }
+    }
+
+    // Registers and starts the camera. False after logging why.
+    bool Add()
     {
         Result r = MediaFactory.MFCreateVirtualCamera(
             VirtualCameraType.SoftwareCameraSource, VirtualCameraLifetime.Session, VirtualCameraAccess.CurrentUser,
-            FriendlyName, ClsidString, null, 0, out IMFVirtualCamera cam);
-        Log(clock, $"MFCreateVirtualCamera 0x{r.Code:X8}, {ClsidString}, session lifetime, current user");
+            FriendlyName, ClsidString, null, 0, out IMFVirtualCamera created);
+        Log($"MFCreateVirtualCamera 0x{r.Code:X8}, {ClsidString}, session lifetime, current user, {link.Format}");
         if (r.Failure)
         {
             if (r == Result.AccessDenied)
-                Log(clock, "REFUSED: access denied. Camera privacy may deny desktop apps (Settings > Privacy & security > Camera)");
-            return null;
+                Log("REFUSED: access denied. Camera privacy may deny desktop apps (Settings > Privacy & security > Camera)");
+            return false;
         }
 
         // Before Start, so a SOURCE_START cannot come first: a camera that
         // does not exist yet has nobody watching it.
         link.SetWatching(false, "camera registering, nobody streaming yet");
-        var v = new VirtualCamera(clock, link, cam);
-        r = cam.Start(v.callback);
-        v.Log($"Start 0x{r.Code:X8}");
+        cam = created;
+        r = cam.Start(callback);
+        Log($"Start 0x{r.Code:X8}");
         if (r.Failure)
         {
-            v.Dispose();
+            RemoveLocked();
             link.SetWatching(true, "no camera registered");
-            return null;
+            return false;
         }
-        v.Log($"symbolic link {cam.GetString(CaptureDeviceAttributeKeys.SourceTypeVidcapSymbolicLink)}");
-        return v;
+        Log($"symbolic link {cam.GetString(CaptureDeviceAttributeKeys.SourceTypeVidcapSymbolicLink)}");
+        return true;
     }
 
-    static void Log(Stopwatch clock, string line) =>
-        Console.WriteLine($"{clock.Elapsed.TotalSeconds,8:F3}s vcam {line}");
-
-    void Log(string line) => Log(clock, line);
+    void Log(string line) => Console.WriteLine($"{clock.Elapsed.TotalSeconds,8:F3}s vcam {line}");
 
     // Nothing may escape into Windows, so everything is caught here. The
     // event is on GetObject (spike 1); the result itself is not one, and its
@@ -150,12 +176,24 @@ sealed class VirtualCamera : IDisposable
     // using declaration calls it again on the way out.
     public void Dispose()
     {
+        lock (gate)
+        {
+            if (disposed)
+                return;
+            disposed = true;
+            RemoveLocked();
+            callback.Dispose();
+        }
+    }
+
+    // Under gate, or before the camera is shared.
+    void RemoveLocked()
+    {
         if (cam == null)
             return;
         Result r = cam.Remove();
         Log($"Remove 0x{r.Code:X8}");
         cam.Dispose();
         cam = null;
-        callback.Dispose();
     }
 }

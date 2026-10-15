@@ -35,6 +35,7 @@ import java.util.List;
  *
  *   adb shell am start -S -n exo.phone/.MainActivity --es role camera,display [--ei proto 3]
  *       [--ei rate 60] [--es orientation portrait] [--es size 1800x810]
+ *       [--es camsize 1920x1080] [--ei camfps 60] (the rest in CameraSettings.apply)
  *
  * Started that way, it shows over the lock screen and wakes it, since the
  * webcam may start only while the app is visible. Every extra goes on to
@@ -46,7 +47,8 @@ public class MainActivity extends Activity {
     private DisplaySettings settings;
     private Spinner sizePicker, orientationPicker, ratePicker;
     private CameraSettings camera;
-    private Spinner facingPicker, lensPicker;
+    private Spinner facingPicker, lensPicker, camSizePicker, camRatePicker;
+    private final List<Integer> camRates = new ArrayList<>();  // the rate picker's, in its order
     private CheckBox torchBox;
     private SeekBar zoomBar, exposureBar, focusBar;
     private TextView focusLabel;
@@ -116,12 +118,15 @@ public class MainActivity extends Activity {
         });
         root.addView(webcamButton);
         // The webcam's settings, under its button. Zoom, exposure, focus and
-        // torch change the picture as they move; side and lens reopen the
-        // camera, a second's gap.
+        // torch change the picture as they move; side, lens, size and rate
+        // reopen the camera, a second's gap, and the hub registers the
+        // camera again for a new size or rate, so an app using it must reopen it.
         camera = CameraSettings.load(this);
         LinearLayout camPickers = new LinearLayout(this);
         facingPicker = picker(camPickers, this::cameraPicked);
         lensPicker = picker(camPickers, this::cameraPicked);
+        camSizePicker = picker(camPickers, this::cameraPicked);
+        camRatePicker = picker(camPickers, this::cameraPicked);
         torchBox = new CheckBox(this);
         torchBox.setText("Torch");
         torchBox.setOnCheckedChangeListener((box, on) -> {
@@ -277,6 +282,19 @@ public class MainActivity extends Activity {
         if (lenses.isEmpty()) lenses.add("No lens");
         bind(lensPicker, lenses, Math.max(0, side.indexOf(lens)));
         boolean any = lens != null;
+        int[] size = camera.size();
+        List<String> sizes = new ArrayList<>();
+        if (any) for (int[] s : lens.sizes) sizes.add(s[0] + "x" + s[1]);
+        if (sizes.isEmpty()) sizes.add("No size");
+        bind(camSizePicker, sizes, any ? Math.max(0, lens.sizes.indexOf(size)) : 0);
+        camRates.clear();
+        List<String> rates = new ArrayList<>();
+        for (int r : CameraSettings.RATES) {
+            if (r == 60 && !(any && lens.sizes60.contains(size))) continue;
+            camRates.add(r);
+            rates.add(r + " fps");
+        }
+        bind(camRatePicker, rates, Math.max(0, camRates.indexOf(camera.fps())));
         torchBox.setVisibility(any && lens.flash ? View.VISIBLE : View.INVISIBLE);
         torchBox.setChecked(camera.torch);
         zoomBar.setMax(100);
@@ -290,23 +308,35 @@ public class MainActivity extends Activity {
         focusLabel.setText(camera.focus == 0 ? "Focus: auto" : "Focus");
     }
 
-    /** The side or lens picker moved. Spinners report bindCamera's selections too, which change nothing. */
+    /**
+     * The side, lens, size or rate picker moved. Spinners report
+     * bindCamera's selections too, which change nothing.
+     */
     private void cameraPicked() {
         if (sides.isEmpty()) return;
         boolean front = sides.get(Math.max(0, facingPicker.getSelectedItemPosition()));
+        CameraSettings.Lens lens = camera.lens();
+        List<CameraSettings.Lens> side = camera.side();
+        int at = lensPicker.getSelectedItemPosition();
+        int s = camSizePicker.getSelectedItemPosition();
+        int r = camRatePicker.getSelectedItemPosition();
         if (front != camera.front) {
             camera.front = front;  // that side's lens is the one last chosen there
-        } else {
-            List<CameraSettings.Lens> side = camera.side();
-            int at = lensPicker.getSelectedItemPosition();
-            if (at < 0 || at >= side.size() || side.get(at) == camera.lens()) return;
+        } else if (at >= 0 && at < side.size() && side.get(at) != lens) {
             camera.chooseLens(side.get(at).id);
+        } else if (lens != null && s >= 0 && s < lens.sizes.size() && lens.sizes.get(s) != camera.size()) {
+            camera.width = lens.sizes.get(s)[0];
+            camera.height = lens.sizes.get(s)[1];
+        } else if (r >= 0 && r < camRates.size() && camRates.get(r) != camera.fps()) {
+            camera.fps = camRates.get(r);
+        } else {
+            return;
         }
         cameraChanged();
         bindCamera();
     }
 
-    /** Kept, and into the running webcam: live, or by reopening the camera for another lens. */
+    /** Kept, and into the running webcam: live, or by reopening the camera for another lens, size or rate. */
     private void cameraChanged() {
         camera.save(this);
         Log.i(Codecs.TAG, "webcam settings: " + camera);

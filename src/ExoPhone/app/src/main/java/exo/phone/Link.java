@@ -63,7 +63,10 @@ final class Link implements Runnable {
             return 0;
         }
 
-        /** What HELLO carries after the rotation: the display role's mode (DisplaySettings), else nothing. */
+        /**
+         * What HELLO carries after the rotation: the display role's mode
+         * (DisplaySettings) or the camera role's size and rate (CameraSettings).
+         */
         default byte[] helloTail() {
             return new byte[0];
         }
@@ -96,8 +99,9 @@ final class Link implements Runnable {
     // name in place of the serial, and each side states the oldest version
     // it speaks. 5: the display role's HELLO carries its mode, rate and
     // panel size. 6: the display connection acks each frame (ACK), and
-    // the hub caps the frames in flight. HELLO's layout is in the hub's Wire.cs.
-    static final int VERSION = 6, OLDEST = 6;
+    // the hub caps the frames in flight. 7: the camera role's HELLO carries
+    // its size and rate. HELLO's layout is in the hub's Wire.cs.
+    static final int VERSION = 7, OLDEST = 7;
     static final int ROLE_CAMERA = 1, ROLE_DISPLAY = 2;
     static final int ACCEPTED = 0, VERSION_MISMATCH = 1, BAD_HELLO = 2, ROLE_TAKEN = 3;
     static final int CAMERA_UNAVAILABLE = 4, DISPLAY_UNAVAILABLE = 5;

@@ -11,7 +11,8 @@ install, with a tray app and Wi-Fi, is planned.
 ## What you get
 
 - **A webcam called Exo** that any Windows camera app can pick. The
-  picture comes from a phone's back camera, upright, at 30fps.
+  picture comes from a phone's camera, upright, at 1920x1080, 1280x720
+  or 640x360, 30fps, or 60 where the phone's camera offers it.
 - **A second monitor** on a phone or tablet, at the panel's own
   resolution or a lower one set on the phone, landscape or portrait, 30
   or 60 fps, with touch acting as touch on that part of the desktop.
@@ -48,7 +49,8 @@ phone already holds is refused, and the phone says which one has it.
 Under **Use as display** are its resolution, landscape or portrait, and
 30 or 60 fps; the PC's monitor takes exactly that mode the next time the
 display starts. Under **Use as webcam** are the front or back camera,
-the lens, a torch where there is one, and zoom, exposure and focus
+the lens, the size and frame rate the PC's camera offers apps,
+a torch where there is one, and zoom, exposure and focus
 (left at the start for auto), which change the picture as you move them.
 Ctrl+C in the hub's window stops it, and nothing it started is left
 running.
@@ -58,7 +60,11 @@ running.
 - **One camera app at a time.** A second app gets "Camera Reserved By
   Another App". Windows' Multi-App Camera setting (Settings, Bluetooth &
   devices, Cameras, Exo, Advanced camera options) allows sharing, but it
-  turns itself off every time the hub starts.
+  turns itself off every time the hub starts, and whenever the webcam's
+  size or frame rate changes.
+- **A new webcam size or frame rate cuts off the app using it.** Windows
+  learns a camera's size only when it is added, so Exo adds it again:
+  reopen the camera in the app to get the new one.
 - **No hub, no camera.** Exo exists only while the hub runs.
 - **The extra monitor comes and goes with the display phone.** It
   appears when the phone connects, beside the PC's screen, and leaves 10

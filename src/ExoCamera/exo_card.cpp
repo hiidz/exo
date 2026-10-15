@@ -22,44 +22,45 @@ static const Bar kBars[8] = {
     {  16, 128, 128 },  // black
 };
 
-HRESULT ExoCreateCard(IMFMediaBuffer** out)
+HRESULT ExoCreateCard(const ExoFormat& format, IMFMediaBuffer** out)
 {
     if (!out) {
         return E_POINTER;
     }
     *out = nullptr;
+    const UINT32 width = format.width, height = format.height;
     ComPtr<IMFMediaBuffer> buffer;
-    HRESULT hr = MFCreateMemoryBuffer(EXO_FRAME_BYTES, &buffer);
+    HRESULT hr = MFCreateMemoryBuffer(format.FrameBytes(), &buffer);
     if (FAILED(hr)) return hr;
 
     BYTE* data = nullptr;
     hr = buffer->Lock(&data, nullptr, nullptr);
     if (FAILED(hr)) return hr;
 
-    // NV12 at our own stride, EXO_WIDTH, because this DLL defines this
+    // NV12 at our own stride, width, because this DLL defines this
     // buffer. Y plane: one byte per pixel.
     BYTE* y = data;
-    for (UINT32 row = 0; row < EXO_HEIGHT; row++) {
-        for (UINT32 col = 0; col < EXO_WIDTH; col++) {
-            y[row * EXO_WIDTH + col] = kBars[col * 8 / EXO_WIDTH].y;
+    for (UINT32 row = 0; row < height; row++) {
+        for (UINT32 col = 0; col < width; col++) {
+            y[row * width + col] = kBars[col * 8 / width].y;
         }
     }
     // UV plane: half height, and each U,V pair covers two pixels across, so
-    // a row is still EXO_WIDTH bytes. U first; swapping them gives
+    // a row is still width bytes. U first; swapping them gives
     // plausible but wrong colours.
-    BYTE* uv = data + EXO_WIDTH * EXO_HEIGHT;
-    for (UINT32 row = 0; row < EXO_HEIGHT / 2; row++) {
-        for (UINT32 pair = 0; pair < EXO_WIDTH / 2; pair++) {
-            const Bar& bar = kBars[pair * 2 * 8 / EXO_WIDTH];
-            uv[row * EXO_WIDTH + pair * 2 + 0] = bar.u;
-            uv[row * EXO_WIDTH + pair * 2 + 1] = bar.v;
+    BYTE* uv = data + width * height;
+    for (UINT32 row = 0; row < height / 2; row++) {
+        for (UINT32 pair = 0; pair < width / 2; pair++) {
+            const Bar& bar = kBars[pair * 2 * 8 / width];
+            uv[row * width + pair * 2 + 0] = bar.u;
+            uv[row * width + pair * 2 + 1] = bar.v;
         }
     }
     buffer->Unlock();
 
     // Without this the buffer reports length 0 and the frame is empty
     // rather than an error.
-    hr = buffer->SetCurrentLength(EXO_FRAME_BYTES);
+    hr = buffer->SetCurrentLength(format.FrameBytes());
     if (FAILED(hr)) return hr;
     *out = buffer.Detach();
     return S_OK;

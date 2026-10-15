@@ -14,7 +14,8 @@ static class Wire
     // 5: the display role's HELLO carries its mode, rate and panel size.
     // 6: the display phone acks each frame it has decoded, and the hub caps
     // the frames in flight; a phone that sent no acks would freeze at the cap.
-    public const ushort Version = 6, Oldest = 6;
+    // 7: the camera role's HELLO carries the size and rate set on the phone.
+    public const ushort Version = 7, Oldest = 7;
 
     // HELLO is frozen up to its body: magic, the newest version the device
     // speaks u16, body length u16. From 4 on the body starts with the oldest
@@ -22,8 +23,9 @@ static class Wire
     // UTF-8 name, rotation u8. Later versions only append to it. From 5 the
     // display role appends width u16, height u16 (portrait is taller than
     // wide), fps u8 (30 or 60), then the panel's width and height in mm u16,
-    // 0 when unknown.
-    public const int MaxHelloBody = 256, IdSize = 16, MaxName = 64, DisplayFields = 9;
+    // 0 when unknown. From 7 the camera role appends width u16, height u16
+    // (landscape, as the sensor gives it) and fps u8 (30 or 60).
+    public const int MaxHelloBody = 256, IdSize = 16, MaxName = 64, DisplayFields = 9, CameraFields = 5;
     public const byte RoleCamera = 1, RoleDisplay = 2;
 
     // WELCOME: magic, version u16, status u8, body length u16, body. Accepted
@@ -59,7 +61,13 @@ static class Wire
     // the DLL reads no config; exo_link.h holds the same two numbers.
     public const int CameraPort = 27184;
     // 2 added IDLE. A version 1 DLL would skip it and freeze its last picture.
-    public const ushort CameraVersion = 2;
+    // 3: HELLO's body is the DLL's process ID u32, then its purpose u8. An
+    // accepted WELCOME's body is the session u64, then the format the
+    // camera advertises, width, height and fps u32 each. The DLL asks for it
+    // when the source is created, on a connection of purpose PurposeFormat,
+    // which the hub closes after WELCOME.
+    public const ushort CameraVersion = 3;
+    public const byte PurposeFrames = 0, PurposeFormat = 1;
     public const byte TypeFrame = 1;
     // The hub is alive and has no picture for the DLL, which shows its test
     // card. Sent after a second with nothing written. The body is one byte,

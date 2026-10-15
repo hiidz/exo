@@ -64,6 +64,7 @@ private:
     Microsoft::WRL::ComPtr<IMFMediaEventQueue> m_events;
     Microsoft::WRL::ComPtr<IMFPresentationDescriptor> m_pd;
     Microsoft::WRL::ComPtr<IMFStreamDescriptor> m_sd;
+    ExoFormat m_format = EXO_DEFAULT_FORMAT;  // the hub's when created, else the default
     Microsoft::WRL::ComPtr<IMFAttributes> m_sourceAttrs;
     Microsoft::WRL::ComPtr<IMFAttributes> m_streamAttrs;
 

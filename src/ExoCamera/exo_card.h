@@ -3,9 +3,11 @@
 // indistinguishable from a bug anywhere else in the chain.
 #pragma once
 
+#include "exo_format.h"
+
 #include <windows.h>
 #include <mfobjects.h>
 
-// A new buffer of EXO_FRAME_BYTES holding the card in the advertised
+// A new buffer of format.FrameBytes() holding the card in the advertised
 // format, with its current length set. One reference, owned by the caller.
-HRESULT ExoCreateCard(IMFMediaBuffer** out);
+HRESULT ExoCreateCard(const ExoFormat& format, IMFMediaBuffer** out);

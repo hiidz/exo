@@ -30,6 +30,7 @@ sealed class DeviceListener : IDisposable
     readonly DisplaySender sender;
     readonly TouchInjector touch;   // TOUCH from the display connection (FR-3.3)
     readonly CameraDecoder camera;  // null: the camera role is refused
+    readonly VirtualCamera vcam;    // registered again for the camera phone's format
     readonly VirtualDisplay monitor;  // plugged for the display connection
     readonly object gate = new();
     Connection display;     // under gate
@@ -52,13 +53,14 @@ sealed class DeviceListener : IDisposable
     // camera is null when the hub has no virtual camera to feed, so the
     // camera role is refused.
     public DeviceListener(int port, Stopwatch clock, DisplaySender sender, TouchInjector touch, CameraDecoder camera,
-                          VirtualDisplay monitor)
+                          VirtualCamera vcam, VirtualDisplay monitor)
     {
         this.clock = clock;
         this.monitor = monitor;
         this.sender = sender;
         this.touch = touch;
         this.camera = camera;
+        this.vcam = vcam;
         // Loopback only, so nothing on the LAN can connect. Exclusive, so a
         // second hub fails here instead of sharing the port with this one.
         listener = new TcpListener(IPAddress.Loopback, port) { ExclusiveAddressUse = true };
@@ -196,6 +198,21 @@ sealed class DeviceListener : IDisposable
         if (rotation != 0 && rotation != 2)
             return Refuse(net, name, Wire.BadHello, $"rotation {rotation * 90} degrees, only 0 and 180 are supported");
         DisplayMode mode = default;
+        CameraFormat format = default;
+        if (role == Wire.RoleCamera)
+        {
+            int at = nameAt + body[nameAt - 1] + 1;
+            if (length < at + Wire.CameraFields)
+                return Refuse(net, name, Wire.BadHello, $"camera hello {length} bytes, no format");
+            var c = body.AsSpan(at);
+            format = new CameraFormat(BinaryPrimitives.ReadUInt16BigEndian(c), BinaryPrimitives.ReadUInt16BigEndian(c[2..]),
+                                      c[4]);
+            // Even, for 4:2:0; landscape; and small enough that one NV12
+            // frame fits an L7 FRAME, 1920x1080 at most.
+            if (format.Width % 2 != 0 || format.Height % 2 != 0 || format.Width < format.Height ||
+                format.Width is < 160 or > 1920 || format.Height is < 90 or > 1080 || format.Fps is not (30 or 60))
+                return Refuse(net, name, Wire.BadHello, $"camera format {format} unsupported");
+        }
         if (role == Wire.RoleDisplay)
         {
             int at = nameAt + body[nameAt - 1] + 1;
@@ -235,12 +252,16 @@ sealed class DeviceListener : IDisposable
             Log($"{name} replaces its previous {roleName} connection");
             replaced.Socket.Close();
         }
+        // Before WELCOME, so the camera offers this format by the time the
+        // phone's frames arrive. Nothing happens when it already does.
+        if (role == Wire.RoleCamera)
+            vcam.Use(format);
 
         Span<byte> session = stackalloc byte[8];
         BinaryPrimitives.WriteUInt64BigEndian(session, SessionId);
         SendWelcome(net, version, Wire.Accepted, session);
         Log($"{name} accepted: protocol {version} (device {oldest} to {newest}), role {roleName}, " +
-            (role == Wire.RoleDisplay ? $"{mode}" : $"rotation {rotation * 90}") + $", session {SessionId:x16}");
+            (role == Wire.RoleDisplay ? $"{mode}" : $"{format}, rotation {rotation * 90}") + $", session {SessionId:x16}");
         return conn;
     }
 

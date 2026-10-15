@@ -27,10 +27,10 @@ static void Expect(const char* what, HRESULT got, HRESULT want)
     Check(what, got == want, detail);
 }
 
-static void Format()
+static void Format(const ExoFormat& f)
 {
     ComPtr<IMFMediaType> type;
-    Expect("ExoCreateMediaType", ExoCreateMediaType(&type), S_OK);
+    Expect("ExoCreateMediaType", ExoCreateMediaType(f, &type), S_OK);
     if (!type) {
         return;
     }
@@ -45,20 +45,20 @@ static void Format()
     type->GetUINT32(MF_MT_DEFAULT_STRIDE, &stride);
     char detail[64];
     sprintf_s(detail, "%ux%u at %u/%u, stride %u", w, h, num, den, stride);
-    Check("size, rate and stride read back", w == 1280 && h == 720 && num == 30 && den == 1 && stride == 1280, detail);
+    Check("size, rate and stride read back", w == f.width && h == f.height && num == f.fps && den == 1 && stride == f.width, detail);
 
     // Media Foundation's own arithmetic must agree with ours.
     UINT32 mfSize = 0;
     MFCalculateImageSize(MFVideoFormat_NV12, w, h, &mfSize);
     sprintf_s(detail, "ours %u, MF %u", size, mfSize);
-    Check("sample size agrees with MF", size == mfSize && size == EXO_FRAME_BYTES, detail);
+    Check("sample size agrees with MF", size == mfSize && size == f.FrameBytes(), detail);
 }
 
 static void Descriptors()
 {
     ComPtr<IMFPresentationDescriptor> pd;
     ComPtr<IMFStreamDescriptor> sd;
-    Expect("ExoCreateDescriptors", ExoCreateDescriptors(&pd, &sd), S_OK);
+    Expect("ExoCreateDescriptors", ExoCreateDescriptors(EXO_DEFAULT_FORMAT, &pd, &sd), S_OK);
     if (!pd) {
         return;
     }
@@ -82,7 +82,7 @@ static void Descriptors()
 
     ComPtr<IMFMediaType> current, ours;
     Expect("current media type is set", handler->GetCurrentMediaType(&current), S_OK);
-    ExoCreateMediaType(&ours);
+    ExoCreateMediaType(EXO_DEFAULT_FORMAT, &ours);
     DWORD flags = 0;
     Expect("current type equals ours", current ? current->IsEqual(ours.Get(), &flags) : E_FAIL, S_OK);
 }
@@ -162,7 +162,9 @@ int main()
         printf("MFStartup failed 0x%08lX\n", (unsigned long)hr);
         return 1;
     }
-    Format();
+    Format(EXO_DEFAULT_FORMAT);
+    Format({ 1920, 1080, 60 });
+    Format({ 640, 360, 30 });
     Descriptors();
     EventQueue();
     printf("%s\n", g_failed ? "FAILED" : "all ok");

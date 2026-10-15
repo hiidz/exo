@@ -44,8 +44,9 @@ public class CameraService extends Service {
 
     /**
      * MainActivity changed and saved the webcam's settings. Zoom, focus,
-     * exposure and torch go into the running capture; another lens or side
-     * ends this camera, and the link's next connection opens the new one.
+     * exposure and torch go into the running capture; another lens, side,
+     * size or rate ends this camera, and the link's next connection opens
+     * the new one, its HELLO telling the hub the new size and rate.
      * Main thread.
      */
     static void settingsChanged(Context context) {
@@ -53,9 +54,9 @@ public class CameraService extends Service {
         CameraRole camera = service == null ? null : service.current;
         if (camera == null) return;
         CameraSettings s = CameraSettings.load(context);
-        CameraSettings.Lens lens = s.lens();
-        if (lens != null && !lens.id.equals(camera.lensId())) {
-            camera.restart("the webcam's lens changed to " + lens.id);
+        String opens = CameraRole.opens(s);
+        if (opens != null && !opens.equals(camera.opened())) {
+            camera.restart("the webcam changed to " + opens);
         } else {
             camera.update(s);
         }
@@ -115,6 +116,11 @@ public class CameraService extends Service {
                     @Override
                     public File file(String name) {
                         return new File(dir, run + "-" + name);
+                    }
+
+                    @Override
+                    public byte[] helloTail() {
+                        return CameraSettings.load(CameraService.this).helloTail();
                     }
 
                     @Override

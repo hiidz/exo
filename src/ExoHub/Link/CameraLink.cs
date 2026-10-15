@@ -33,6 +33,7 @@ using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using ExoHub.Camera;
 
 namespace ExoHub.Link;
 
@@ -69,8 +70,17 @@ sealed class CameraLink : IDisposable
     // Under gate. True until a virtual camera says otherwise, so a hub that
     // registered none sends frames to any client, as before.
     bool watching = true;
+    CameraFormat format = CameraFormat.Default;  // under gate
 
     public int Allocated { get { lock (gate) return allocated; } }
+
+    // What every WELCOME tells the DLL to advertise. VirtualCamera sets it
+    // before registering, so the new source reads the new one.
+    public CameraFormat Format
+    {
+        get { lock (gate) return format; }
+        set { lock (gate) format = value; }
+    }
 
     // Random per hub start, sent in every WELCOME, as on the device link.
     public ulong SessionId { get; } = BinaryPrimitives.ReadUInt64BigEndian(RandomNumberGenerator.GetBytes(8));
@@ -247,8 +257,9 @@ sealed class CameraLink : IDisposable
         }
     }
 
-    // Reads the DLL's HELLO, whose body is its process ID, and answers it.
-    // Returns a name for the client's log lines, or null after a refusal.
+    // Reads the DLL's HELLO, its process ID and purpose, and answers it.
+    // Returns a name for the client's log lines, or null after a refusal
+    // or a format-only answer, which end the connection.
     string Handshake(NetworkStream net, string who)
     {
         Span<byte> head = stackalloc byte[8];
@@ -267,8 +278,9 @@ sealed class CameraLink : IDisposable
         // Before the body is parsed: another version's body may differ.
         if (version != Wire.CameraVersion)
             return Refuse(net, who, Wire.VersionMismatch, $"hub speaks camera protocol {Wire.CameraVersion}, dll sent {version}");
-        if (length < 4)
+        if (length < 5)
             return Refuse(net, who, Wire.BadHello, $"hello body malformed, {length} bytes");
+        byte purpose = body[4];
 
         // The PID is what the DLL says it is. The process name is looked up
         // here, so the log shows which host loaded the DLL (TECHNICAL_DESIGN R5).
@@ -285,13 +297,24 @@ sealed class CameraLink : IDisposable
         }
         string name = $"pid {pid} ({exe})";
 
-        Span<byte> session = stackalloc byte[8];
-        BinaryPrimitives.WriteUInt64BigEndian(session, SessionId);
-        DeviceListener.SendWelcome(net, Wire.CameraVersion, Wire.Accepted, session);
+        CameraFormat f = Format;
+        Span<byte> welcome = stackalloc byte[20];
+        BinaryPrimitives.WriteUInt64BigEndian(welcome, SessionId);
+        BinaryPrimitives.WriteUInt32BigEndian(welcome[8..], f.Width);
+        BinaryPrimitives.WriteUInt32BigEndian(welcome[12..], f.Height);
+        BinaryPrimitives.WriteUInt32BigEndian(welcome[16..], f.Fps);
+        DeviceListener.SendWelcome(net, Wire.CameraVersion, Wire.Accepted, welcome);
+        if (purpose == Wire.PurposeFormat)
+        {
+            // A source being created. Its connection ends here, with no
+            // frames and no close line, since nothing went wrong.
+            Log($"{name} asked the format: {f}");
+            return null;
+        }
         int count;
         lock (gate)
             count = clients.Count;
-        Log($"{name} accepted from {who}: protocol {version}, {count} client(s) connected");
+        Log($"{name} accepted from {who}: protocol {version}, format {f}, {count} client(s) connected");
         return name;
     }
 

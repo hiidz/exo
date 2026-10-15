@@ -42,9 +42,9 @@ import java.util.concurrent.TimeUnit;
  * drain discards up to the next keyframe and asks the encoder for one.
  */
 final class CameraRole {
-    static final int WIDTH = 1280, HEIGHT = 720, FPS = 30;
-    // Spike 4's rate, which delivered 7.75 Mbps of 8.
-    private static final int BITRATE = 8_000_000;
+    // Spike 4's 8 Mbps at 1280x720 and 30fps, which delivered 7.75, as bits
+    // a pixel; other sizes and rates scale with pixels a second.
+    private static final double BITS_PER_PIXEL = 8_000_000.0 / (1280 * 720 * 30);
     private static final int QUEUE = 8;
 
     /** One encoded access unit, as the link sends it. */
@@ -58,6 +58,7 @@ final class CameraRole {
     private final Context context;
     private final CameraSettings settings;
     private final CameraSettings.Lens lens;
+    private final int width, height, fps;  // as HELLO told the hub
     private final ArrayBlockingQueue<Frame> queue = new ArrayBlockingQueue<>(QUEUE);
     private final HandlerThread cameraThread = new HandlerThread("camera");
     private final Thread drainThread = new Thread(this::drain, "encoder drain");
@@ -71,16 +72,29 @@ final class CameraRole {
     private volatile boolean stopped;
     private volatile String failure;
 
-    /** The lens and controls come from settings, as they are now. */
+    /** The lens, size, rate and controls come from settings, as they are now. */
     CameraRole(Context context, CameraSettings settings) {
         this.context = context;
         this.settings = settings;
         this.lens = settings.lens();
+        int[] size = settings.size();
+        width = size == null ? 0 : size[0];
+        height = size == null ? 0 : size[1];
+        fps = settings.fps();
     }
 
-    /** The camera this one opens, to tell whether a settings change needs another. */
-    String lensId() {
-        return lens == null ? null : lens.id;
+    /**
+     * The lens, size and rate this one opens, to tell whether a settings
+     * change needs another camera, and the hub another HELLO.
+     */
+    String opened() {
+        return lens == null ? null : lens.id + " " + width + "x" + height + "@" + fps;
+    }
+
+    /** What opened() would be for settings s. */
+    static String opens(CameraSettings s) {
+        CameraSettings.Lens l = s.lens();
+        return l == null ? null : l.id + " " + s.size()[0] + "x" + s.size()[1] + "@" + s.fps();
     }
 
     /**
@@ -147,7 +161,7 @@ final class CameraRole {
     }
 
     void start() throws IOException {
-        // CameraSettings lists only lenses that can send WIDTH x HEIGHT to an encoder.
+        // CameraSettings lists only lenses that can send one of its sizes to an encoder.
         if (lens == null) throw new IOException("no camera on this phone can be the webcam");
         CameraManager cm = context.getSystemService(CameraManager.class);
         String id = lens.id;
@@ -159,16 +173,16 @@ final class CameraRole {
         }
         chars = c;
         Range<Integer>[] ranges = c.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
-        Range<Integer> fps = chooseFps(ranges);
+        Range<Integer> range = chooseFps(ranges, fps);
         Log.i(Codecs.TAG, "camera " + id + (lens.front ? " front" : " back") + ", " + settings
                 + ", sensorOrientation " + c.get(CameraCharacteristics.SENSOR_ORIENTATION)
                 + ", timestamp source " + c.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE)
-                + " (0 unknown, 1 realtime), fps ranges " + Arrays.toString(ranges) + ", chosen " + fps);
+                + " (0 unknown, 1 realtime), fps ranges " + Arrays.toString(ranges) + ", chosen " + range);
         // Spike 4's order: configure, then createInputSurface, then start.
-        MediaFormat f = MediaFormat.createVideoFormat(Codecs.AVC, WIDTH, HEIGHT);
+        MediaFormat f = MediaFormat.createVideoFormat(Codecs.AVC, width, height);
         f.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
-        f.setInteger(MediaFormat.KEY_BIT_RATE, BITRATE);
-        f.setInteger(MediaFormat.KEY_FRAME_RATE, FPS);
+        f.setInteger(MediaFormat.KEY_BIT_RATE, (int) Math.round(BITS_PER_PIXEL * width * height * fps));
+        f.setInteger(MediaFormat.KEY_FRAME_RATE, fps);
         f.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
         // An encoder key: frames out as they are encoded, not batched (traps-phone).
         if (Build.VERSION.SDK_INT >= 30) f.setInteger(MediaFormat.KEY_LATENCY, 1);
@@ -187,7 +201,7 @@ final class CameraRole {
                 @Override
                 public void onOpened(CameraDevice d) {
                     camera = d;
-                    configure(d, fps, h);
+                    configure(d, range, h);
                 }
 
                 @Override
@@ -233,11 +247,11 @@ final class CameraRole {
         return turns;
     }
 
-    /** A fixed 30 if offered; else the range topping out at 30 with the highest floor (DECISIONS 6.4). */
-    private static Range<Integer> chooseFps(Range<Integer>[] ranges) {
+    /** A fixed fps if offered; else the range topping out at fps with the highest floor (DECISIONS 6.4). */
+    private static Range<Integer> chooseFps(Range<Integer>[] ranges, int fps) {
         Range<Integer> best = null;
         for (Range<Integer> r : ranges) {
-            if (r.getUpper() != FPS) continue;
+            if (r.getUpper() != fps) continue;
             if (best == null || r.getLower() > best.getLower()) best = r;
         }
         return best;

@@ -164,7 +164,7 @@ var touch = new TouchInjector(clock);
 // Before the listener, which tells it when the display connection comes
 // and goes.
 using var monitor = new VirtualDisplay(clock);
-using var devices = new DeviceListener(0, clock, display, touch, cameraRole, monitor);
+using var devices = new DeviceListener(0, clock, display, touch, cameraRole, vcam, monitor);
 Console.WriteLine($"listening on 127.0.0.1:{devices.Port}, session {devices.SessionId:x16}, " +
                   $"camera role {(cameraRole != null ? "open" : "REFUSED")}, " +
                   $"reverse {(reverse ? "for every device" : "for none")}");
