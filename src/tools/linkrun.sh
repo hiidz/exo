@@ -47,9 +47,14 @@ hub() {
 }
 
 hub $T/hub.log --seconds $S $HUBARGS
+# An asleep phone never shows the app, so it never connects.
+adb -s $SERIAL shell input keyevent KEYCODE_WAKEUP
 adb -s $SERIAL shell am start -S -n exo.phone/.MainActivity $ROLE >/dev/null
 # The EXO monitor exists once the phone connects; the content goes on it then.
-until grep -q "vdisp EXO0001 on the desktop" $T/hub.log; do sleep 0.2; done
+until grep -q "vdisp EXO0001 on the desktop" $T/hub.log; do
+    kill -0 $HUBPID 2>/dev/null || { echo "the phone never connected"; exit 1; }
+    sleep 0.2
+done
 if [ "$CONTENT" = browser ]; then
     # Edge on its own profile, so it starts a new process rather than
     # joining a running one; it is ended by that profile after the run.
@@ -76,6 +81,7 @@ adb -s $SERIAL shell dumpsys SurfaceFlinger --timestats -enable >/dev/null
 # running app, so the connection it ends leaves no CSV; logcat has its times.
 for i in $(seq 1 $RELAUNCH); do
     sleep $((S / (RELAUNCH + 1)))
+    adb -s $SERIAL shell input keyevent KEYCODE_WAKEUP
     adb -s $SERIAL shell am start -S -n exo.phone/.MainActivity $ROLE >/dev/null
 done
 wait $HUBPID; sleep 2
