@@ -5,7 +5,8 @@
 # then the phone's CSVs pulled and LinkTimes run on them. Pull the cable
 # during the run for the replug test; the hub log records every cycle.
 # Needs the hub built in Release, ExoPhone installed, and 5037 free.
-# Usage: linkrun.sh <seconds> <tag> <serial> [moving|static] [relaunches] [fps] [smoothing]
+# Usage: linkrun.sh <seconds> <tag> <serial> [moving|static|browser] [relaunches] [fps] [smoothing]
+# browser shows content60.html in Edge on the EXO monitor, one image a vsync.
 # static paints the text once and nothing moves (DECISIONS 5.4). relaunches
 # restarts the app that many times, evenly spaced, each a new connection.
 # fps is 30 or 60, 30 by default; the display is landscape at full size.
@@ -49,7 +50,15 @@ hub $T/hub.log --seconds $S $HUBARGS
 adb -s $SERIAL shell am start -S -n exo.phone/.MainActivity $ROLE >/dev/null
 # The EXO monitor exists once the phone connects; the content goes on it then.
 until grep -q "vdisp EXO0001 on the desktop" $T/hub.log; do sleep 0.2; done
-powershell -NoProfile -ExecutionPolicy Bypass -File C:/Dev/Exo/src/tools/vddcontent.ps1 -Seconds $S $STATIC > $T/content.log 2>&1 &
+if [ "$CONTENT" = browser ]; then
+    # Edge on its own profile, so it starts a new process rather than
+    # joining a running one; it is ended by that profile after the run.
+    "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe" --user-data-dir="$TEMP/exo-edge" \
+        --no-first-run --window-position=2560,0 --kiosk file:///C:/Dev/Exo/src/tools/content60.html \
+        > $T/content.log 2>&1 &
+else
+    powershell -NoProfile -ExecutionPolicy Bypass -File C:/Dev/Exo/src/tools/vddcontent.ps1 -Seconds $S $STATIC > $T/content.log 2>&1 &
+fi
 # logcat streams for the whole run rather than being cleared and dumped:
 # a clear raced the hub's launch, and the tablet's buffer wrapped before the
 # dump. -T replays from a device time, so lines logged before the stream
@@ -70,6 +79,7 @@ for i in $(seq 1 $RELAUNCH); do
     adb -s $SERIAL shell am start -S -n exo.phone/.MainActivity $ROLE >/dev/null
 done
 wait $HUBPID; sleep 2
+[ "$CONTENT" = browser ] && powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='msedge.exe'\" | Where-Object { \$_.CommandLine -like '*exo-edge*' } | ForEach-Object { Stop-Process -Id \$_.ProcessId -Force -ErrorAction SilentlyContinue }"
 # The stream ends with the hub's server, possibly before the phone logged
 # its end-of-connection stats; the dump below catches that tail.
 kill $LOGPID 2>/dev/null; wait $LOGPID 2>/dev/null

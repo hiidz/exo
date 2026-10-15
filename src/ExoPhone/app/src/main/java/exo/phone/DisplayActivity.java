@@ -178,10 +178,9 @@ public class DisplayActivity extends Activity {
             }
             showStatus(Link.WAITING);
         }
-        // Only a hint for choosing the decoder from a file. Over the link it
-        // is the mode itself.
-        int hintW = name == null ? settings.width() : in.getIntExtra("w", 0);
-        int hintH = name == null ? settings.height() : in.getIntExtra("h", 0);
+        // Only a hint for choosing the decoder from a file.
+        int hintW = in.getIntExtra("w", 0);
+        int hintH = in.getIntExtra("h", 0);
         // Link runs from this start are told apart by the time it happened.
         String linkRun = String.format("%tH%<tM%<tS", System.currentTimeMillis());
 
@@ -191,7 +190,26 @@ public class DisplayActivity extends Activity {
         view.getHolder().addCallback(new SurfaceHolder.Callback() {
             @Override
             public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
-                if (name != null || link != null || (height > width) != settings.portrait) return;
+                if (name != null || link != null) return;
+                boolean held = height > width;
+                if (held != settings.portrait) {
+                    // Android 16 ignores an app's orientation on a screen
+                    // 600dp or more across, for targetSdk 36 and later, with
+                    // no opt-out at 37: a tablet faces the way it is held,
+                    // so the display takes that orientation. A phone turns.
+                    if (Build.VERSION.SDK_INT < 36 || getResources().getConfiguration().smallestScreenWidthDp < 600) return;
+                    // The largest the decoder took stays the largest it takes
+                    // this way; any other size is kept if it still fits.
+                    boolean largest = settings.size == null || settings.size == settings.sizes.get(0);
+                    settings.portrait = held;
+                    settings.refresh(largest ? null : settings.size[0] + "x" + settings.size[1]);
+                    Log.i(Codecs.TAG, "held the other way; display settings: " + settings);
+                    if (settings.size == null) {
+                        showStatus("This tablet cannot decode the display at " + settings.fps
+                                + " fps held this way. Turn it, or pick another frame rate.");
+                        return;
+                    }
+                }
                 Surface surface = holder.getSurface();
                 link = new Link(DisplayActivity.this, Identity.of(DisplayActivity.this), in.getIntExtra("proto", Link.VERSION),
                         Link.ROLE_DISPLAY, new Link.Listener() {
@@ -207,7 +225,7 @@ public class DisplayActivity extends Activity {
 
                             @Override
                             public Decoder newDecoder(String conn, java.util.function.LongConsumer acks) {
-                                return Decoder.ofLink(file(conn + ".csv"), hintW, hintH, settings.fps,
+                                return Decoder.ofLink(file(conn + ".csv"), settings.width(), settings.height(), settings.fps,
                                         lowLatency, codec, surface, DisplayActivity.this::fit, acks,
                                         settings.smoothing);
                             }

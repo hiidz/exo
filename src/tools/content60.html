@@ -1,0 +1,20 @@
+<!doctype html>
+<!-- Moving content for linkrun.sh's browser mode: a bar redrawn on every
+     requestAnimationFrame, so the page asks for one image per vsync, as an
+     app would, unlike vddcontent.ps1's timer-driven painter. -->
+<meta charset="utf-8">
+<title>Exo content</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #fff; overflow: hidden; }
+  #bar { position: absolute; top: 0; width: 8vw; height: 100%; background: #c00; }
+</style>
+<div id="bar"></div>
+<script>
+  const bar = document.getElementById('bar');
+  let n = 0;
+  function frame() {
+    bar.style.left = (n++ % 92) + 'vw';
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+</script>
