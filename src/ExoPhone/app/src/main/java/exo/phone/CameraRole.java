@@ -71,6 +71,7 @@ final class CameraRole {
     private CaptureRequest.Builder request;          // camera thread only
     private volatile boolean stopped;
     private volatile String failure;
+    private volatile boolean reopening;  // written before failure
 
     /** The lens, size, rate and controls come from settings, as they are now. */
     CameraRole(Context context, CameraSettings settings) {
@@ -103,6 +104,7 @@ final class CameraRole {
      */
     void restart(String why) {
         if (failure == null) {
+            reopening = true;
             failure = why;
             Log.i(Codecs.TAG, "camera reopening: " + why);
         }
@@ -151,6 +153,11 @@ final class CameraRole {
     }
 
     /** Why the camera or encoder failed, or null. The link ends the connection on it. */
+    /** Whether failure came from restart, not from the camera. */
+    boolean reopening() {
+        return reopening;
+    }
+
     String failure() {
         return failure;
     }

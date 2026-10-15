@@ -225,6 +225,7 @@ final class Link implements Runnable {
                     Log.i(Codecs.TAG, "link attempt " + attempts + ": " + what, e);
                     lastFailure = what;
                 }
+                if (e instanceof Reopen) continue;  // on purpose, so no wait
                 if (!stopped) status(e instanceof NoWifi ? NO_WIFI : blocked(e) ? blockedSentence(context) : waiting());
             }
             if (stopped || refused) break;
@@ -240,6 +241,13 @@ final class Link implements Runnable {
     /** EOF before WELCOME: adbd took the connection but no hub is behind it. */
     private static final class NoHub extends IOException {
         NoHub(String what) {
+            super(what);
+        }
+    }
+
+    /** The camera was ended on purpose (CameraRole.restart); connect again at once. */
+    private static final class Reopen extends IOException {
+        Reopen(String what) {
             super(what);
         }
     }
@@ -292,7 +300,15 @@ final class Link implements Runnable {
                 public InputStream in() throws IOException { return ls.getInputStream(); }
                 public OutputStream out() throws IOException { return ls.getOutputStream(); }
                 public void timeout(int ms) throws IOException { ls.setSoTimeout(ms); }
-                public void close() throws IOException { ls.close(); }
+                public void close() throws IOException {
+                    // close() alone leaves a read blocked on the S21 until
+                    // the hub's end closes too (cam/rot-fix-r2, 1s and more).
+                    try {
+                        ls.shutdownInput();
+                    } catch (IOException ignored) {
+                    }
+                    ls.close();
+                }
             };
             socket = c;
             if (stopped) {
@@ -477,7 +493,10 @@ final class Link implements Runnable {
             reader.start();
             pinger.scheduleAtFixedRate(() -> ping(out), 0, PING_MS, TimeUnit.MILLISECONDS);
             while (!stopped) {
-                if (camera.failure() != null) throw new IOException("camera: " + camera.failure());
+                if (camera.failure() != null) {
+                    String why = "camera: " + camera.failure();
+                    throw camera.reopening() ? new Reopen(why) : new IOException(why);
+                }
                 CameraRole.Frame f;
                 try {
                     f = camera.take(100);
