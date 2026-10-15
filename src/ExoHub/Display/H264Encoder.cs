@@ -28,6 +28,8 @@ sealed class H264Encoder : IDisposable
     // eAVEncH264VProfile_High from codecapi.h. MF_MT_MPEG2_PROFILE is the key
     // the encoder honours for H.264 too (spike 5).
     const uint ProfileHigh = 100;
+    // eAVEncH264VLevel5_2, which is also the SPS's level_idc.
+    const uint Level52 = 52;
 
     // MFVideoTransferMatrix_BT709 from mfobjects.h. Vortice has no enum for it.
     const uint MatrixBt709 = 1;
@@ -212,6 +214,11 @@ sealed class H264Encoder : IDisposable
             output.Set(MediaTypeAttributeKeys.Subtype, VideoFormatGuids.H264).CheckError();
             output.Set(MediaTypeAttributeKeys.AvgBitrate, bitrate).CheckError();
             output.Set(MediaTypeAttributeKeys.Mpeg2Profile, ProfileHigh).CheckError();
+            // Left alone, the encoder writes 5.1 even past 5.1's 983040
+            // macroblocks a second (2944x1840@60 is 1269600), so 5.2 is asked
+            // for there. Elsewhere its own choice stands.
+            if ((width + 15) / 16 * ((height + 15) / 16) * fps > 983_040)
+                output.Set(MediaTypeAttributeKeys.Mpeg2Level, Level52).CheckError();
             SetVideoCommon(output, width, height, fps);
             mft.SetOutputType(0, output, 0);
         }

@@ -74,6 +74,7 @@ sealed class DisplaySender : IDisposable
     public int ShapesSent, PositionsGiven, PositionsSent, PositionsReplaced;
 
     uint seq;
+    int spsProfile = -1, spsLevel = -1;
     // Totals for the whole run, read at the end.
     public int Sent, DiscardedNoDevice, DiscardedBeforeKeyframe, DiscardedOtherRate, MaxWaiting, Connections;
     public long SentBytes;
@@ -261,9 +262,17 @@ sealed class DisplaySender : IDisposable
     public void Put(byte[] data, int length, bool keyframe, long presentQpc, long encodedQpc, uint encoderFps,
                     uint encoderBitrate)
     {
-        byte flags = (byte)((keyframe ? FlagKeyframe : 0) | (HasParameterSets(data, length) ? FlagConfig : 0));
+        byte flags = (byte)((keyframe ? FlagKeyframe : 0) |
+                            (HasParameterSets(data, length, out int profile, out int level) ? FlagConfig : 0));
         lock (gate)
         {
+            // What the encoder wrote, which its media type leaves unset.
+            if (level >= 0 && (profile != spsProfile || level != spsLevel))
+            {
+                spsProfile = profile;
+                spsLevel = level;
+                Log($"SPS profile_idc {profile} level_idc {level}");
+            }
             uint n = seq++;
             if (stream == null)
             {
@@ -491,10 +500,13 @@ sealed class DisplaySender : IDisposable
     }
 
     // Whether SPS (7) and PPS (8) come before the first slice (1 or 5).
-    // Reads only NAL headers, which are at the front of the unit.
-    static bool HasParameterSets(byte[] d, int length)
+    // Reads only NAL headers, which are at the front of the unit, and the
+    // SPS's profile_idc and level_idc (level 5.2 is 52), which follow its
+    // header; -1 without an SPS.
+    static bool HasParameterSets(byte[] d, int length, out int profile, out int level)
     {
         bool sps = false, pps = false;
+        profile = level = -1;
         for (int i = 0; i + 3 < length; i++)
         {
             if (d[i] != 0 || d[i + 1] != 0 || d[i + 2] != 1)
@@ -502,6 +514,11 @@ sealed class DisplaySender : IDisposable
             int type = d[i + 3] & 0x1F;
             if (type == 1 || type == 5)
                 break;
+            if (type == 7 && i + 6 < length)
+            {
+                profile = d[i + 4];
+                level = d[i + 6];
+            }
             sps |= type == 7;
             pps |= type == 8;
             i += 3;
