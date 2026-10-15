@@ -4,11 +4,19 @@ import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.PixelFormat;
+import android.graphics.PorterDuff;
+import android.graphics.Rect;
 import android.hardware.display.DisplayManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.HandlerThread;
 import android.util.Log;
+import android.view.Choreographer;
 import android.view.Display;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -19,7 +27,6 @@ import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.widget.FrameLayout;
-import android.widget.ImageView;
 import android.widget.TextView;
 
 import java.io.File;
@@ -58,29 +65,37 @@ public class DisplayActivity extends Activity {
     // Hidden while connected.
     private TextView statusView;
 
-    // The hub's pointer, drawn over the video (DECISIONS 11.1). The link
-    // thread writes the latest state under cursorLock and posts one apply to
-    // the UI thread; cursorPosted keeps it to one waiting at a time, so a
-    // burst of positions comes to one move, with the newest.
-    private ImageView cursorView;
+    // The hub's pointer, drawn over the video (DECISIONS 11.1) on a surface
+    // of its own, as SuperDisplay does: a View over the SurfaceView shows
+    // only inside the spot its last layout saw, so a fast pointer vanished
+    // (PLAN.md, v3 step 2). The link thread writes the latest state under
+    // cursorLock and posts one draw to the cursor thread; cursorPosted keeps
+    // it to one waiting at a time, so a burst of positions comes to one
+    // draw, with the newest. Drawing waits for a free buffer, which must
+    // never hold up the link thread.
+    private SurfaceView cursorSurface;
+    private final HandlerThread cursorThread = new HandlerThread("cursor");
+    private Handler cursorHandler;
     private final Object cursorLock = new Object();
     private Bitmap cursorShape;
     private int cursorHotX, cursorHotY, cursorX, cursorY;
     private boolean cursorVisible, cursorPosted;
-    // UI thread only. The picture's size from the decoder; 0 until known.
-    private int pictureW, pictureH;
-    private boolean cursorShown;
-    private Bitmap cursorApplied;
+    // The picture's size from the decoder, 0 until known; the cursor
+    // surface's size as laid out, the video's. Under cursorLock.
+    private int pictureW, pictureH, surfaceW, surfaceH;
+    // Cursor thread only.
+    private boolean cursorShown, surfaceClear = true;
+    private final Paint cursorPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
+    private final Rect cursorDst = new Rect();
 
     // Measurement, one row per position, written per connection as
     // <run>-link-N-cursor.csv: hub_us on the PONG t2 clock, then recv, apply
-    // and draw on this device's nanoTime. apply and draw stay 0 for a
-    // position a newer one replaced before the UI thread took it, and draw
-    // for one that moved nothing. Rows under cursorLock.
+    // and draw on this device's nanoTime. apply is when the cursor thread
+    // took it, draw when its buffer was posted. Both stay 0 for a position a
+    // newer one replaced first. Rows under cursorLock.
     private static final int MAX_CURSOR_ROWS = 200_000;
     private final ArrayList<long[]> cursorRows = new ArrayList<>();
     private long[] cursorLatest;  // the newest row, until applied
-    private final ArrayList<long[]> awaitingDraw = new ArrayList<>();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -92,31 +107,37 @@ public class DisplayActivity extends Activity {
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.CENTER));
         setContentView(root);
 
-        // Above the video, at the root's top-left, moved by translation.
-        cursorView = new ImageView(this);
-        cursorView.setScaleType(ImageView.ScaleType.FIT_XY);
-        cursorView.setVisibility(View.GONE);
-        root.addView(cursorView, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.TOP | Gravity.LEFT));
-        // fit() changes the video's size and place; the mapping follows the
-        // view as laid out, so it is logged and the cursor re-placed here.
-        view.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
-            if (pictureW == 0) return;
-            Log.i(Codecs.TAG, String.format("map: picture %dx%d, view %dx%d at (%d,%d), sx %.4f sy %.4f",
-                    pictureW, pictureH, v.getWidth(), v.getHeight(), l, t,
-                    (double) v.getWidth() / pictureW, (double) v.getHeight() / pictureH));
-            applyCursor();
-        });
-        // Just before each frame is drawn, on the UI thread: the moves
-        // applied since the last one are in this frame.
-        root.getViewTreeObserver().addOnDrawListener(() -> {
-            if (awaitingDraw.isEmpty()) return;
-            long now = System.nanoTime();
-            synchronized (cursorLock) {
-                for (long[] r : awaitingDraw) r[3] = now;
+        // Above the video, the same size and place (fit() sets both), see-
+        // through, so the picture's pixels map to it by scale alone. Not
+        // clickable, so touch goes on to the video view beneath.
+        cursorThread.start();
+        cursorHandler = new Handler(cursorThread.getLooper());
+        cursorSurface = new SurfaceView(this);
+        cursorSurface.setZOrderMediaOverlay(true);
+        cursorSurface.getHolder().setFormat(PixelFormat.TRANSLUCENT);
+        root.addView(cursorSurface, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.CENTER));
+        cursorSurface.getHolder().addCallback(new SurfaceHolder.Callback() {
+            @Override
+            public void surfaceCreated(SurfaceHolder holder) {
             }
-            awaitingDraw.clear();
+
+            @Override
+            public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+                synchronized (cursorLock) {
+                    surfaceW = width;
+                    surfaceH = height;
+                    Log.i(Codecs.TAG, String.format("cursor surface %dx%d, picture %dx%d", width, height,
+                            pictureW, pictureH));
+                }
+                // A new buffer starts with nothing in it.
+                cursorHandler.post(() -> surfaceClear = false);
+                postCursor();
+            }
+
+            @Override
+            public void surfaceDestroyed(SurfaceHolder holder) {
+            }
         });
         // Touch on the video goes up the display connection (FR-3.3).
         view.setOnTouchListener(this::onTouch);
@@ -345,23 +366,29 @@ public class DisplayActivity extends Activity {
         Log.i(Codecs.TAG, "cursor rows " + rows.size() + " written to " + f.getName());
     }
 
-    /** Any thread. Queues one apply unless one is already waiting. */
+    /**
+     * Any thread. Queues one draw at the next vsync unless one is already
+     * waiting. Once a vsync, not once a position: drawn as fast as buffers
+     * freed, the surface's queue filled and each cursor reached the panel
+     * about six vsyncs, 101.6ms median, after it was drawn
+     * (t-curlat-surface).
+     */
     private void postCursor() {
         synchronized (cursorLock) {
             if (cursorPosted) return;
             cursorPosted = true;
         }
-        runOnUiThread(this::applyCursor);
+        cursorHandler.post(() -> Choreographer.getInstance().postFrameCallback(t -> drawCursor()));
     }
 
     /**
-     * UI thread. Picture to view: the cursor's top-left is the hotspot less
-     * the shape's hotspot, scaled by the video view's laid-out size over the
-     * picture's, plus the video view's offset in the root.
+     * Cursor thread. Clears the cursor surface and draws the shape with its
+     * hotspot at the position, picture to surface by the surface's size over
+     * the picture's. A hidden pointer clears it once.
      */
-    private void applyCursor() {
+    private void drawCursor() {
         Bitmap shape;
-        int hotX, hotY, x, y;
+        int hotX, hotY, x, y, pw, ph, w, h;
         boolean visible;
         long[] row;
         synchronized (cursorLock) {
@@ -375,54 +402,68 @@ public class DisplayActivity extends Activity {
             x = cursorX;
             y = cursorY;
             visible = cursorVisible;
+            pw = pictureW;
+            ph = pictureH;
+            w = surfaceW;
+            h = surfaceH;
         }
-        boolean show = visible && shape != null && pictureW != 0 && view.getWidth() != 0;
-        if (!show) {
-            cursorView.setVisibility(View.GONE);
-            if (cursorShown) Log.i(Codecs.TAG, "cursor hidden");
-            cursorShown = false;
-            return;
+        boolean show = visible && shape != null && pw != 0 && w != 0;
+        if (!show && surfaceClear) return;
+        SurfaceHolder holder = cursorSurface.getHolder();
+        Canvas c;
+        try {
+            c = holder.lockHardwareCanvas();
+        } catch (IllegalStateException | IllegalArgumentException e) {
+            return;  // the surface went; surfaceChanged posts again
         }
-        double sx = (double) view.getWidth() / pictureW, sy = (double) view.getHeight() / pictureH;
-        int w = (int) Math.round(shape.getWidth() * sx), h = (int) Math.round(shape.getHeight() * sy);
-        int tx = (int) Math.round(view.getLeft() + (x - hotX) * sx), ty = (int) Math.round(view.getTop() + (y - hotY) * sy);
-        // Placed by layout, not by translation. The window works out which
-        // parts of it are see-through over the SurfaceView during layout
-        // only, and SurfaceFlinger leaves those parts out. A view moved by
-        // translation alone stays where the last layout put it as far as
-        // that goes, and vanished once it moved (measured 2026-10-12).
-        FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) cursorView.getLayoutParams();
-        if (lp.width != w || lp.height != h || lp.leftMargin != tx || lp.topMargin != ty) {
-            lp.width = w;
-            lp.height = h;
-            lp.leftMargin = tx;
-            lp.topMargin = ty;
-            cursorView.setLayoutParams(lp);
-            if (row != null) awaitingDraw.add(row);
+        if (c == null) return;
+        c.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
+        if (show) {
+            double sx = (double) w / pw, sy = (double) h / ph;
+            int left = (int) Math.round((x - hotX) * sx), top = (int) Math.round((y - hotY) * sy);
+            cursorDst.set(left, top, left + (int) Math.round(shape.getWidth() * sx),
+                    top + (int) Math.round(shape.getHeight() * sy));
+            c.drawBitmap(shape, null, cursorDst, cursorPaint);
         }
-        if (shape != cursorApplied) {
-            cursorView.setImageBitmap(shape);
-            cursorApplied = shape;
+        holder.unlockCanvasAndPost(c);
+        surfaceClear = !show;
+        if (row != null) {
+            long now = System.nanoTime();
+            synchronized (cursorLock) {
+                row[3] = now;
+            }
         }
-        cursorView.setVisibility(View.VISIBLE);
-        if (!cursorShown) {
-            Log.i(Codecs.TAG, String.format("cursor shown: hotspot at picture (%d,%d), shape %dx%d hot (%d,%d),"
-                    + " drawn at view (%d,%d) size %dx%d", x, y, shape.getWidth(), shape.getHeight(), hotX, hotY,
-                    tx, ty, w, h));
+        if (show != cursorShown) {
+            Log.i(Codecs.TAG, show ? String.format("cursor shown: hotspot at picture (%d,%d), shape %dx%d hot (%d,%d),"
+                    + " drawn at %s on %dx%d", x, y, shape.getWidth(), shape.getHeight(), hotX, hotY,
+                    cursorDst.toShortString(), w, h) : "cursor hidden");
+            cursorShown = show;
         }
-        cursorShown = true;
     }
 
-    /** Sizes the view to the picture's aspect ratio, as large as fits. Any thread. */
+    /**
+     * Sizes the video, and the cursor surface over it, to the picture's
+     * aspect ratio, as large as fits. Any thread.
+     */
     private void fit(int w, int h) {
         runOnUiThread(() -> {
-            pictureW = w;
-            pictureH = h;
+            synchronized (cursorLock) {
+                pictureW = w;
+                pictureH = h;
+            }
             double scale = Math.min((double) root.getWidth() / w, (double) root.getHeight() / h);
             int vw = (int) Math.round(w * scale), vh = (int) Math.round(h * scale);
             Log.i(Codecs.TAG, String.format("picture %dx%d shown at %dx%d in %dx%d, scale %.3f",
                     w, h, vw, vh, root.getWidth(), root.getHeight(), scale));
             view.setLayoutParams(new FrameLayout.LayoutParams(vw, vh, Gravity.CENTER));
+            cursorSurface.setLayoutParams(new FrameLayout.LayoutParams(vw, vh, Gravity.CENTER));
+            postCursor();
         });
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        cursorThread.quitSafely();
     }
 }

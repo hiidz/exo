@@ -23,7 +23,8 @@ import java.util.List;
  */
 final class DisplaySettings {
     static final int[] RATES = {30, 60};
-    // Smoothing's buffer in ms, off first, as SuperDisplay offers it.
+    // Smoothing's buffer in ms, as SuperDisplay offers it; 50 by default,
+    // the one even at 60 on the tablet (PLAN.md, v3 step 2, smoothness).
     static final int[] SMOOTHING = {0, 20, 50};
     // All of the panel, then three quarters, two thirds and half of it.
     private static final int[][] STEPS = {{1, 1}, {3, 4}, {2, 3}, {1, 2}};
@@ -64,7 +65,7 @@ final class DisplaySettings {
         SharedPreferences p = prefs(context);
         s.portrait = p.getBoolean("display.portrait", false);
         s.fps = p.getInt("display.fps", 30);
-        s.smoothing = p.getInt("display.smoothing", 0);
+        s.smoothing = p.getInt("display.smoothing", 50);
         s.refresh(p.getString("display.size", null));
         return s;
     }

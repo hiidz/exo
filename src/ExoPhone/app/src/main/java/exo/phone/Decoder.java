@@ -49,6 +49,8 @@ final class Decoder {
     private static final class Frame {
         final Unit u;
         long queueNs, outNs = -1;
+        // The time given to releaseOutputBuffer, -1 for at once, and when it returned.
+        long targetNs = -1, releaseNs = -1;
         int bytes;
         boolean idr;
         int inFlightAtOut;
@@ -257,12 +259,14 @@ final class Decoder {
             }
             outputs++;
             if (smoothingMs > 0 && f != null && f.u.presentUs >= 0) {
-                c.releaseOutputBuffer(index, smoothed(f));
+                f.targetNs = smoothed(f);
+                c.releaseOutputBuffer(index, f.targetNs);
             } else {
                 // Render as soon as possible: for a live display the newest
                 // frame is the right one.
                 c.releaseOutputBuffer(index, true);
             }
+            if (f != null) f.releaseNs = System.nanoTime();
             released++;
             // Every frame up to this one is done; one the decoder dropped
             // is covered too.
@@ -409,15 +413,16 @@ final class Decoder {
         // offline analysis that relates the two clocks.
         try (PrintWriter w = new PrintWriter(csv)) {
             w.println("frame,pts_us,bytes,idr,queue_ms,q2o_ms,in_flight_at_out,"
-                    + "seq,present_us,encoded_us,sent_us,recv_ns,queue_ns,out_ns");
+                    + "seq,present_us,encoded_us,sent_us,recv_ns,queue_ns,out_ns,target_ns,release_ns");
             long base = n > 0 ? frames.get(0).queueNs : 0;
             for (int i = 0; i < n; i++) {
                 Frame f = frames.get(i);
                 Unit u = f.u;
-                w.printf("%d,%d,%d,%d,%.3f,%s,%d,%d,%d,%d,%d,%d,%d,%d%n", i, u.ptsUs, f.bytes,
+                w.printf("%d,%d,%d,%d,%.3f,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d%n", i, u.ptsUs, f.bytes,
                         f.idr ? 1 : 0, (f.queueNs - base) / 1e6,
                         f.outNs < 0 ? "" : String.format("%.3f", (f.outNs - f.queueNs) / 1e6),
-                        f.inFlightAtOut, u.seq, u.presentUs, u.encodedUs, u.sentUs, u.recvNs, f.queueNs, f.outNs);
+                        f.inFlightAtOut, u.seq, u.presentUs, u.encodedUs, u.sentUs, u.recvNs, f.queueNs, f.outNs,
+                        f.targetNs, f.releaseNs);
             }
             Log.i(Codecs.TAG, "  wrote " + csv);
         } catch (IOException e) {
