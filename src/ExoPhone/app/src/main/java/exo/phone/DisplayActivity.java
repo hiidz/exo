@@ -187,7 +187,8 @@ public class DisplayActivity extends Activity {
                             @Override
                             public Decoder newDecoder(String conn, java.util.function.LongConsumer acks) {
                                 return Decoder.ofLink(file(conn + ".csv"), hintW, hintH, settings.fps,
-                                        lowLatency, codec, surface, DisplayActivity.this::fit, acks);
+                                        lowLatency, codec, surface, DisplayActivity.this::fit, acks,
+                                        settings.smoothing);
                             }
 
                             @Override

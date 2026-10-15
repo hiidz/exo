@@ -46,12 +46,14 @@ Double-click **Exo** on the desktop. Plug the phones in, in any order.
 On each phone, open Exo and tap **Use as display** or **Use as webcam**,
 or both. The webcam asks for the camera the first time. A role another
 phone already holds is refused, and the phone says which one has it.
-Under **Use as display** are its resolution, landscape or portrait, and
-30 or 60 fps; the PC's monitor takes exactly that mode the next time the
-display starts. Under **Use as webcam** are the front or back camera,
-the lens, the size and frame rate the PC's camera offers apps,
-a torch where there is one, and zoom, exposure and focus
-(left at the start for auto), which change the picture as you move them.
+Under **Use as display** are its resolution, landscape or portrait, 30
+or 60 fps, and smoothing (off, 20 or 50 ms), which holds each frame a
+little to show them at an even pace; the PC's monitor takes exactly
+that mode the next time the display starts. Under **Use as webcam** are
+the front or back camera, the lens, the size and frame rate the PC's
+camera offers apps, a torch where there is one, and zoom, exposure and
+focus (left at the start for auto), which change the picture as you
+move them.
 Ctrl+C in the hub's window stops it, and nothing it started is left
 running.
 

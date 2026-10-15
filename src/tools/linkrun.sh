@@ -5,10 +5,12 @@
 # then the phone's CSVs pulled and LinkTimes run on them. Pull the cable
 # during the run for the replug test; the hub log records every cycle.
 # Needs the hub built in Release, ExoPhone installed, and 5037 free.
-# Usage: linkrun.sh <seconds> <tag> <serial> [moving|static] [relaunches] [fps]
+# Usage: linkrun.sh <seconds> <tag> <serial> [moving|static] [relaunches] [fps] [smoothing]
 # static paints the text once and nothing moves (DECISIONS 5.4). relaunches
 # restarts the app that many times, evenly spaced, each a new connection.
 # fps is 30 or 60, 30 by default; the display is landscape at full size.
+# smoothing is the phone's smoothing buffer in ms, 0 (off, the default),
+# 20 or 50; given every run, since the phone keeps the last one.
 #
 # Every adb command here runs while a hub owns 5037. Run with no hub, adb
 # would start a server of its own, and the hub refuses a server it did not
@@ -16,8 +18,8 @@
 # short hub run that sets no reverse, so the app cannot reconnect, and whose
 # server dies with it.
 export MSYS_NO_PATHCONV=1
-S=$1; TAG=$2; SERIAL=$3; CONTENT=${4:-moving}; RELAUNCH=${5:-0}; RATE=${6:-30}
-ROLE="--es role display --ei rate $RATE --es orientation landscape --es size full"
+S=$1; TAG=$2; SERIAL=$3; CONTENT=${4:-moving}; RELAUNCH=${5:-0}; RATE=${6:-30}; SMOOTH=${7:-0}
+ROLE="--es role display --ei rate $RATE --es orientation landscape --es size full --ei smoothing $SMOOTH"
 STATIC=; [ "$CONTENT" = static ] && STATIC=-Static
 # Output is local evidence, gitignored with the rest of testdata.
 T=C:/Dev/Exo/src/ExoPhone/testdata/link/$TAG; mkdir -p $T

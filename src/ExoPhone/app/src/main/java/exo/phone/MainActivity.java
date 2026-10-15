@@ -45,7 +45,7 @@ public class MainActivity extends Activity {
     private static final int ASK_CAMERA = 1;
 
     private DisplaySettings settings;
-    private Spinner sizePicker, orientationPicker, ratePicker;
+    private Spinner sizePicker, orientationPicker, ratePicker, smoothingPicker;
     private CameraSettings camera;
     private Spinner facingPicker, lensPicker, camSizePicker, camRatePicker;
     private final List<Integer> camRates = new ArrayList<>();  // the rate picker's, in its order
@@ -100,12 +100,14 @@ public class MainActivity extends Activity {
         display.setOnClickListener(v -> useDisplay());
         root.addView(display);
         // The display's settings, under its button. The hub's monitor gets
-        // exactly this mode the next time the display starts.
+        // exactly this mode, and the decoder this smoothing, the next time the
+        // display starts.
         settings = DisplaySettings.load(this);
         LinearLayout pickers = new LinearLayout(this);
         sizePicker = picker(pickers, this::picked);
         orientationPicker = picker(pickers, this::picked);
         ratePicker = picker(pickers, this::picked);
+        smoothingPicker = picker(pickers, this::picked);
         root.addView(pickers);
         bindPickers();
         webcamButton = new Button(this);
@@ -212,7 +214,10 @@ public class MainActivity extends Activity {
         int[] size = at >= 0 && at < settings.sizes.size() ? settings.sizes.get(at) : settings.size;
         boolean portrait = orientationPicker.getSelectedItemPosition() == 1;
         int fps = DisplaySettings.RATES[Math.max(0, ratePicker.getSelectedItemPosition())];
-        if (size == settings.size && portrait == settings.portrait && fps == settings.fps) return;
+        int smoothing = DisplaySettings.SMOOTHING[Math.max(0, smoothingPicker.getSelectedItemPosition())];
+        if (size == settings.size && portrait == settings.portrait && fps == settings.fps
+                && smoothing == settings.smoothing) return;
+        settings.smoothing = smoothing;
         settings.portrait = portrait;
         settings.fps = fps;
         settings.refresh(size == null ? null : size[0] + "x" + size[1]);
@@ -350,6 +355,8 @@ public class MainActivity extends Activity {
         bind(sizePicker, sizes, Math.max(0, settings.sizes.indexOf(settings.size)));
         bind(orientationPicker, Arrays.asList("Landscape", "Portrait"), settings.portrait ? 1 : 0);
         bind(ratePicker, Arrays.asList("30 fps", "60 fps"), settings.fps == 60 ? 1 : 0);
+        bind(smoothingPicker, Arrays.asList("Smoothing off", "Smoothing 20 ms", "Smoothing 50 ms"),
+                Math.max(0, Arrays.binarySearch(DisplaySettings.SMOOTHING, settings.smoothing)));
     }
 
     private void bind(Spinner s, List<String> items, int selected) {

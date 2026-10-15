@@ -84,6 +84,13 @@ final class Decoder {
     private volatile boolean finished; // read by offer() on the reader thread
     private int skipped, outputs, released, renderCallbacks, firstOutputInFlight = -1, inputCapacity;
     private long t0Ms, startNs;
+    // Smoothing (DisplaySettings): 0 is off. The decoder thread's alone.
+    private int smoothingMs;
+    private static final int OFFSETS = 60;
+    private static final long MAX_HOLD_NS = 80_000_000L;
+    private final long[] offsets = new long[OFFSETS];
+    private int offsetCount, held;
+    private long holdNs;
 
     /** From a file, paced at fps or as fast as the decoder takes it. */
     static Decoder ofFile(File file, File csv, double fps, int hintWidth, int hintHeight, boolean paced,
@@ -94,13 +101,16 @@ final class Decoder {
 
     /**
      * From the link. The first unit offered must carry SPS and PPS with an
-     * IDR; Link discards everything before one (DECISIONS 5.3).
+     * IDR; Link discards everything before one (DECISIONS 5.3). smoothingMs
+     * holds each frame to an even pace, 0 for none (DisplaySettings).
      */
     static Decoder ofLink(File csv, int hintWidth, int hintHeight, int fps, boolean lowLatency, String codecName,
-                          Surface surface, SizeListener sizeListener, java.util.function.LongConsumer acks) {
+                          Surface surface, SizeListener sizeListener, java.util.function.LongConsumer acks,
+                          int smoothingMs) {
         Decoder d = new Decoder(null, new ArrayBlockingQueue<>(2), csv, fps, hintWidth, hintHeight, false, lowLatency,
                 codecName, surface, sizeListener);
         d.acks = acks;
+        d.smoothingMs = smoothingMs;
         return d;
     }
 
@@ -179,6 +189,11 @@ final class Decoder {
             finish();
             return;
         }
+        // The decoder at the fastest it says it runs this size, as SuperDisplay
+        // does, so it clocks up rather than pacing itself to fps. Set after
+        // choosing, so the choice is checked against fps as DisplaySettings was.
+        int rate = Codecs.maxRate(codec.getCodecInfo(), hintWidth, hintHeight);
+        if (rate > 0) format.setInteger(MediaFormat.KEY_OPERATING_RATE, rate);
         codec.setCallback(callback, handler);
         // Counted only. Measured on the SM-G991B: the callback's time is the
         // frame's own timestamp echoed back, and it fired for all 972 frames
@@ -241,9 +256,13 @@ final class Decoder {
                 }
             }
             outputs++;
-            // Render as soon as possible: for a live display the newest
-            // frame is the right one.
-            c.releaseOutputBuffer(index, true);
+            if (smoothingMs > 0 && f != null && f.u.presentUs >= 0) {
+                c.releaseOutputBuffer(index, smoothed(f));
+            } else {
+                // Render as soon as possible: for a live display the newest
+                // frame is the right one.
+                c.releaseOutputBuffer(index, true);
+            }
             released++;
             // Every frame up to this one is done; one the decoder dropped
             // is covered too.
@@ -269,6 +288,34 @@ final class Decoder {
     };
 
     /** Queues as many access units as there are free buffers and due frames. */
+    /**
+     * When to show f, as SuperDisplay paces frames: the hub's present time
+     * plus a base offset plus the buffer chosen on the phone. The base is
+     * the mean of the lower half of the last OFFSETS decode-out offsets, so
+     * the usual delay sets it and late frames do not drag it up; the
+     * offset also absorbs the gap between the two clocks. Never more than
+     * MAX_HOLD_NS from now; a late frame goes at once.
+     */
+    private long smoothed(Frame f) {
+        offsets[offsetCount++ % OFFSETS] = f.outNs - f.u.presentUs * 1000;
+        int n = Math.min(offsetCount, OFFSETS);
+        long[] sorted = Arrays.copyOf(offsets, n);
+        Arrays.sort(sorted);
+        int half = Math.max(1, n / 2);
+        long base = 0;
+        for (int i = 0; i < half; i++) base += sorted[i];
+        base /= half;
+        long now = System.nanoTime();
+        long at = Math.max(now, Math.min(f.u.presentUs * 1000 + base + smoothingMs * 1_000_000L, now + MAX_HOLD_NS));
+        holdNs += at - now;
+        if (++held % 300 == 0) {
+            Log.i(Codecs.TAG, String.format("smoothing %dms: last 300 frames held %.1fms mean", smoothingMs,
+                    holdNs / 300 / 1e6));
+            holdNs = 0;
+        }
+        return at;
+    }
+
     private void feed() {
         if (codec == null || finished) return;
         while (!inputDone && !freeInputs.isEmpty()) {

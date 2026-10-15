@@ -45,6 +45,20 @@ final class Codecs {
         return null;
     }
 
+    /**
+     * The highest frame rate the decoder info claims for w x h, as
+     * SuperDisplay sets operating-rate (RESEARCH.md, How others do it); 0
+     * when it does not say or takes no such size.
+     */
+    static int maxRate(MediaCodecInfo info, int w, int h) {
+        try {
+            VideoCapabilities v = info.getCapabilitiesForType(AVC).getVideoCapabilities();
+            return (int) Math.floor(v.getSupportedFrameRatesFor(w, h).getUpper());
+        } catch (IllegalArgumentException | NullPointerException e) {
+            return 0;
+        }
+    }
+
     /** sizes is {width, height} pairs; each is checked at every rate. */
     static void logAvcDecoders(int[][] sizes, int[] rates) {
         MediaCodecList list = new MediaCodecList(MediaCodecList.REGULAR_CODECS);
