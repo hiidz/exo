@@ -1,6 +1,6 @@
 @echo off
 REM vcvars must run in the same shell as cl, because it sets INCLUDE and LIB.
-REM Run from PowerShell or cmd, not Git Bash (spikes/STATUS.md).
+REM Run from PowerShell or cmd, not Git Bash (shell-traps rule).
 call "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
 if errorlevel 1 (echo VCVARS FAILED & exit /b 1)
 

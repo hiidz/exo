@@ -18,7 +18,7 @@ enum FrameKind
 // The display source: ExoDisplay's own copy of each desktop image, through
 // the texture the driver shares (exo_display.h, ExoFrameInfo). Windows hands
 // every image of the monitor to the driver, the secure desktop's included,
-// so there is no duplication to lose: a mode change or a new render adapter
+// so the UAC prompt and lock screen lose nothing: a mode change or a new render adapter
 // brings a new texture, and an unplug takes it away.
 //
 // Owns the D3D11 device, made on the render adapter the driver names at the

@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- No console: a tray icon and a window (PLAN.md, Goal). The tools
+    <!-- No console: a tray icon and a window (PLAN.md, PC app). The tools
          redirect stdout and still read it; otherwise see HubLog.cs. -->
     <OutputType>WinExe</OutputType>
     <UseWindowsForms>true</UseWindowsForms>

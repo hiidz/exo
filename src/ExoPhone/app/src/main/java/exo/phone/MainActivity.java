@@ -30,7 +30,7 @@ import java.util.Arrays;
 import java.util.List;
 
 /**
- * Exo's screen on the phone, where the role is picked (PLAN.md, Goal).
+ * Exo's screen on the phone, where the role is picked (PLAN.md, v2, done).
  * "Use as display" opens DisplayActivity, full screen, until the user
  * leaves it. "Use as webcam" starts CameraService, which goes on with the
  * screen off until the same button stops it, and asks for the camera

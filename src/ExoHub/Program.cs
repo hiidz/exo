@@ -16,8 +16,7 @@
 // otherwise to a log file (HubLog).
 //
 // Usage: ExoHub [--debug] [--seconds N] [--dump F [--dump-after S]] [--out F]
-//               [--camera-file F | --test-pattern [--camera-geometry W H S]] [--no-reverse] [--tray]
-//               [--bitrate M | --quality Q]
+//               [--no-reverse] [--tray] [--bitrate M | --quality Q]
 // --debug     D3D11 debug layer on, messages printed as they arrive. Slow.
 // --seconds N stop after N seconds, as if Ctrl+C was pressed.
 // --dump F    write the first converted frame to F as raw NV12. The one
@@ -26,14 +25,6 @@
 // --dump-after S  dump the first frame converted or resent after S
 //             seconds instead, since the first after a plug is black.
 // --out F     write the encoded stream to F as Annex-B H.264.
-// --camera-file F  decode the recorded H.264 stream F into L7, looping it,
-//             in place of a phone (DECISIONS 10 item 4, increment C). The
-//             camera role is refused.
-// --test-pattern  L7 gets the test pattern in place of a phone (increment
-//             B). The camera role is refused.
-// --camera-geometry W H S  the test pattern's width, height and stride,
-//             1280 720 1344 by default. Anything but 1280x720 is for
-//             watching ExoCamera.dll refuse it (TECHNICAL_DESIGN 3.3).
 // --no-reverse  track devices but set up no reverse, so no app connects.
 //             For the tools' collection runs after a measured one.
 // --bitrate M  CBR at M Mbps at 30fps, in place of 40. For the Wi-Fi rate
@@ -117,11 +108,6 @@ double seconds = 0;
 string dumpPath = null;
 double dumpAfter = 0;
 string outPath = null;
-// L7's test pattern (DECISIONS 10 item 4, increment B). The stride is wider
-// than the width on purpose: a reader that ignores it shows a shear.
-bool testPattern = false;
-int camWidth = 1280, camHeight = 720, camStride = 1344;
-string cameraFile = null;
 bool reverse = true;
 bool trayOnly = false;
 for (int i = 0; i < args.Length; i++)
@@ -133,13 +119,6 @@ for (int i = 0; i < args.Length; i++)
         case "--dump": dumpPath = args[++i]; break;
         case "--dump-after": dumpAfter = double.Parse(args[++i]); break;
         case "--out": outPath = args[++i]; break;
-        case "--camera-geometry":
-            camWidth = int.Parse(args[++i]);
-            camHeight = int.Parse(args[++i]);
-            camStride = int.Parse(args[++i]);
-            break;
-        case "--camera-file": cameraFile = args[++i]; break;
-        case "--test-pattern": testPattern = true; break;
         case "--no-reverse": reverse = false; break;
         case "--bitrate": bitrateAt30 = uint.Parse(args[++i]) * 1_000_000; break;
         case "--quality": quality = uint.Parse(args[++i]); break;
@@ -173,23 +152,10 @@ catch (SocketException ex)
 // After L7, so an orphaned hub fails on the port before registering a
 // second camera. Null if registration failed; the hub runs on without it.
 using VirtualCamera vcam = VirtualCamera.Register(clock, camera);
-// The one producer for L7: the decoder, fed by the camera connection or a
-// file, or else the test pattern.
-CameraDecoder decoder = null;
-TestPattern pattern = null;
-if (testPattern)
-{
-    pattern = new TestPattern(camera, clock, camWidth, camHeight, camStride);
-}
-else
-{
-    decoder = new CameraDecoder(camera, clock);
-    if (cameraFile != null)
-        decoder.PlayFile(cameraFile);
-}
-// The decoder the camera connection feeds, or null to refuse the camera
-// role: no virtual camera for it to reach, or L7 has another producer.
-CameraDecoder cameraRole = vcam != null && cameraFile == null ? decoder : null;
+// The one producer for L7, fed by the camera connection.
+var decoder = new CameraDecoder(camera, clock);
+// Null to refuse the camera role: no virtual camera for it to reach.
+CameraDecoder cameraRole = vcam != null ? decoder : null;
 // Port 0: Windows picks it, and this instance holds it exclusively. With
 // the session ID in WELCOME it is the per-session identifier (5.7, 5.8).
 using var display = new DisplaySender(clock) { BitrateOverride = bitrateAt30 };
@@ -595,8 +561,7 @@ Console.WriteLine($"gate timer late ms {Spread(timerLate)}");
 devices.Dispose();
 // Unplugs the monitor now rather than leaving it to the driver's watchdog.
 monitor.Dispose();
-pattern?.Dispose();
-decoder?.Dispose();
+decoder.Dispose();
 // Before L7 closes, so the DLL in the Frame Server gets Shutdown with its
 // link still up, rather than a reset and a reconnect first (DECISIONS 5.9).
 vcam?.Dispose();
@@ -663,7 +628,7 @@ static void DumpAndDecode(Nv12Converter converter, string path, string t)
     }
 }
 
-// Where touch lands: DXGI's rectangle for the duplicated output, checked
+// Where touch lands: DXGI's rectangle for the EXO monitor's output, checked
 // against the monitor rectangle Windows gives for its centre (traps-touch
 // rule). Null, so touch is refused, if the two disagree.
 static OutputInfo CheckTouchTarget(OutputInfo o, string t)

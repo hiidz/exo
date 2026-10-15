@@ -31,8 +31,8 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * The camera role for one connection (DECISIONS 10 item 4, increment D): the
- * back camera into an H.264 encoder, and the encoded frames into a bounded
- * queue the link drains to the hub. A new one per connection, so every
+ * camera CameraSettings picked into an H.264 encoder, and the encoded
+ * frames into a bounded queue the link drains to the hub. A new one per connection, so every
  * connection starts with codec config and an IDR (DECISIONS 5.3).
  *
  * The camera draws straight into the encoder's input Surface, so no frame

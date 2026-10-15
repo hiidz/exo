@@ -1,10 +1,9 @@
 // Decodes the camera stream into L7, once for every client (FR-1.3). Its
 // frames come from the camera connection (DECISIONS 10 item 4, increment
 // D), through Submit on that connection's reader thread, so a decoder that
-// falls behind slows the reader and, over TCP, the phone. Or from a recorded
-// file, through PlayFile (increment C).
+// falls behind slows the reader and, over TCP, the phone.
 //
-// Each stream, a connection or the file, begins with BeginStream: the
+// Each connection's stream begins with BeginStream: the
 // decoder is flushed, and every frame is discarded until one carries codec
 // config and a keyframe (DECISIONS 5.3).
 //
@@ -30,9 +29,9 @@ namespace ExoHub.Camera;
 
 sealed unsafe class CameraDecoder : IDisposable
 {
-    // The file has no timestamps, so it is fed at the advertised rate.
-    const int Fps = 30;
-    const long Duration = 10_000_000 / Fps;  // 100ns units
+    // Sample times only pair each output with its input for the in-to-out
+    // time; the phone's timestamps are not used, so each frame counts 1/30s.
+    const long Duration = 10_000_000 / 30;  // 100ns units
     // MF_E_TRANSFORM_STREAM_CHANGE, which Vortice's ResultCode lacks.
     const int StreamChange = unchecked((int)0xC00D6D61);
 
@@ -42,8 +41,6 @@ sealed unsafe class CameraDecoder : IDisposable
     // One stream at a time: a replaced connection's reader may still be
     // submitting while the new one begins.
     readonly object gate = new();
-    Thread fileThread;
-    volatile bool stop;
     bool waitForKeyframe = true;  // under gate
     long time;                    // under gate: the next input's sample time
     bool flip;                    // under gate: this stream's picture turns 180 (DECISIONS 6.4)
@@ -264,36 +261,6 @@ sealed unsafe class CameraDecoder : IDisposable
         }
     }
 
-    // Increment C's source: a recorded Annex-B file, looped, one frame per
-    // 1/30s against a deadline, since the file has no timestamps. Each pass
-    // restarts at SPS, PPS and an IDR, so the decoder runs straight on.
-    public void PlayFile(string path)
-    {
-        byte[] file = File.ReadAllBytes(path);
-        List<AccessUnit> units = AccessUnits.Split(file);
-        Log($"file {path}: {file.Length} bytes, {units.Count} frames, {units.Count(u => u.Keyframe)} keyframes, " +
-            $"first frame {(units.Count > 0 && units[0].Config && units[0].Keyframe ? "carries SPS, PPS and an IDR" : "DOES NOT START WITH SPS, PPS AND AN IDR")}");
-        if (units.Count == 0)
-            throw new InvalidDataException($"{path}: no H.264 frames found");
-        BeginStream(path, flip: false);
-        fileThread = new Thread(() =>
-        {
-            long interval = Stopwatch.Frequency / Fps;
-            long due = Stopwatch.GetTimestamp();
-            for (int i = 0; !stop; i = (i + 1) % units.Count)
-            {
-                long wait = (due - Stopwatch.GetTimestamp()) * 1000 / Stopwatch.Frequency;
-                if (wait > 0)
-                    Thread.Sleep((int)wait);
-                due += interval;
-                AccessUnit u = units[i];
-                if (!Submit(file.AsSpan(u.Offset, u.Length), u.Keyframe, u.Config))
-                    return;
-            }
-        }) { IsBackground = true, Name = "camera file" };
-        fileThread.Start();
-    }
-
     // Takes every frame the decoder has ready.
     void Drain()
     {
@@ -374,8 +341,6 @@ sealed unsafe class CameraDecoder : IDisposable
 
     public void Dispose()
     {
-        stop = true;
-        fileThread?.Join();
         lock (gate)
         {
             Error ??= "disposed";

@@ -33,7 +33,7 @@ import java.util.Arrays;
  * The display role, started by MainActivity's "Use as display". Logs the
  * decoder capabilities, then either decodes the file named by the "file"
  * extra to a full-screen SurfaceView, or, without one, connects to the hub
- * over localabstract:exo (DECISIONS 5.7) until the user leaves. MainActivity
+ * through Link, over USB or Wi-Fi, until the user leaves. MainActivity
  * passes its extras on, so the tools reach both through it:
  *
  *   adb shell am start -S -n exo.phone/.MainActivity --es role display [--ei proto 3]

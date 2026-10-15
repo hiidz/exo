@@ -1,6 +1,8 @@
-// The mouse pointer on the duplicated output. Desktop Duplication never
-// draws it into the image; it hands over the shape and the position
-// separately, and the phone draws it (DECISIONS 11.1, option B).
+// The mouse pointer on the EXO monitor. Windows never draws it into the
+// image (a hardware cursor); ExoDisplay forwards the shape and the position
+// separately (DriverCursor), and the phone draws it (DECISIONS 11.1,
+// option B). The shape arrives in DXGI's Desktop Duplication structs, which
+// DriverCursor fills from IddCx's.
 
 using Vortice.DXGI;
 
@@ -18,8 +20,9 @@ sealed record CursorImage(int Width, int Height, int HotX, int HotY, byte[] Bgra
     public override string ToString() =>
         $"{Type} {Width}x{Height} hot ({HotX},{HotY}) invert={InvertPixels} straight-alpha evidence={StraightAlphaEvidence}";
 
-    // DXGI_OUTDUPL_POINTER_SHAPE_TYPE.
-    const int Monochrome = 1, Color = 2, MaskedColor = 4;
+    // DXGI_OUTDUPL_POINTER_SHAPE_TYPE. Not monochrome (1): IddCx has no
+    // such shape.
+    const int Color = 2, MaskedColor = 4;
 
     // From DXGI's raw shape. Geometry and pitch come from the shape info,
     // never assumed. Pixels that invert the screen cannot be drawn by the
@@ -29,10 +32,7 @@ sealed record CursorImage(int Width, int Height, int HotX, int HotY, byte[] Bgra
     public static CursorImage Convert(OutduplPointerShapeInfo info, ReadOnlySpan<byte> raw)
     {
         int type = (int)info.Type;
-        int w = (int)info.Width, pitch = (int)info.Pitch;
-        // Monochrome holds the AND mask above the XOR mask, so the buffer is
-        // twice the pointer's height.
-        int h = type == Monochrome ? (int)info.Height / 2 : (int)info.Height;
+        int w = (int)info.Width, h = (int)info.Height, pitch = (int)info.Pitch;
         var px = new byte[w * h * 4];
         var invert = new bool[w * h];
         int inverts = 0, evidence = 0;
@@ -40,30 +40,11 @@ sealed record CursorImage(int Width, int Height, int HotX, int HotY, byte[] Bgra
 
         switch (type)
         {
-            case Monochrome:
-                name = "monochrome";
-                for (int y = 0; y < h; y++)
-                    for (int x = 0; x < w; x++)
-                    {
-                        int bit = 0x80 >> (x & 7);
-                        bool and = (raw[y * pitch + x / 8] & bit) != 0;
-                        bool xor = (raw[(y + h) * pitch + x / 8] & bit) != 0;
-                        if (and && !xor)
-                            continue;  // transparent
-                        if (and && xor)
-                        {
-                            invert[y * w + x] = true;
-                            continue;
-                        }
-                        byte v = xor ? (byte)255 : (byte)0;  // AND 0: white or black
-                        Set(px, (y * w + x) * 4, v, v, v, 255);
-                    }
-                break;
-
             case Color:
-                // Straight alpha [inferred from the duplication sample, which
-                // blends it with SrcAlpha]. A channel above alpha cannot occur
-                // in premultiplied data, so a count above zero proves it.
+                // Straight alpha [inferred from Microsoft's Desktop
+                // Duplication sample, which blends it with SrcAlpha]. A
+                // channel above alpha cannot occur in premultiplied data, so
+                // a count above zero proves it.
                 name = "color";
                 for (int y = 0; y < h; y++)
                     for (int x = 0; x < w; x++)
@@ -127,9 +108,9 @@ sealed record CursorImage(int Width, int Height, int HotX, int HotY, byte[] Bgra
 }
 
 // What the phone should show: the current shape, and where the hotspot is
-// or that the pointer is not on this output. Fed every acquired frame; says
-// when either changed, so the bursts of hidden cursor-only frames 11.1
-// measured with the pointer on the primary come to one change, not forty.
+// or that the pointer is not on this monitor. Fed on each of the driver's
+// pointer events; says when either changed, so repeats of one hidden state
+// come to one change.
 sealed class CursorTracker
 {
     public CursorImage Shape { get; private set; }
@@ -143,7 +124,7 @@ sealed class CursorTracker
 
     public int ShapeChanges, PositionChanges, PositionsWithoutShape;
 
-    // The shape first: a frame can carry both, and the new hotspot applies
+    // The shape first: an event can carry both, and the new hotspot applies
     // to the position that comes with it.
     public bool TakeShape(OutduplPointerShapeInfo info, ReadOnlySpan<byte> raw)
     {
@@ -155,8 +136,6 @@ sealed class CursorTracker
         return true;
     }
 
-    // Only for a frame whose LastMouseUpdateTime is nonzero. Otherwise the
-    // position fields are not filled in and mean nothing.
     public bool TakePosition(OutduplPointerPosition p)
     {
         bool visible = p.Visible;

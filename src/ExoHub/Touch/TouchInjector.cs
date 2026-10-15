@@ -3,9 +3,9 @@
 //
 // TOUCH body, big-endian: sent i64 (phone microseconds), picture width and
 // height u16, count u8, then count entries of id u8, phase u8, x i32, y i32.
-// x and y are picture pixels, which are the duplicated output's pixels, so
-// the desktop point is the output's origin plus them. Signed throughout: the
-// origin is negative when the VDD sits left of or above the primary.
+// x and y are picture pixels, which are the EXO monitor's pixels, so the
+// desktop point is the monitor's origin plus them. Signed throughout: the
+// origin is negative when the monitor sits left of or above the primary.
 //
 // Two threads. The device thread parses each TOUCH, maps it to the desktop
 // and appends it to its finger's queue. This class's own thread owns
@@ -45,8 +45,8 @@ sealed class TouchInjector : IDisposable
     readonly Thread thread;
     bool disposed;  // under gate
 
-    // The VDD's rectangle, from the capture thread at each Reopen, null
-    // while the duplication is lost. Immutable, so a reader that copies the
+    // The EXO monitor's rectangle, from the capture thread at each Reopen
+    // and move, null while the texture is lost. Immutable, so a reader that copies the
     // reference once has one whole rectangle.
     volatile OutputInfo target;
     public OutputInfo Target { get => target; set => target = value; }
@@ -98,7 +98,7 @@ sealed class TouchInjector : IDisposable
         // One read of the rectangle for the whole message.
         OutputInfo o = target;
         string drop = Broken != null ? $"injector not running: {Broken}"
-            : o == null ? "no duplication, so no rectangle"
+            : o == null ? "no monitor texture, so no rectangle"
             : picW != o.Width || picH != o.Height ? $"phone's picture {picW}x{picH} is not the output's {o.Width}x{o.Height}"
             : null;
         if (drop != null)

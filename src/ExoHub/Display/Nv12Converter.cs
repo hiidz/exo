@@ -116,9 +116,9 @@ sealed class Nv12Converter : IDisposable
 
         // Flush sends the queued commands to the GPU now rather than when
         // the driver chooses, and does not wait for them. Nothing here waits
-        // for the GPU: ReleaseFrame follows at once, and the duplication
-        // texture's keyed mutex is what keeps DWM's next write behind this
-        // read (not yet observed; the tear test checks it). The encoder
+        // for the GPU: the source's ReleaseSync follows at once, and the
+        // shared texture's keyed mutex is what keeps the driver's next copy
+        // behind this read. The encoder
         // reads the NV12 texture on the same device, which orders it after
         // the Blt.
         context.Flush();
@@ -236,7 +236,7 @@ sealed class Nv12Converter : IDisposable
         videoContext.VideoProcessorSetStreamDestRect(processor, 0, true, whole);
         videoContext.VideoProcessorSetOutputTargetRect(processor, true, whole);
 
-        // The duplication texture's own description, so size and format
+        // The shared texture's own description, so size and format
         // match for CopyResource, and its bind flags, which an input view
         // already accepts. Not its sharing flags: this copy is the hub's own.
         kept = device.CreateTexture2D(d with
@@ -276,7 +276,7 @@ sealed class Nv12Converter : IDisposable
     // rows, each Width bytes) and returns what it saw.
     //
     // Call it outside the frame hold: it reads our NV12 texture, not the
-    // duplication texture, and file I/O must not delay ReleaseFrame. Call it
+    // shared texture, and file I/O must not delay its release. Call it
     // before the frame goes to the encoder, so nothing else touches it.
     public string DumpLast(string path)
     {

@@ -1,4 +1,4 @@
-// The tray icon and the settings window (PLAN.md, Goal and PC app):
+// The tray icon and the settings window (PLAN.md, PC app):
 // connected phones, each one's role and whether it works, and only the
 // settings PLAN.md lists. WinForms, on its own STA thread, so the capture
 // loop keeps the main thread. Quit cancels the hub's stop token, and the

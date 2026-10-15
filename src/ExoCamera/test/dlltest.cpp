@@ -389,118 +389,6 @@ static void Source(IMFActivate* activate)
     source->Release();
 }
 
-// What one served sample shows. The hub's synthetic frame is right when row
-// 360 holds only the background, luma 64, and one unbroken run of 96 marker
-// pixels, luma 81, whose U,V pair is 90,240. A reader that ignored the
-// stride would put the padding, 235, into the row; one that misplaced the UV
-// plane would show other chroma under the marker.
-enum Seen { Card, Hub, Wrong };
-static Seen Classify(const BYTE* d, int* markerX)
-{
-    if (d[80] == 235 && d[1280 * 720] == 128) {
-        return Card;  // row 0 starts with the white bar
-    }
-    const BYTE* row = d + 360 * 1280;
-    int first = -1, run = 0;
-    for (int x = 0; x < 1280; x++) {
-        if (row[x] == 81) {
-            first = first < 0 ? x : first;
-            run++;
-        } else if (row[x] != 64) {
-            return Wrong;
-        }
-    }
-    if (run != 96 || first < 0 || row[first + 95] != 81) {
-        return Wrong;
-    }
-    const BYTE* uv = d + 1280 * 720 + 180 * 1280;
-    if (uv[0] != 128 || uv[1] != 128 || uv[first] != 90 || uv[first + 1] != 240) {
-        return Wrong;
-    }
-    *markerX = first;
-    return Hub;
-}
-
-// --link N: the source started as the Frame Server starts it, then pulled
-// for N seconds, for a run against a live hub. Prints what each second's
-// samples showed. The DLL's own log has the link's side. The hub sends
-// frames only while its registered camera streams (DECISIONS 5.9), so
-// something must stream it through the Frame Server meanwhile, readcam
-// for one; alone, this gets IDLE and the test card, and fails.
-static void LinkRun(IMFActivate* activate, int seconds)
-{
-    IMFMediaSourceEx* source = NULL;
-    Expect("ActivateObject(IMFMediaSourceEx)", activate->ActivateObject(IID_IMFMediaSourceEx, (void**)&source), S_OK);
-    if (!source) {
-        return;
-    }
-    IMFVideoSampleAllocatorEx* allocator = NULL;
-    MFCreateVideoSampleAllocatorEx(IID_PPV_ARGS(&allocator));
-    IMFSampleAllocatorControl* control = NULL;
-    source->QueryInterface(IID_PPV_ARGS(&control));
-    if (control) {
-        control->SetDefaultAllocator(1, allocator);
-        control->Release();
-    }
-    if (allocator) allocator->Release();
-
-    IMFPresentationDescriptor* pd = NULL;
-    source->CreatePresentationDescriptor(&pd);
-    PROPVARIANT pos;
-    PropVariantInit(&pos);
-    Expect("Start", source->Start(pd, NULL, &pos), S_OK);
-    IMFMediaEvent* ev = NextEvent("source event 1 is MENewStream", source, MENewStream);
-    IMFMediaStream* stream = (IMFMediaStream*)Payload(ev, IID_IMFMediaStream);
-    if (ev) ev->Release();
-    ev = NextEvent("source event 2 is MESourceStarted", source, MESourceStarted);
-    if (ev) ev->Release();
-    if (!stream) {
-        return;
-    }
-    ev = NextEvent("stream event is MEStreamStarted", stream, MEStreamStarted);
-    if (ev) ev->Release();
-
-    int hubTotal = 0, wrongTotal = 0;
-    for (int s = 1; s <= seconds; s++) {
-        int counts[3] = {}, minX = 9999, maxX = -1;
-        ULONGLONG end = GetTickCount64() + 1000;
-        while (GetTickCount64() < end) {
-            IMFSample* sample = Request(stream, NULL);
-            IMFMediaBuffer* buffer = NULL;
-            BYTE* data = NULL;
-            DWORD length = 0;
-            if (sample && SUCCEEDED(sample->GetBufferByIndex(0, &buffer)) &&
-                SUCCEEDED(buffer->Lock(&data, NULL, &length))) {
-                int x = -1;
-                Seen seen = length == 1280 * 720 * 3 / 2 ? Classify(data, &x) : Wrong;
-                counts[seen]++;
-                if (seen == Hub) {
-                    minX = x < minX ? x : minX;
-                    maxX = x > maxX ? x : maxX;
-                }
-                buffer->Unlock();
-            }
-            if (buffer) buffer->Release();
-            if (sample) sample->Release();
-        }
-        printf("     %2ds: %d card, %d hub, %d wrong", s, counts[Card], counts[Hub], counts[Wrong]);
-        if (maxX >= 0) printf(", marker x %d..%d", minX, maxX);
-        printf("\n");
-        hubTotal += counts[Hub];
-        wrongTotal += counts[Wrong];
-    }
-    if (seconds > 0) {
-        Expect("hub frames served, none drawn wrong", (hubTotal > 0 && wrongTotal == 0) ? S_OK : E_FAIL, S_OK);
-    } else {
-        Sleep(300);  // so Shutdown lands inside the reader's 2s connect
-    }
-
-    Expect("Shutdown", source->Shutdown(), S_OK);
-    pd->Release();
-    stream->Release();
-    source->Release();
-}
-
 int main(int argc, char** argv)
 {
     // Unbuffered, so a crash cannot swallow the lines before it.
@@ -560,17 +448,9 @@ int main(int argc, char** argv)
     Expect("GetCount is 1", count == 1 ? S_OK : E_FAIL, S_OK);
     attrs->Release();
 
-    // dlltest [dll] [--link N]. The full contract runs with the hub down,
-    // since its first sample must be the test card. --link 0 with the hub
-    // down shuts the source down while the reader is inside its 2s connect,
-    // so the reader outlives Stop's wait: DllCanUnloadNow below then fails,
-    // as it should, and the check after FreeLibrary is the one that counts.
-    bool link = argc > 3 && strcmp(argv[2], "--link") == 0;
-    if (link) {
-        LinkRun(activate, atoi(argv[3]));
-    } else {
-        Source(activate);
-    }
+    // dlltest [dll]. Runs with the hub down, since its first sample must be
+    // the test card.
+    Source(activate);
     Expect("ShutdownObject", activate->ShutdownObject(), S_OK);
     Expect("final Release returns 0", activate->Release() == 0 ? S_OK : E_FAIL, S_OK);
 
@@ -582,13 +462,6 @@ int main(int argc, char** argv)
     factory->Release();
 
     FreeLibrary(dll);
-    if (link) {
-        // The reader holds its own reference on the DLL until it exits, in
-        // FreeLibraryAndExitThread. A connect lasts about 2s, so 2.5s is
-        // enough for the last reference to go and the DLL to unload.
-        Sleep(2500);
-        Expect("DLL unloaded once the reader exited", GetModuleHandleA(path) ? E_FAIL : S_OK, S_OK);
-    }
     printf("%s, pid=%lu\n", g_failed ? "FAILED" : "all ok", GetCurrentProcessId());
     return g_failed ? 1 : 0;
 }

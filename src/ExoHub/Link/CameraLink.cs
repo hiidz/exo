@@ -2,8 +2,8 @@
 // fixed loopback port, because the DLL reads no config and so has no way to
 // learn a port Windows chose. Each client gets 5.7's handshake, then FRAMEs.
 //
-// A latest-frame slot (DECISIONS 5.1). One producer, the decoder or the
-// test pattern, publishes each frame once, built as a whole L7 message.
+// A latest-frame slot (DECISIONS 5.1). One producer, the decoder,
+// publishes each frame once, built as a whole L7 message.
 // Every client thread sends the newest message it has not sent; a frame
 // superseded before a client got to it is skipped, never queued. So one
 // decode serves every client (FR-1.3), and a slow client holds back only

@@ -1,6 +1,6 @@
 // Registers ExoCamera.dll's media source as a virtual camera and holds it
-// for the hub's lifetime (DECISIONS 10 item 4). It replaced the C++ test
-// tool regcam.exe, now removed. The DLL must already be registered in HKLM.
+// for the hub's lifetime (DECISIONS 10 item 4). The DLL must already be
+// registered in HKLM.
 //
 // Session lifetime and current-user access, as spike 1: the camera exists
 // only while the hub holds it, and no administrator is needed. Both are

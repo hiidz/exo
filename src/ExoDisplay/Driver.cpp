@@ -4,8 +4,7 @@ Copyright (c) Microsoft Corporation
 
 Abstract:
 
-	This module contains a sample implementation of an indirect display driver. See the included README.md file and the
-	various TODO blocks throughout this file and all accompanying files for information on building a production driver.
+	This module contains a sample implementation of an indirect display driver.
 
 	MSDN documentation on indirect displays can be found at https://msdn.microsoft.com/en-us/library/windows/hardware/mt761968(v=vs.85).aspx.
 
