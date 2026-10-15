@@ -38,6 +38,7 @@
 
 using System.Diagnostics;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using ExoHub;
 using ExoHub.Adb;
 using ExoHub.Camera;
@@ -221,6 +222,19 @@ ThreadPool.RegisterWaitForSingleObject(showAsked, (_, _) => tray.Show(), null, -
 // 1ms timers for the encoder's rate gate. How late the timer actually fires
 // is measured and printed, rather than assumed from this call.
 Win32.timeBeginPeriod(1);
+// Windows 11 ignores timeBeginPeriod in a process with no visible window,
+// which the hub is in the tray. Without this, while a browser plays video,
+// the AMD encoder takes 31ms a frame instead of 9.5 and the display falls
+// to 30fps (PLAN.md, v3 step 2; SuperDisplay falls the same way).
+var throttling = new Win32.PowerThrottling
+{
+    Version = Win32.PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+    ControlMask = Win32.PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+    StateMask = 0,  // the control bit clear here: always honour the resolution
+};
+if (!Win32.SetProcessInformation(Process.GetCurrentProcess().Handle, Win32.ProcessPowerThrottling,
+                                 ref throttling, Marshal.SizeOf<Win32.PowerThrottling>()))
+    Console.WriteLine($"timer resolution may be ignored while hidden: error {Marshal.GetLastWin32Error()}");
 
 // Created once the first Reopen has made the device, and kept with it.
 Nv12Converter converter = null;

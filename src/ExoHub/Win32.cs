@@ -85,6 +85,20 @@ static class Win32
     [DllImport("winmm.dll")]
     public static extern uint timeEndPeriod(uint ms);
 
+    // PROCESS_POWER_THROTTLING_STATE, for SetProcessInformation's
+    // ProcessPowerThrottling class. The IGNORE_TIMER_RESOLUTION bit in
+    // ControlMask, clear in StateMask, keeps timeBeginPeriod honoured while
+    // the process shows no window.
+    public const int ProcessPowerThrottling = 4;
+    public const uint PROCESS_POWER_THROTTLING_CURRENT_VERSION = 1;
+    public const uint PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION = 4;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct PowerThrottling { public uint Version, ControlMask, StateMask; }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool SetProcessInformation(nint process, int infoClass, ref PowerThrottling info, int size);
+
     // Null, or INVALID_HANDLE_VALUE, when the hub was started with no
     // stdout: a WinExe from the shortcut or at sign-in (HubLog).
     public const int STD_OUTPUT_HANDLE = -11;
