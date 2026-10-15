@@ -328,13 +328,16 @@ sealed class DisplaySender : IDisposable
     }
 
     // Under gate. A new connection or a resume starts the signal again,
-    // since the old acks say nothing about the link now.
+    // since the old acks say nothing about the link now. No cut for the
+    // first 3s: the first keyframe and a cold decoder ack slowly, and read
+    // as a queue cut the S21 to the floor 1.5s in, 30s from 80 again
+    // (s5-s21-wifi60). A link slow from the start hits the cap after it.
     void ResetSignal()
     {
         tickAcks.Clear();
         tickMedians.Clear();
         ackedBytes.Clear();
-        holdUntilQpc = 0;
+        holdUntilQpc = Stopwatch.GetTimestamp() + 3 * Stopwatch.Frequency;
         tickAtCap = false;
         calmSinceQpc = riseAtQpc = Stopwatch.GetTimestamp();
     }
