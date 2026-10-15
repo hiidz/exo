@@ -392,10 +392,13 @@ while (!stop.IsCancellationRequested)
         if (encoder != null)
             Retire(encoder);
         long e0 = Stopwatch.GetTimestamp();
+        // The rate gate only for a stream slower than the monitor (H264Encoder).
+        var hz = source.RefreshRate;
+        bool gated = hz.Numerator == 0 || (ulong)fps * hz.Denominator < hz.Numerator;
         encoder = new H264Encoder(source.Device, converter.Width, converter.Height, fps, bitrate, sink,
-                                  display, quality);
+                                  display, quality, gated);
         encodersBuilt++;
-        Console.WriteLine($"{t} encoder #{encodersBuilt} {encoder.Name} built for {encoder.Width}x{encoder.Height}@{fps} " +
+        Console.WriteLine($"{t} encoder #{encodersBuilt} {encoder.Name} built for {encoder.Width}x{encoder.Height}@{fps}, gate {(gated ? "on" : "off")} " +
                           $"in {Stopwatch.GetElapsedTime(e0).TotalMilliseconds:F1}ms");
         foreach (string line in encoder.Report.Split('\n'))
             Console.WriteLine($"           {line}");

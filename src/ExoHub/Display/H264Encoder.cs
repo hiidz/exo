@@ -63,6 +63,13 @@ sealed class H264Encoder : IDisposable
     // the previous due time, not after the actual submit. The timer fires
     // about 0.8ms late, and counting from the actual submit added that to
     // every interval (measured 2026-10-11: 28.6fps instead of 30).
+    //
+    // Only when the stream is slower than the monitor (gated). At 60fps on
+    // the 60Hz EXO monitor Windows hands over no more than 60 a second, and
+    // the gate only made each frame wait for a slot: 2026-10-15, 60 s over
+    // USB, without it present to output fell from 35.6 to 23.8ms median on
+    // the TB375FC at 2944x1840 (t-60-nogate) and from 20.1 to 5.5ms on the
+    // S21 (s-60-nogate), at the same frame rate and bitrate.
     readonly long interval;
     readonly Timer gateTimer;
     long nextDueQpc;      // 0 until the first submit; then when the next is allowed
@@ -128,7 +135,7 @@ sealed class H264Encoder : IDisposable
     public string Error { get; private set; }
 
     public H264Encoder(ID3D11Device device, uint width, uint height, uint fps, uint bitrate, Stream sink,
-                       ExoHub.Link.DisplaySender sender = null, uint quality = 0)
+                       ExoHub.Link.DisplaySender sender = null, uint quality = 0, bool gated = true)
     {
         Width = width;
         Height = height;
@@ -138,7 +145,7 @@ sealed class H264Encoder : IDisposable
         this.sender = sender;
         sender?.SetKick(Kick);
         duration = 10_000_000 / fps;
-        interval = Stopwatch.Frequency / fps;
+        interval = gated ? Stopwatch.Frequency / fps : 0;  // 0: every due time is already past
         gateTimer = new Timer(_ => OnGateTimer());
         var report = new List<string>();
 
