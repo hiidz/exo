@@ -226,8 +226,8 @@ final class CameraRole {
      * upright, as the device is held now (DECISIONS 6.4), for the lens in
      * settings. A front camera turns the other way; its picture needs no
      * mirroring, since Camera2 gives it as others see you. Read at each
-     * connect, so a phone turned over between connections is caught at the
-     * next one.
+     * connect; a phone turned over while connected connects again
+     * (CameraService.turned).
      */
     static int rotation(Context context, CameraSettings settings) throws IOException {
         CameraSettings.Lens lens = settings.lens();

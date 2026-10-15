@@ -7,9 +7,13 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
+import android.hardware.display.DisplayManager;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.util.Log;
+import android.view.Display;
 
 import java.io.File;
 import java.io.IOException;
@@ -38,7 +42,8 @@ public class CameraService extends Service {
 
     private Link link;
     private PowerManager.WakeLock wakeLock;
-    private int lastTurns;  // the last landscape HELLO rotation; link thread only
+    private volatile int lastTurns;  // the last landscape HELLO rotation; link thread writes
+    private DisplayManager displays;
     private volatile CameraRole current;    // the connection's camera, or null
     private static volatile CameraService instance;
 
@@ -128,8 +133,8 @@ public class CameraService extends Service {
                         // Away from the app, on the home screen or with the
                         // screen off, the display reads portrait, a quarter
                         // turn the hub refuses. The last landscape stands in
-                        // (DECISIONS 6.4); the first read is always with the
-                        // app in front, in landscape.
+                        // (DECISIONS 6.4); before any landscape, 0, which
+                        // turned() puts right.
                         int turns = CameraRole.rotation(CameraService.this, CameraSettings.load(CameraService.this));
                         if (turns % 2 == 0) {
                             lastTurns = turns;
@@ -141,8 +146,44 @@ public class CameraService extends Service {
                     }
                 });
         link.start();
+        displays = getSystemService(DisplayManager.class);
+        displays.registerDisplayListener(turned, new Handler(Looper.getMainLooper()));
         return START_NOT_STICKY;
     }
+
+    /**
+     * The display turned. If it now faces a landscape way other than the one
+     * the hub was sent, the camera connects again with the new rotation.
+     * Started from a dark or portrait screen, the S21 shows the app at
+     * ROTATION_90 first and 270 some 0.35s later, once its sensor answers,
+     * after the first HELLO went out; a phone turned over while streaming
+     * lands here too. Main thread.
+     */
+    private final DisplayManager.DisplayListener turned = new DisplayManager.DisplayListener() {
+        private int rotation = -1;
+
+        @Override
+        public void onDisplayChanged(int id) {
+            if (id != Display.DEFAULT_DISPLAY) return;
+            int r = displays.getDisplay(id).getRotation();
+            if (r == rotation) return;
+            rotation = r;
+            CameraRole camera = current;
+            if (camera == null || r % 2 == 0) return;
+            try {
+                int turns = CameraRole.rotation(CameraService.this, CameraSettings.load(CameraService.this));
+                if (turns != lastTurns) camera.restart("the phone turned, hub turns " + turns * 90);
+            } catch (IOException e) {
+                Log.w(Codecs.TAG, "camera rotation on turning: " + e);
+            }
+        }
+
+        @Override
+        public void onDisplayAdded(int id) {}
+
+        @Override
+        public void onDisplayRemoved(int id) {}
+    };
 
     private Notification notification(String text) {
         return new Notification.Builder(this, CHANNEL)
@@ -167,6 +208,7 @@ public class CameraService extends Service {
     @Override
     public void onDestroy() {
         instance = null;
+        if (displays != null) displays.unregisterDisplayListener(turned);
         if (link != null) link.stop();
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         // A failed start keeps its status, so the screen says why.
