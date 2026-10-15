@@ -79,6 +79,7 @@ sealed class H264Encoder : IDisposable
     public uint Width { get; }
     public uint Height { get; }
     public uint Fps { get; }
+    public uint Bitrate { get; }
     public string Name { get; }
 
     // What the encoder reported once configured. Printed by the caller.
@@ -127,11 +128,12 @@ sealed class H264Encoder : IDisposable
     public string Error { get; private set; }
 
     public H264Encoder(ID3D11Device device, uint width, uint height, uint fps, uint bitrate, Stream sink,
-                       ExoHub.Link.DisplaySender sender = null)
+                       ExoHub.Link.DisplaySender sender = null, uint quality = 0)
     {
         Width = width;
         Height = height;
         Fps = fps;
+        Bitrate = bitrate;
         this.sink = sink;
         this.sender = sender;
         sender?.SetKick(Kick);
@@ -182,7 +184,15 @@ sealed class H264Encoder : IDisposable
         // back after them: S_OK from SetValue does not prove a value stuck.
         codec = new CodecApi(mft.NativePointer);
         codec.Set(CodecApi.LowLatencyMode, 1, CodecApi.VT_BOOL);
-        codec.Set(CodecApi.RateControlMode, 0, CodecApi.VT_UI4);  // eAVEncCommonRateControlMode_CBR
+        // CBR, or with quality (1 to 100) the encoder's quality mode, for
+        // the Wi-Fi rate control measurement (PLAN.md, Transport and Wi-Fi).
+        if (quality == 0)
+            codec.Set(CodecApi.RateControlMode, 0, CodecApi.VT_UI4);  // eAVEncCommonRateControlMode_CBR
+        else
+        {
+            codec.Set(CodecApi.RateControlMode, 3, CodecApi.VT_UI4);  // eAVEncCommonRateControlMode_Quality
+            codec.Set(CodecApi.Quality, quality, CodecApi.VT_UI4);
+        }
         // DECISIONS 11.6: a keyframe a minute at the encoded rate. Every
         // keyframe 5.3 needs is forced, and a forced one restarts the count.
         codec.Set(CodecApi.GopSize, fps * 60, CodecApi.VT_UI4);
@@ -225,6 +235,7 @@ sealed class H264Encoder : IDisposable
                    $"output stream flags=0x{so.Flags:X} (PROVIDES_SAMPLES={(so.Flags & 0x100) != 0})");
         report.Add(codec.Describe("AVLowLatencyMode", CodecApi.LowLatencyMode));
         report.Add(codec.Describe("AVEncCommonRateControlMode", CodecApi.RateControlMode));
+        report.Add(codec.Describe("AVEncCommonQuality", CodecApi.Quality));
         report.Add(codec.Describe($"AVEncMPVGOPSize (set {fps * 60})", CodecApi.GopSize));
         report.Add(codec.Describe("AVEncVideoForceKeyFrame", CodecApi.ForceKeyFrame));
         Report = string.Join("\n", report);
@@ -315,7 +326,7 @@ sealed class H264Encoder : IDisposable
         inFlight[time] = (pendingQpc, f.BltQpc, now);
         // Asked for here, at submit, so the request is only taken when a
         // frame is actually going in to carry it.
-        bool force = forceRequested | (sender?.TakeKeyframeRequest(Fps) ?? false);
+        bool force = forceRequested | (sender?.TakeKeyframeRequest(Fps, Bitrate) ?? false);
         forceRequested = false;
         f.Owner.Submit(f, sample =>
         {
@@ -456,7 +467,7 @@ sealed class H264Encoder : IDisposable
             buffer.Unlock();
         }
         sink?.Write(copy, 0, length);
-        sender?.Put(copy, length, keyframe, presentQpc, outQpc, Fps);
+        sender?.Put(copy, length, keyframe, presentQpc, outQpc, Fps, Bitrate);
         Outputs++;
         OutputBytes += length;
     }

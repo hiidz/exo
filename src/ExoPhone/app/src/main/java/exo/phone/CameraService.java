@@ -92,7 +92,7 @@ public class CameraService extends Service {
 
         File dir = getExternalFilesDir(null);
         String run = String.format("%tH%<tM%<tS-camera", System.currentTimeMillis());
-        link = new Link(Identity.of(this), intent.getIntExtra("proto", Link.VERSION), Link.ROLE_CAMERA,
+        link = new Link(this, Identity.of(this), intent.getIntExtra("proto", Link.VERSION), Link.ROLE_CAMERA,
                 new Link.Listener() {
                     @Override
                     public void onStatus(String sentence) {

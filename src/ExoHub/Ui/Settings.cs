@@ -33,6 +33,28 @@ static class Settings
         }
     }
 
+    // PLAN.md, Wi-Fi as built in step 4: a phone allowed once over Wi-Fi
+    // connects from then on; a deny is not kept. Each allowed phone is a
+    // value under Allowed, its identity, holding its name for whoever reads
+    // the registry.
+    public static bool WifiWithoutAsking
+    {
+        get => Read("WifiWithoutAsking", 0) != 0;
+        set => Write("WifiWithoutAsking", value ? 1 : 0);
+    }
+
+    public static bool IsAllowed(string id)
+    {
+        using var k = Registry.CurrentUser.OpenSubKey(Key + @"\Allowed");
+        return k?.GetValue(id) != null;
+    }
+
+    public static void Allow(string id, string name)
+    {
+        using var k = Registry.CurrentUser.CreateSubKey(Key + @"\Allowed");
+        k.SetValue(id, name);
+    }
+
     public static bool AdbEnabled
     {
         get => Read("AdbEnabled", 1) != 0;

@@ -25,7 +25,8 @@ sealed class DeviceListener : IDisposable
     // autotunes it and a fast-completing write would hide a backlog (5.7).
     const int SendBufferBytes = 256 * 1024;
 
-    readonly TcpListener listener;
+    readonly TcpListener listener;  // loopback, for adb reverse
+    readonly TcpListener wifi;      // every interface, for Wi-Fi (PLAN.md, Transport and Wi-Fi)
     readonly Stopwatch clock;
     readonly DisplaySender sender;
     readonly TouchInjector touch;   // TOUCH from the display connection (FR-3.3)
@@ -40,6 +41,10 @@ sealed class DeviceListener : IDisposable
     // value is talking to a new hub instance (DECISIONS 5.7).
     public ulong SessionId { get; } = BinaryPrimitives.ReadUInt64BigEndian(RandomNumberGenerator.GetBytes(8));
     public int Port => ((IPEndPoint)listener.LocalEndpoint).Port;
+    public int WifiPort => ((IPEndPoint)wifi.LocalEndpoint).Port;
+    // Asks the PC's user whether a phone may connect over Wi-Fi; blocks until
+    // answered, and remembers an allow. Null until the tray is up: no answer.
+    public Func<Phone, bool> Ask;
 
     sealed class Connection(Socket socket, Phone phone, byte role, byte rotation, DisplayMode mode)
     {
@@ -50,11 +55,14 @@ sealed class DeviceListener : IDisposable
         public readonly DisplayMode Mode = mode;   // the display role's; default for the camera
         public CameraFormat Format;                // the camera role's
         public int Frames;                         // the camera role's, received so far
+        public bool Wifi;                          // reached the Wi-Fi listener, not adb reverse
     }
 
     // One accepted connection as the window shows it. Progress moves while
     // it works: frames the display phone acked, or camera frames received.
     public readonly record struct Link(Phone Phone, bool Camera, string Detail, int Progress);
+
+    static string Over(Connection c) => c.Wifi ? ", Wi-Fi" : ", USB";
 
     public List<Link> Snapshot()
     {
@@ -62,10 +70,10 @@ sealed class DeviceListener : IDisposable
         lock (gate)
         {
             if (display != null)
-                links.Add(new Link(display.Phone, false, $"{display.Mode.Width}x{display.Mode.Height} at {display.Mode.Fps}fps",
+                links.Add(new Link(display.Phone, false, $"{display.Mode.Width}x{display.Mode.Height} at {display.Mode.Fps}fps" + Over(display),
                                    Volatile.Read(ref sender.Acked)));
             if (cameraConn != null)
-                links.Add(new Link(cameraConn.Phone, true, cameraConn.Format.ToString(), Volatile.Read(ref cameraConn.Frames)));
+                links.Add(new Link(cameraConn.Phone, true, cameraConn.Format + Over(cameraConn), Volatile.Read(ref cameraConn.Frames)));
         }
         return links;
     }
@@ -85,30 +93,36 @@ sealed class DeviceListener : IDisposable
         // second hub fails here instead of sharing the port with this one.
         listener = new TcpListener(IPAddress.Loopback, port) { ExclusiveAddressUse = true };
         listener.Start();
-        new Thread(AcceptLoop) { IsBackground = true, Name = "accept" }.Start();
+        // Port 0 too, so an orphan hub cannot be mistaken for this one: the
+        // phone learns the port and session from Discovery's answer. No TLS,
+        // as SuperDisplay (PLAN.md, Wi-Fi as built in step 4).
+        wifi = new TcpListener(IPAddress.Any, 0) { ExclusiveAddressUse = true };
+        wifi.Start();
+        new Thread(() => AcceptLoop(listener, false)) { IsBackground = true, Name = "accept" }.Start();
+        new Thread(() => AcceptLoop(wifi, true)) { IsBackground = true, Name = "accept-wifi" }.Start();
     }
 
     void Log(string line) => Console.WriteLine($"{clock.Elapsed.TotalSeconds,8:F3}s link {line}");
 
-    void AcceptLoop()
+    void AcceptLoop(TcpListener from, bool overWifi)
     {
         while (true)
         {
             Socket s;
             try
             {
-                s = listener.AcceptSocket();
+                s = from.AcceptSocket();
             }
             catch (Exception ex) when (ex is SocketException or ObjectDisposedException)
             {
                 return;  // Dispose stopped the listener
             }
-            new Thread(() => Serve(s)) { IsBackground = true, Name = "device" }.Start();
+            new Thread(() => Serve(s, overWifi)) { IsBackground = true, Name = "device" }.Start();
         }
     }
 
     // One connection, from accept to close.
-    void Serve(Socket s)
+    void Serve(Socket s, bool overWifi)
     {
         string who = s.RemoteEndPoint?.ToString() ?? "?";
         Connection conn = null;
@@ -116,7 +130,7 @@ sealed class DeviceListener : IDisposable
         {
             using var net = new NetworkStream(s, ownsSocket: true);
             s.ReceiveTimeout = HelloTimeoutMs;
-            conn = Handshake(s, net, who);
+            conn = Handshake(s, net, who, overWifi);
             if (conn == null)
                 return;
             s.ReceiveTimeout = 0;
@@ -138,7 +152,7 @@ sealed class DeviceListener : IDisposable
             s.SendBufferSize = SendBufferBytes;
             Log($"{conn.Phone} send buffer {s.SendBufferSize} bytes, nodelay {s.NoDelay}");
             monitor.Connected(conn.Phone, conn.Mode);
-            sender.Attach(net, conn.Phone.ToString(), conn.Mode.Fps);
+            sender.Attach(net, conn.Phone.ToString(), conn.Mode.Fps, conn.Wifi);
             try
             {
                 ReadMessages(net, conn);
@@ -170,7 +184,7 @@ sealed class DeviceListener : IDisposable
 
     // Reads a HELLO and answers it. Returns the accepted connection, or null
     // after a refusal, which has already been logged and sent.
-    Connection Handshake(Socket s, NetworkStream net, string who)
+    Connection Handshake(Socket s, NetworkStream net, string who, bool overWifi)
     {
         Span<byte> head = stackalloc byte[8];
         net.ReadExactly(head);
@@ -248,7 +262,28 @@ sealed class DeviceListener : IDisposable
                 return Refuse(net, name, Wire.BadHello, $"display mode {mode} unsupported");
         }
 
-        var conn = new Connection(s, phone, role, rotation, mode) { Format = format };
+        // Over Wi-Fi, anyone on the network can get here: the PC's user
+        // allows each phone once (PLAN.md, Wi-Fi as built in step 4). The
+        // phone hears Pending and waits; nothing is held meanwhile.
+        if (overWifi && !Ui.Settings.WifiWithoutAsking && !Ui.Settings.IsAllowed(phone.Id))
+        {
+            if (version < 8)
+                return Refuse(net, name, Wire.VersionMismatch, $"protocol {version} cannot be asked about over Wi-Fi");
+            // Before the tray is up there is nobody to ask: closed without an
+            // answer, so the phone tries again.
+            if (Ask is not { } ask)
+            {
+                Log($"{name} over Wi-Fi from {who}: closed, nobody to ask yet");
+                return null;
+            }
+            Log($"{name} over Wi-Fi from {who}: asking the PC's user");
+            SendWelcome(net, Wire.Version, Wire.Pending, Encoding.UTF8.GetBytes(Dns.GetHostName()));
+            if (!ask(phone))
+                return Refuse(net, name, Wire.Denied, "the PC's user did not allow this phone");
+            Log($"{name} allowed by the PC's user");
+        }
+
+        var conn = new Connection(s, phone, role, rotation, mode) { Format = format, Wifi = overWifi };
         Connection replaced;
         lock (gate)
         {
@@ -281,7 +316,8 @@ sealed class DeviceListener : IDisposable
         BinaryPrimitives.WriteUInt64BigEndian(session, SessionId);
         SendWelcome(net, version, Wire.Accepted, session);
         Log($"{name} accepted: protocol {version} (device {oldest} to {newest}), role {roleName}, " +
-            (role == Wire.RoleDisplay ? $"{mode}" : $"{format}, rotation {rotation * 90}") + $", session {SessionId:x16}");
+            (role == Wire.RoleDisplay ? $"{mode}" : $"{format}, rotation {rotation * 90}") + $", session {SessionId:x16}, " +
+            (overWifi ? $"Wi-Fi from {who}" : "USB"));
         return conn;
     }
 
@@ -431,6 +467,7 @@ sealed class DeviceListener : IDisposable
     public void Dispose()
     {
         listener.Stop();
+        wifi.Stop();
         lock (gate)
         {
             display?.Socket.Close();

@@ -15,6 +15,8 @@
 #   2. regsvr32 on exocam.dll, HKLM, so the Frame Server can load it
 #   3. a desktop shortcut that starts the hub
 #   4. the phone app on every attached phone
+#   5. an inbound firewall rule for the hub, every profile, so phones reach
+#      it over Wi-Fi
 # Uninstall also removes what the hub wrote itself: its Run value and its
 # settings in HKCU.
 #
@@ -64,11 +66,20 @@ function OnEachPhone([scriptblock]$action) {
     }
 }
 
+# Every rule naming the hub, Exo's own and any Windows made from its
+# prompt: cancelling that prompt leaves a block rule, and block beats allow.
+function RemoveFirewallRules {
+    $rules = Get-NetFirewallApplicationFilter -Program $hub -ErrorAction SilentlyContinue | Get-NetFirewallRule
+    foreach ($r in $rules) { "removed $($r.Action) rule '$($r.DisplayName)'"; $r | Remove-NetFirewallRule }
+}
+
 if ($Uninstall) {
     Step 'phone app'
     OnEachPhone { param($s) "$s uninstall: $(& $adb -s $s uninstall exo.phone 2>&1)" }
     Step 'desktop shortcut'
     Remove-Item $shortcut -ErrorAction SilentlyContinue
+    Step 'firewall'
+    RemoveFirewallRules
     # The hub's own HKCU settings and its Run value. This hive is the
     # elevating account's, so on another account the hub's toggle removes
     # its Run value instead.
@@ -112,6 +123,14 @@ $lnk.Arguments = ''
 $lnk.WorkingDirectory = $hubDir
 $lnk.Save()
 "$shortcut -> ExoHub.exe"
+
+Step 'firewall'
+# Before the hub's first LAN listen, so Windows never prompts. Every
+# profile: a new network is Public (RESEARCH.md, Transport, 5). TCP for the
+# Wi-Fi listener's port 0, UDP for discovery.
+RemoveFirewallRules
+New-NetFirewallRule -DisplayName 'Exo' -Direction Inbound -Program $hub -Action Allow -Profile Any |
+    ForEach-Object { "added $($_.Action) rule '$($_.DisplayName)' for every profile" }
 
 Step 'phone app'
 OnEachPhone { param($s) "$s install: $(& $adb -s $s install -r $apk 2>&1 | Select-Object -Last 1)" }

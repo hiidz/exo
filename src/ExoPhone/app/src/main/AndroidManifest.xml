@@ -4,6 +4,12 @@
     <!-- The camera role. MainActivity asks for it the first time the user
          picks "Use as webcam". -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Wi-Fi (PLAN.md, Wi-Fi as built in step 4): sockets to the LAN, the
+         Wi-Fi network to bind them to, and Android 17's local network
+         permission, asked for when the user picks Wi-Fi. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
     <!-- CameraService, so capture goes on with the screen off (D2a). The
          camera type needs its own permission from Android 14. The
          notification permission is asked for with the camera's. -->

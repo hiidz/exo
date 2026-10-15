@@ -17,6 +17,7 @@
 //
 // Usage: ExoHub [--debug] [--seconds N] [--dump F [--dump-after S]] [--out F]
 //               [--camera-file F | --test-pattern [--camera-geometry W H S]] [--no-reverse] [--tray]
+//               [--bitrate M | --quality Q]
 // --debug     D3D11 debug layer on, messages printed as they arrive. Slow.
 // --seconds N stop after N seconds, as if Ctrl+C was pressed.
 // --dump F    write the first converted frame to F as raw NV12. The one
@@ -35,6 +36,10 @@
 //             watching ExoCamera.dll refuse it (TECHNICAL_DESIGN 3.3).
 // --no-reverse  track devices but set up no reverse, so no app connects.
 //             For the tools' collection runs after a measured one.
+// --bitrate M  CBR at M Mbps at 30fps, in place of 40. For the Wi-Fi rate
+//             control measurement; the phone's transport does not change it.
+// --quality Q  the encoder's quality mode at Q, 1 to 100, in place of CBR.
+//             Also a measurement flag.
 // --tray      start in the tray with no window: how Start with Windows
 //             starts it. With no stdout, the window opens otherwise.
 // Whatever the flags, the hub registers the virtual camera for as long as
@@ -68,9 +73,9 @@ const int MaxRetryMs = 1000;
 // kept image is offered again.
 const double HeartbeatMs = 500;
 
-// NFR-3: 40 Mbps at 30fps, do not tune down. At 60fps the same bits a
-// frame, 80 Mbps, so text stays as sharp while it moves (2026-10-14).
-const uint BitrateAt30 = 40_000_000;
+// The encoder's bitrate follows the display phone's rate and transport
+// (DisplaySender.BitrateFor). --bitrate replaces it, --quality replaces CBR.
+uint bitrateAt30 = 0, quality = 0;
 
 // One hub per Windows session. A second asks the first to show its window
 // and exits. Held until the hub exits.
@@ -136,6 +141,8 @@ for (int i = 0; i < args.Length; i++)
         case "--camera-file": cameraFile = args[++i]; break;
         case "--test-pattern": testPattern = true; break;
         case "--no-reverse": reverse = false; break;
+        case "--bitrate": bitrateAt30 = uint.Parse(args[++i]) * 1_000_000; break;
+        case "--quality": quality = uint.Parse(args[++i]); break;
         case ExoHub.Ui.Settings.TrayFlag: trayOnly = true; break;
         default:
             Console.WriteLine($"unknown argument {args[i]}");
@@ -185,7 +192,7 @@ else
 CameraDecoder cameraRole = vcam != null && cameraFile == null ? decoder : null;
 // Port 0: Windows picks it, and this instance holds it exclusively. With
 // the session ID in WELCOME it is the per-session identifier (5.7, 5.8).
-using var display = new DisplaySender(clock);
+using var display = new DisplaySender(clock) { BitrateOverride = bitrateAt30 };
 var touch = new TouchInjector(clock);
 // Before the listener, which tells it when the display connection comes
 // and goes.
@@ -194,6 +201,9 @@ using var devices = new DeviceListener(0, clock, display, touch, cameraRole, vca
 Console.WriteLine($"listening on 127.0.0.1:{devices.Port}, session {devices.SessionId:x16}, " +
                   $"camera role {(cameraRole != null ? "open" : "REFUSED")}, " +
                   $"reverse {(reverse ? "for every device" : "for none")}");
+// Wi-Fi: the phone asks on the LAN and dials the port in the answer.
+using var discovery = Discovery.Start(clock, devices.WifiPort, devices.SessionId, out string wifiProblem);
+Console.WriteLine($"Wi-Fi on 0.0.0.0:{devices.WifiPort}" + (discovery == null ? $", not found: {wifiProblem}" : ""));
 var reverses = new ReverseSetup(devices.Port, clock);
 // Off from the window, or refused while a foreign adb holds 5037; the hub
 // runs on without it either way (AdbControl).
@@ -226,7 +236,7 @@ if (HubLog.FilePath != null)
     ExoHub.Ui.Settings.FirstRun();
 var tray = new ExoHub.Ui.Tray(
     () => new ExoHub.Ui.HubState(devices.Snapshot(), adb.Devices, adb.Problem, monitor.Unavailable,
-                                 vcam == null ? "the camera could not be registered" : null),
+                                 vcam == null ? "the camera could not be registered" : null, wifiProblem),
     () => stop.Cancel(),
     on =>
     {
@@ -238,6 +248,7 @@ var tray = new ExoHub.Ui.Tray(
         return adb.Start();
     },
     show: HubLog.FilePath != null && !trayOnly);
+devices.Ask = tray.Ask;
 ThreadPool.RegisterWaitForSingleObject(showAsked, (_, _) => tray.Show(), null, -1, executeOnlyOnce: false);
 
 
@@ -407,15 +418,16 @@ while (!stop.IsCancellationRequested)
     // encoder a 0x0 type, which it refused. The rate is the display
     // phone's; until one has connected, 30.
     uint fps = display.Fps != 0 ? display.Fps : 30;
+    uint bitrate = display.Fps != 0 ? display.Bitrate : display.BitrateFor(30, false);
     if (converter.Width != 0 &&
         (encoder == null || encoder.Width != converter.Width || encoder.Height != converter.Height ||
-         encoder.Fps != fps))
+         encoder.Fps != fps || encoder.Bitrate != bitrate))
     {
         if (encoder != null)
             Retire(encoder);
         long e0 = Stopwatch.GetTimestamp();
-        encoder = new H264Encoder(source.Device, converter.Width, converter.Height, fps, BitrateAt30 * fps / 30, sink,
-                                  display);
+        encoder = new H264Encoder(source.Device, converter.Width, converter.Height, fps, bitrate, sink,
+                                  display, quality);
         encodersBuilt++;
         Console.WriteLine($"{t} encoder #{encodersBuilt} {encoder.Name} built for {encoder.Width}x{encoder.Height}@{fps} " +
                           $"in {Stopwatch.GetElapsedTime(e0).TotalMilliseconds:F1}ms");

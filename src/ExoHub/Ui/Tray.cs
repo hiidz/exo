@@ -15,7 +15,7 @@ namespace ExoHub.Ui;
 
 // What the window shows, read once a second on the UI thread.
 sealed record HubState(List<DeviceListener.Link> Links, IReadOnlyDictionary<string, string> Usb, string AdbProblem,
-                       string DisplayProblem, string CameraProblem);
+                       string DisplayProblem, string CameraProblem, string WifiProblem);
 
 sealed class Tray
 {
@@ -44,6 +44,40 @@ sealed class Tray
     }
 
     public void Show() => form.BeginInvoke(Open);
+
+    // One question per phone, however many of its connections wait on it:
+    // both roles, or a retry after the phone gave up waiting. Any thread;
+    // blocks until the PC's user answers. An allow is remembered here.
+    readonly Dictionary<string, Task<bool>> asks = new();
+
+    public bool Ask(Phone phone)
+    {
+        Task<bool> answer;
+        lock (asks)
+        {
+            if (!asks.TryGetValue(phone.Id, out answer))
+            {
+                var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                asks[phone.Id] = answer = tcs.Task;
+                form.BeginInvoke(() =>
+                {
+                    // DefaultDesktopOnly: on top of whatever has focus, since
+                    // the window may be hidden in the tray.
+                    var r = MessageBox.Show($"Allow \"{phone.Name}\" to connect to this PC over Wi-Fi?\n\n" +
+                                            "Once allowed, it connects without asking.", "Exo",
+                                            MessageBoxButtons.YesNo, MessageBoxIcon.Question,
+                                            MessageBoxDefaultButton.Button2, MessageBoxOptions.DefaultDesktopOnly);
+                    bool yes = r == DialogResult.Yes;
+                    if (yes)
+                        Settings.Allow(phone.Id, phone.Name);
+                    lock (asks)
+                        asks.Remove(phone.Id);
+                    tcs.SetResult(yes);
+                });
+            }
+        }
+        return answer.Result;
+    }
 
     // From the hub's shutdown, so the icon leaves the tray with the hub.
     public void Close() => form.Invoke(() =>
@@ -128,10 +162,13 @@ sealed class Tray
                 Refresh();
             }));
         };
+        var wifi = new CheckBox { Text = "Allow Wi-Fi connections without asking", AutoSize = true,
+                                  Checked = Settings.WifiWithoutAsking };
+        wifi.CheckedChanged += (_, _) => Settings.WifiWithoutAsking = wifi.Checked;
         var link = new LinkLabel { Text = "Windows display settings", AutoSize = true, Margin = new Padding(3, 12, 3, 3) };
         link.LinkClicked += (_, _) =>
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("ms-settings:display") { UseShellExecute = true });
-        panel.Controls.AddRange([status, start, adb, link]);
+        panel.Controls.AddRange([status, start, adb, wifi, link]);
         form.Controls.Add(panel);
         // Now, so Show and Close can reach this thread before the window
         // was ever shown.
@@ -171,11 +208,13 @@ sealed class Tray
         foreach (var key in seen.Keys.Where(k => !s.Links.Any(l => (l.Phone.Id, l.Camera) == k)).ToList())
             seen.Remove(key);
         if (s.Links.Count == 0)
-            lines.Add("No phone connected. Open Exo on the phone and pick a role.");
+            lines.Add("No phone connected. Open Exo on the phone, pick USB or Wi-Fi, then a role.");
         if (s.DisplayProblem != null)
             lines.Add($"Display unavailable: {s.DisplayProblem}");
         if (s.CameraProblem != null)
             lines.Add($"Webcam unavailable: {s.CameraProblem}");
+        if (s.WifiProblem != null)
+            lines.Add($"Wi-Fi unavailable: {s.WifiProblem}. Is another Exo running?");
 
         lines.Add("");
         if (s.AdbProblem == null)

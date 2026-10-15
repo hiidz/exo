@@ -1,8 +1,10 @@
 package exo.phone;
 
+import android.content.Context;
 import android.graphics.Bitmap;
 import android.net.LocalSocket;
 import android.net.LocalSocketAddress;
+import android.net.Network;
 import android.util.Log;
 
 import java.io.BufferedInputStream;
@@ -10,18 +12,26 @@ import java.io.BufferedOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.File;
+import java.io.Closeable;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.PrintWriter;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 /**
- * A connection to the hub: localabstract:exo, which adb reverse carries to
- * the hub's port. Connects, runs the handshake in DECISIONS 5.7, then serves
+ * A connection to the hub: over USB, localabstract:exo, which adb reverse
+ * carries to the hub's port; over Wi-Fi, the port in the picked PC's
+ * discovery answer (Via, Discovery). Connects, runs the handshake in DECISIONS 5.7, then serves
  * its role until the connection ends, and starts again a second later,
  * forever. The one exception is a version refusal, which does not fix
  * itself, so the loop stops. Every change of state goes to the listener as
@@ -100,12 +110,21 @@ final class Link implements Runnable {
     // it speaks. 5: the display role's HELLO carries its mode, rate and
     // panel size. 6: the display connection acks each frame (ACK), and
     // the hub caps the frames in flight. 7: the camera role's HELLO carries
-    // its size and rate. HELLO's layout is in the hub's Wire.cs.
-    static final int VERSION = 7, OLDEST = 7;
+    // its size and rate. 8: over Wi-Fi the hub may answer PENDING, then
+    // ACCEPTED or DENIED. HELLO's layout is in the hub's Wire.cs.
+    static final int VERSION = 8, OLDEST = 7;
     static final int ROLE_CAMERA = 1, ROLE_DISPLAY = 2;
     static final int ACCEPTED = 0, VERSION_MISMATCH = 1, BAD_HELLO = 2, ROLE_TAKEN = 3;
     static final int CAMERA_UNAVAILABLE = 4, DISPLAY_UNAVAILABLE = 5;
+    // 8, over Wi-Fi only: the PC asks its user, then answers again; or its
+    // user said no, and this phone stops asking until its role starts again.
+    static final int PENDING = 6, DENIED = 7;
+    private static final int ASK_MS = 120_000;
     static final String WAITING = "Waiting for the PC. Plug this phone in by USB, with Exo running on the PC.";
+    static final String NO_WIFI = "This phone is not on Wi-Fi. Join the PC's network.";
+    static final String NEEDS_PERMISSION = "Exo needs the Nearby devices permission to find the PC. Pick Wi-Fi again to allow it.";
+    static final String BLOCKED = "Android does not let Exo use the network. Allow network data for Exo in Settings, Apps.";
+    private static final int CONNECT_TIMEOUT_MS = 3000, FIND_MS = 1000;
     static final int FRAME = 1, PING = 2, PONG = 3, FLAG_KEYFRAME = 1, FLAG_CONFIG = 2;
     static final int CURSOR_SHAPE = 4, CURSOR_POS = 5, TOUCH = 6, ACK = 7, FLAG_VISIBLE = 1;
     private static final int PING_MS = 1000, SILENCE_MS = 3000;
@@ -119,7 +138,9 @@ final class Link implements Runnable {
     private final Listener listener;
     private final Thread thread = new Thread(this, "link");
     private volatile boolean stopped;
-    private volatile LocalSocket socket;
+    private volatile Conn socket;
+    private final Context context;
+    private final Via via;
     private boolean refused;
     private int attempts;
     private String lastFailure;
@@ -130,7 +151,9 @@ final class Link implements Runnable {
      * version is VERSION except to prove a mismatch is refused; then this end
      * speaks only that version. role is ROLE_CAMERA or ROLE_DISPLAY.
      */
-    Link(Identity me, int version, int role, Listener listener) {
+    Link(Context context, Identity me, int version, int role, Listener listener) {
+        this.context = context;
+        this.via = Via.load(context);
         this.me = me;
         this.version = version;
         this.oldest = version == VERSION ? OLDEST : version;
@@ -156,6 +179,8 @@ final class Link implements Runnable {
                 return "Exo's webcam is not set up on the PC. Reinstall Exo on the PC.";
             case DISPLAY_UNAVAILABLE:
                 return "Exo's display driver is not working on the PC. Reinstall Exo on the PC.";
+            case DENIED:
+                return "The PC did not allow this phone. Start again to ask again.";
             case BAD_HELLO:
                 return "Exo on the PC did not understand this app. Update Exo on both.";
             default:
@@ -169,7 +194,7 @@ final class Link implements Runnable {
 
     void stop() {
         stopped = true;
-        LocalSocket s = socket;
+        Conn s = socket;
         if (s != null) {
             try {
                 s.close();
@@ -197,10 +222,10 @@ final class Link implements Runnable {
                 // attempt. The end of an accepted connection always differs.
                 String what = e.toString();
                 if (!what.equals(lastFailure) || attempts % 30 == 0) {
-                    Log.i(Codecs.TAG, "link attempt " + attempts + ": " + what);
+                    Log.i(Codecs.TAG, "link attempt " + attempts + ": " + what, e);
                     lastFailure = what;
                 }
-                if (!stopped) status(WAITING);
+                if (!stopped) status(e instanceof NoWifi ? NO_WIFI : blocked(e) ? blockedSentence(context) : waiting());
             }
             if (stopped || refused) break;
             try {
@@ -219,15 +244,110 @@ final class Link implements Runnable {
         }
     }
 
+    /** No Wi-Fi network to look on. */
+    private static final class NoWifi extends IOException {
+        NoWifi() {
+            super("no Wi-Fi network");
+        }
+    }
+
+    /**
+     * Android refused the socket: the per-app network switch is off (policy
+     * REJECT_ALL, seen on the S21 as "socket failed: ECONNREFUSED"), or the
+     * local network rule (seen as "sendto failed: EPERM" with
+     * RESTRICT_LOCAL_NETWORK on) or another permission is missing.
+     */
+    static boolean blocked(IOException e) {
+        String m = String.valueOf(e.getMessage());
+        return m.startsWith("socket failed") || m.contains("EPERM") || m.contains("EACCES");
+    }
+
+    static String blockedSentence(Context context) {
+        return Discovery.needsPermission(context) ? NEEDS_PERMISSION : BLOCKED;
+    }
+
+    /** One connection, over a LocalSocket (USB) or a Socket (Wi-Fi). */
+    private interface Conn extends Closeable {
+        InputStream in() throws IOException;
+
+        OutputStream out() throws IOException;
+
+        void timeout(int ms) throws IOException;
+    }
+
+    private String waiting() {
+        if (!via.wifi) return WAITING;
+        return via.target() == null ? "Pick the PC to connect to over Wi-Fi."
+                : "Looking for " + via.target() + " on Wi-Fi. Exo must be running on the PC, on this network.";
+    }
+
+    /**
+     * Connects as the phone's home screen picked. Published to socket before
+     * connecting, so stop() can end a connect in progress. Null when stopped.
+     */
+    private Conn open() throws IOException {
+        if (!via.wifi) {
+            LocalSocket ls = new LocalSocket();
+            Conn c = new Conn() {
+                public InputStream in() throws IOException { return ls.getInputStream(); }
+                public OutputStream out() throws IOException { return ls.getOutputStream(); }
+                public void timeout(int ms) throws IOException { ls.setSoTimeout(ms); }
+                public void close() throws IOException { ls.close(); }
+            };
+            socket = c;
+            if (stopped) {
+                c.close();
+                return null;
+            }
+            try {
+                ls.connect(new LocalSocketAddress("exo", LocalSocketAddress.Namespace.ABSTRACT));
+            } catch (IOException e) {
+                c.close();
+                throw e;
+            }
+            return c;
+        }
+        if (via.target() == null) throw new IOException("no PC picked");
+        Network net = Discovery.wifi(context);
+        if (net == null) throw new NoWifi();
+        InetAddress to = via.ip != null ? InetAddress.getByName(via.ip) : null;
+        List<Discovery.Answer> found = Discovery.find(net, to, FIND_MS,
+                l -> to != null || l.get(l.size() - 1).name.equalsIgnoreCase(via.pc));
+        Discovery.Answer hub = null;
+        for (Discovery.Answer a : found) if (to != null || a.name.equalsIgnoreCase(via.pc)) hub = a;
+        if (hub == null) throw new IOException("no answer from " + via.target());
+        Socket t = net.getSocketFactory().createSocket();
+        Conn c = new Conn() {
+            public InputStream in() throws IOException { return t.getInputStream(); }
+            public OutputStream out() throws IOException { return t.getOutputStream(); }
+            public void timeout(int ms) throws IOException { t.setSoTimeout(ms); }
+            public void close() throws IOException { t.close(); }
+        };
+        socket = c;
+        if (stopped) {
+            c.close();
+            return null;
+        }
+        try {
+            // Small messages such as ACK and PING go at once.
+            t.setTcpNoDelay(true);
+            t.connect(new InetSocketAddress(hub.address, hub.port), CONNECT_TIMEOUT_MS);
+        } catch (IOException e) {
+            c.close();
+            throw e;
+        }
+        Log.i(Codecs.TAG, String.format("link over Wi-Fi to \"%s\" at %s:%d, session %016x", hub.name,
+                hub.address.getHostAddress(), hub.port, hub.session));
+        return c;
+    }
+
     private void session() throws IOException {
-        try (LocalSocket s = new LocalSocket()) {
-            socket = s;
-            if (stopped) return;
-            s.connect(new LocalSocketAddress("exo", LocalSocketAddress.Namespace.ABSTRACT));
+        try (Conn s = open()) {
+            if (s == null) return;
             long connectedNs = System.nanoTime();
-            s.setSoTimeout(WELCOME_TIMEOUT_MS);
-            DataInputStream in = new DataInputStream(new BufferedInputStream(s.getInputStream()));
-            DataOutputStream out = new DataOutputStream(new BufferedOutputStream(s.getOutputStream()));
+            s.timeout(WELCOME_TIMEOUT_MS);
+            DataInputStream in = new DataInputStream(new BufferedInputStream(s.in()));
+            DataOutputStream out = new DataOutputStream(new BufferedOutputStream(s.out()));
 
             byte[] myName = me.nameBytes();
             byte[] tail = listener.helloTail();
@@ -256,6 +376,21 @@ final class Link implements Runnable {
             int status = in.readUnsignedByte();
             byte[] body = new byte[in.readUnsignedShort()];
             in.readFully(body);
+            // Over Wi-Fi the PC may ask its user first; the answer is the
+            // next WELCOME. Waiting longer than ASK_MS gives up and asks
+            // again, which joins the same question on the PC.
+            if (status == PENDING) {
+                String pc = new String(body, StandardCharsets.UTF_8);
+                Log.i(Codecs.TAG, "link pending: " + pc + " is asking its user");
+                status("Allow this phone on " + pc + ": Exo asks there.");
+                s.timeout(ASK_MS);
+                in.readFully(magic);
+                if (!java.util.Arrays.equals(magic, MAGIC)) throw new IOException("WELCOME has bad magic");
+                hubVersion = in.readUnsignedShort();
+                status = in.readUnsignedByte();
+                body = new byte[in.readUnsignedShort()];
+                in.readFully(body);
+            }
             double welcomeMs = (System.nanoTime() - connectedNs) / 1e6;
 
             if (status != ACCEPTED) {
@@ -263,7 +398,7 @@ final class Link implements Runnable {
                 Log.e(Codecs.TAG, "link REFUSED by hub, status " + status + ", hub protocol " + hubVersion
                         + ", ours " + oldest + " to " + version + ": " + text);
                 // Any other refusal may clear, so the loop tries again.
-                refused = status == VERSION_MISMATCH;
+                refused = status == VERSION_MISMATCH || status == DENIED;
                 status(sentence(status, hubVersion, text));
                 return;
             }
@@ -283,7 +418,7 @@ final class Link implements Runnable {
 
             // Nothing at all for this long and the connection is dead. PONGs
             // arrive every second, so a static screen does not trip it.
-            s.setSoTimeout(SILENCE_MS);
+            s.timeout(SILENCE_MS);
             String name = "link-" + (++connections);
             if (role == ROLE_CAMERA) {
                 cameraSession(s, in, out, name);
@@ -317,7 +452,7 @@ final class Link implements Runnable {
      * error closes the socket, which ends the writing too. A camera failure
      * ends the connection, and the next one starts a new camera.
      */
-    private void cameraSession(LocalSocket s, DataInputStream in, DataOutputStream out, String name)
+    private void cameraSession(Conn s, DataInputStream in, DataOutputStream out, String name)
             throws IOException {
         CameraRole camera = listener.newCamera(name);
         ArrayList<long[]> pongs = new ArrayList<>();

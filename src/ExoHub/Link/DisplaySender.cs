@@ -99,15 +99,29 @@ sealed class DisplaySender : IDisposable
     public uint Fps { get { lock (gate) return fps; } }
     uint fps;  // under gate
 
+    // CBR for the attached phone, which the capture loop builds the encoder
+    // at, matched as the rate is. NFR-3: 40 Mbps at 30fps, not to be tuned
+    // down, and at 60 the same bits a frame. Over Wi-Fi at most 40 Mbps,
+    // which is what got through (PLAN.md, Wi-Fi as built in step 4).
+    public const uint BitrateAt30 = 40_000_000, WifiCap = 40_000_000;
+    // --bitrate, for measurements: per 30fps, whatever the transport.
+    public uint BitrateOverride;
+    public uint Bitrate { get { lock (gate) return bitrate; } }
+    uint bitrate;  // under gate
+
+    public uint BitrateFor(uint rate, bool wifi) =>
+        BitrateOverride != 0 ? BitrateOverride * rate / 30 : Math.Min(BitrateAt30 * rate / 30, wifi ? WifiCap : uint.MaxValue);
+
     // The display connection, once its handshake is done. Discards until a
     // keyframe carrying SPS and PPS, and asks the encoder for one (5.3).
-    public void Attach(NetworkStream net, string who, uint rate)
+    public void Attach(NetworkStream net, string who, uint rate, bool wifi)
     {
         lock (gate)
         {
             stream = net;
             serial = who;
             fps = rate;
+            bitrate = BitrateFor(rate, wifi);
             keyframeWanted = waitForKeyframe = true;
             Connections++;
             ReturnAll();
@@ -228,11 +242,11 @@ sealed class DisplaySender : IDisposable
         Log(why);
         k?.Invoke();
     }
-    public bool TakeKeyframeRequest(uint encoderFps)
+    public bool TakeKeyframeRequest(uint encoderFps, uint encoderBitrate)
     {
         lock (gate)
         {
-            if (encoderFps != fps)
+            if (encoderFps != fps || encoderBitrate != bitrate)
                 return false;
             bool r = keyframeWanted;
             keyframeWanted = false;
@@ -243,7 +257,8 @@ sealed class DisplaySender : IDisposable
     public void SetKick(Action action) { lock (gate) kick = action; }
 
     // On a Media Foundation thread, under the encoder's lock. Never blocks.
-    public void Put(byte[] data, int length, bool keyframe, long presentQpc, long encodedQpc, uint encoderFps)
+    public void Put(byte[] data, int length, bool keyframe, long presentQpc, long encodedQpc, uint encoderFps,
+                    uint encoderBitrate)
     {
         byte flags = (byte)((keyframe ? FlagKeyframe : 0) | (HasParameterSets(data, length) ? FlagConfig : 0));
         lock (gate)
@@ -254,7 +269,7 @@ sealed class DisplaySender : IDisposable
                 DiscardedNoDevice++;
                 return;
             }
-            if (encoderFps != fps)
+            if (encoderFps != fps || encoderBitrate != bitrate)
             {
                 DiscardedOtherRate++;
                 return;

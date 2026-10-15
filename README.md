@@ -1,12 +1,12 @@
 # Exo
 
-Turns Android phones, plugged in by USB, into a webcam and a second
+Turns Android phones, by USB or on the same Wi-Fi, into a webcam and a second
 monitor with touch for one Windows 11 PC. One program, the hub, owns the
 single adb connection and runs both at once. That is the point: two
 separate products each brought their own adb and could not run together.
 
-Personal tool for now, USB only, set up by hand. A version anyone can
-install, with Wi-Fi, is planned.
+Personal tool for now, set up by hand. A version anyone can install is
+planned.
 
 ## What you get
 
@@ -35,7 +35,8 @@ install, with Wi-Fi, is planned.
 3. **Phones:** enable USB debugging, plug in, unlock, accept the PC.
 4. **Install:** `src/ExoSetup/setup.ps1`. It asks for administrator,
    registers the camera, makes the log folder, installs the app on every
-   attached phone, and puts an Exo shortcut on the desktop.
+   attached phone, lets Exo through the Windows firewall for Wi-Fi, and
+   puts an Exo shortcut on the desktop.
 
 To remove everything: `src/ExoSetup/setup.ps1 -Uninstall`, then
 `src/ExoDisplay/install.ps1 -Uninstall`.
@@ -43,8 +44,14 @@ To remove everything: `src/ExoSetup/setup.ps1 -Uninstall`, then
 ## Each time
 
 Double-click **Exo** on the desktop the first time; after that it starts
-with Windows, in the tray. Plug the phones in, in any order.
-On each phone, open Exo and tap **Use as display** or **Use as webcam**,
+with Windows, in the tray. On each phone, open Exo and pick **USB** or
+**Wi-Fi** under **Connect by**. For USB, plug it in. For Wi-Fi, the phone
+must be on the PC's network: tap **Pick a PC** and choose it from those
+running Exo, or type its address. The first time, the PC asks whether to
+allow the phone; once allowed, it connects without asking. If you say no,
+the phone stops trying until you start its role again. Wi-Fi sends
+anything on the screen and camera unencrypted to anyone on the network
+who looks. Then tap **Use as display** or **Use as webcam**,
 or both. The webcam asks for the camera the first time. A role another
 phone already holds is refused, and the phone says which one has it.
 Under **Use as display** are its resolution, landscape or portrait, 30
@@ -61,6 +68,7 @@ shortcut, shows each connected phone, its role and whether it works, and
 any USB phone waiting for its USB debugging prompt. It also holds:
 
 - **Start with Windows,** on from the first run.
+- **Allow Wi-Fi connections without asking.** Off by default.
 - **Enable adb connections (USB).** Off frees adb for Android Studio or
   another tool; Exo cannot share adb with one. If another adb is running
   when Exo starts, the window says so: close it, then turn this off and on.

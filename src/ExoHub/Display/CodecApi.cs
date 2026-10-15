@@ -23,6 +23,7 @@ sealed unsafe class CodecApi : IDisposable
     // Property keys from codecapi.h.
     public static readonly Guid LowLatencyMode = new("9c27891a-ed7a-40e1-88e8-b22727a024ee");
     public static readonly Guid RateControlMode = new("1c0608e9-370c-4710-8a58-cb6181c42423");
+    public static readonly Guid Quality = new("fcbf57a3-7ea5-4b0c-9644-69b40c39c391");  // AVEncCommonQuality
     public static readonly Guid GopSize = new("95f31b26-95a4-41aa-9303-246a7fc6eef1");
     public static readonly Guid ForceKeyFrame = new("398c1b98-8353-475a-9ef2-8f265d260345");
 

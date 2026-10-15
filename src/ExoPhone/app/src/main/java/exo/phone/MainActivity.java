@@ -2,8 +2,10 @@ package exo.phone;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.net.Network;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
@@ -14,7 +16,10 @@ import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
+import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.Spinner;
@@ -36,13 +41,20 @@ import java.util.List;
  *   adb shell am start -S -n exo.phone/.MainActivity --es role camera,display [--ei proto 3]
  *       [--ei rate 60] [--es orientation portrait] [--es size 1800x810]
  *       [--es camsize 1920x1080] [--ei camfps 60] (the rest in CameraSettings.apply)
+ *       [--es via usb|wifi] [--es pc NAME | --es ip ADDRESS] (kept, as the picker keeps them)
  *
  * Started that way, it shows over the lock screen and wakes it, since the
  * webcam may start only while the app is visible. Every extra goes on to
  * DisplayActivity, and proto to CameraService too.
  */
 public class MainActivity extends Activity {
-    private static final int ASK_CAMERA = 1;
+    private static final int ASK_CAMERA = 1, ASK_LOCAL_NETWORK = 2;
+    private static final String LOCAL_NETWORK = Discovery.LOCAL_NETWORK;
+
+    private Via via;
+    private RadioButton usbButton, wifiButton;
+    private Button pcButton;
+    private TextView viaStatus;
 
     private DisplaySettings settings;
     private Spinner sizePicker, orientationPicker, ratePicker, smoothingPicker;
@@ -94,6 +106,39 @@ public class MainActivity extends Activity {
         about.setText("Use this phone as a display or a webcam for your PC.");
         about.setPadding(0, 16, 0, 32);
         root.addView(about);
+
+        // How to reach the PC, over the roles, since both use it. A change
+        // reaches a role the next time it starts.
+        via = Via.load(this);
+        RadioGroup viaRow = new RadioGroup(this);
+        viaRow.setOrientation(LinearLayout.HORIZONTAL);
+        viaRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView viaLabel = new TextView(this);
+        viaLabel.setText("Connect by");
+        viaRow.addView(viaLabel);
+        usbButton = new RadioButton(this);
+        usbButton.setText("USB");
+        usbButton.setId(View.generateViewId());
+        viaRow.addView(usbButton);
+        wifiButton = new RadioButton(this);
+        wifiButton.setText("Wi-Fi");
+        wifiButton.setId(View.generateViewId());
+        viaRow.addView(wifiButton);
+        pcButton = new Button(this);
+        pcButton.setOnClickListener(v -> findPcs());
+        viaRow.addView(pcButton);
+        viaRow.check(via.wifi ? wifiButton.getId() : usbButton.getId());
+        viaRow.setOnCheckedChangeListener((g, id) -> {
+            boolean wifi = id == wifiButton.getId();
+            if (wifi == via.wifi) return;
+            setVia(new Via(wifi, via.pc, via.ip));
+            if (wifi && via.target() == null) findPcs();
+        });
+        root.addView(viaRow);
+        viaStatus = new TextView(this);
+        viaStatus.setPadding(0, 0, 0, 16);
+        root.addView(viaStatus);
+        bindVia();
 
         Button display = new Button(this);
         display.setText("Use as display");
@@ -166,6 +211,12 @@ public class MainActivity extends Activity {
 
     /** The role extra, if any: "display", "camera" or both, comma separated. */
     private void fromTools(Intent in) {
+        String v = in.getStringExtra("via");
+        if (v != null) {
+            String ip = in.getStringExtra("ip"), pc = in.getStringExtra("pc");
+            setVia(new Via(v.equals("wifi"), ip != null ? null : pc != null ? pc : via.pc, ip));
+            Log.i(Codecs.TAG, "via from the intent: " + via);
+        }
         String roles = in.getStringExtra("role");
         if (roles == null) return;
         // Arrays.asList, not List.of: minSdk is 29 and List.of came in 30.
@@ -386,6 +437,88 @@ public class MainActivity extends Activity {
         webcamStatus.setVisibility(s == null ? View.GONE : View.VISIBLE);
     }
 
+    private void setVia(Via v) {
+        via = v;
+        via.save(this);
+        Log.i(Codecs.TAG, "connect by " + via);
+        bindVia();
+    }
+
+    private void bindVia() {
+        pcButton.setVisibility(via.wifi ? View.VISIBLE : View.GONE);
+        pcButton.setText(via.target() == null ? "Pick a PC" : "PC: " + via.target());
+        if (!via.wifi) viaStatus.setText("Plug this phone into the PC, with USB debugging on.");
+        else if (needsLocalNetwork()) viaStatus.setText(Link.NEEDS_PERMISSION);
+        else viaStatus.setText("On the same Wi-Fi as the PC. The PC asks to allow this phone the first time.");
+    }
+
+    private boolean needsLocalNetwork() {
+        return Discovery.needsPermission(this);
+    }
+
+    /** Asks the network for PCs, then lets the user pick one or type an address. */
+    private void findPcs() {
+        if (needsLocalNetwork()) {
+            requestPermissions(new String[] {LOCAL_NETWORK}, ASK_LOCAL_NETWORK);
+            return;
+        }
+        Network net = Discovery.wifi(this);
+        if (net == null) {
+            viaStatus.setText(Link.NO_WIFI);
+            return;
+        }
+        pcButton.setEnabled(false);
+        viaStatus.setText("Looking for PCs running Exo...");
+        new Thread(() -> {
+            List<Discovery.Answer> found;
+            String problem = null;
+            try {
+                found = Discovery.find(net, null, 1500, l -> false);
+            } catch (java.io.IOException e) {
+                Log.i(Codecs.TAG, "finding PCs failed: " + e);
+                if (Link.blocked(e)) problem = Link.blockedSentence(this);
+                found = new ArrayList<>();
+            }
+            List<Discovery.Answer> pcs = found;
+            String why = problem;
+            runOnUiThread(() -> {
+                pcButton.setEnabled(true);
+                bindVia();
+                if (why != null) {
+                    viaStatus.setText(why);
+                    return;
+                }
+                if (isFinishing()) return;
+                List<String> items = new ArrayList<>();
+                for (Discovery.Answer a : pcs) items.add(a.name + "  (" + a.address.getHostAddress() + ")");
+                items.add("Type its address...");
+                new AlertDialog.Builder(this)
+                        .setTitle(pcs.isEmpty() ? "No PC answered. Is Exo running on it?" : "Connect to")
+                        .setItems(items.toArray(new String[0]), (d, which) -> {
+                            if (which < pcs.size()) setVia(new Via(true, pcs.get(which).name, null));
+                            else typeAddress();
+                        })
+                        .show();
+            });
+        }, "find pcs").start();
+    }
+
+    private void typeAddress() {
+        EditText field = new EditText(this);
+        field.setHint("192.168.1.20");
+        field.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
+        if (via.ip != null) field.setText(via.ip);
+        new AlertDialog.Builder(this)
+                .setTitle("The PC's address")
+                .setView(field)
+                .setPositiveButton("Connect", (d, w) -> {
+                    String ip = field.getText().toString().trim();
+                    if (!ip.isEmpty()) setVia(new Via(true, null, ip));
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
     private void useDisplay() {
         startActivity(new Intent(this, DisplayActivity.class).putExtras(getIntent()));
     }
@@ -415,6 +548,11 @@ public class MainActivity extends Activity {
 
     @Override
     public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
+        if (request == ASK_LOCAL_NETWORK) {
+            bindVia();
+            if (!needsLocalNetwork()) findPcs();
+            return;
+        }
         if (request != ASK_CAMERA) return;
         if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
             useWebcam();

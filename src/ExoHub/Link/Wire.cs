@@ -15,7 +15,10 @@ static class Wire
     // 6: the display phone acks each frame it has decoded, and the hub caps
     // the frames in flight; a phone that sent no acks would freeze at the cap.
     // 7: the camera role's HELLO carries the size and rate set on the phone.
-    public const ushort Version = 7, Oldest = 7;
+    // 8: over Wi-Fi the hub may answer HELLO with Pending first, while the
+    // PC asks its user, then Accepted or Denied. Only Wi-Fi sends it, and
+    // no 7 app reaches Wi-Fi, so 7 is still spoken.
+    public const ushort Version = 8, Oldest = 7;
 
     // HELLO is frozen up to its body: magic, the newest version the device
     // speaks u16, body length u16. From 4 on the body starts with the oldest
@@ -36,6 +39,11 @@ static class Wire
     // text is the holder's name; the rest are detail for the phone's log.
     public const byte Accepted = 0, VersionMismatch = 1, BadHello = 2, RoleTaken = 3;
     public const byte CameraUnavailable = 4, DisplayUnavailable = 5;
+    // From 8, Wi-Fi only. Pending is not an answer: its text is the PC's
+    // name, and the real WELCOME follows once the PC's user answers. Denied:
+    // the PC's user said no, and the phone stops asking until its user
+    // starts the role again.
+    public const byte Pending = 6, Denied = 7;
 
     // Every message after the handshake: type, flags, reserved u16, body length u32.
     public const int HeaderSize = 8;
@@ -55,6 +63,16 @@ static class Wire
     // or discarded. Cumulative, so a frame the decoder drops is covered by
     // the next one's ack.
     public const byte TypeAck = 7;
+
+    // Discovery over Wi-Fi, UDP on DiscoveryPort, the one fixed LAN port
+    // (PLAN.md, Wi-Fi as built in step 4). Its own version. QUERY, phone to
+    // hub, broadcast or sent to a typed IP: magic, version u16, kind u8.
+    // ANSWER, hub to the query's sender: magic, version u16, kind u8, the
+    // Wi-Fi listener's TCP port u16, the session ID u64, name length u8 and
+    // the PC's UTF-8 name. A packet of another kind or version is ignored.
+    public const int DiscoveryPort = 27185;
+    public const ushort DiscoveryVersion = 1;
+    public const byte KindQuery = 1, KindAnswer = 2;
 
     // L7, the hub to ExoCamera.dll link (DECISIONS 5.9). The same frozen
     // prefix and framing, its own version. The port is a constant because

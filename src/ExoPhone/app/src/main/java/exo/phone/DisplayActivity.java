@@ -172,7 +172,7 @@ public class DisplayActivity extends Activity {
             public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
                 if (name != null || link != null || (height > width) != settings.portrait) return;
                 Surface surface = holder.getSurface();
-                link = new Link(Identity.of(DisplayActivity.this), in.getIntExtra("proto", Link.VERSION),
+                link = new Link(DisplayActivity.this, Identity.of(DisplayActivity.this), in.getIntExtra("proto", Link.VERSION),
                         Link.ROLE_DISPLAY, new Link.Listener() {
                             @Override
                             public void onStatus(String sentence) {

@@ -11,6 +11,8 @@
 # fps is 30 or 60, 30 by default; the display is landscape at full size.
 # smoothing is the phone's smoothing buffer in ms, 0 (off, the default),
 # 20 or 50; given every run, since the phone keeps the last one.
+# HUBARGS in the environment go to the measured hub, such as --bitrate 20
+# or --quality 70 for the Wi-Fi rate control runs.
 #
 # Every adb command here runs while a hub owns 5037. Run with no hub, adb
 # would start a server of its own, and the hub refuses a server it did not
@@ -41,7 +43,7 @@ hub() {
     done
 }
 
-hub $T/hub.log --seconds $S
+hub $T/hub.log --seconds $S $HUBARGS
 adb -s $SERIAL shell am start -S -n exo.phone/.MainActivity $ROLE >/dev/null
 # The EXO monitor exists once the phone connects; the content goes on it then.
 until grep -q "vdisp EXO0001 on the desktop" $T/hub.log; do sleep 0.2; done
