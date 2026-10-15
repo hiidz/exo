@@ -32,7 +32,7 @@ final class DisplaySettings {
     final int panelW, panelH;  // physical pixels, landscape
     final int mmW, mmH;        // the panel's size, landscape; 0 when not believable
     boolean portrait;
-    int fps = 30;
+    int fps = 60;
     int smoothing;             // ms, one of SMOOTHING; 0 is off
     String codec;              // a decoder name from the tools, as Decoder takes it; not kept
     final List<int[]> sizes = new ArrayList<>();  // landscape, those the decoder takes now
@@ -64,7 +64,7 @@ final class DisplaySettings {
 
         SharedPreferences p = prefs(context);
         s.portrait = p.getBoolean("display.portrait", false);
-        s.fps = p.getInt("display.fps", 30);
+        s.fps = p.getInt("display.fps", 60);
         s.smoothing = p.getInt("display.smoothing", 50);
         s.refresh(p.getString("display.size", null));
         return s;

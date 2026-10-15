@@ -26,6 +26,7 @@ import android.view.SurfaceView;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
+import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.TextView;
 
@@ -160,6 +161,7 @@ public class DisplayActivity extends Activity {
         settings.apply(in);
         Log.i(Codecs.TAG, "display settings: " + settings);
         Codecs.logAvcDecoders(new int[][] {{settings.panelW, settings.panelH}}, new int[] {30, 60});
+        if (name == null) pinPanel(settings.fps);
         // Sensor variants, so a turn through 180 degrees follows the phone.
         // configChanges keeps the activity, and the link, through any turn.
         setRequestedOrientation(name == null && settings.portrait ? ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
@@ -297,6 +299,32 @@ public class DisplayActivity extends Activity {
                 if (decoder != null) decoder.stop();
             }
         });
+    }
+
+    /**
+     * Holds the panel, while this window shows, at a refresh rate the stream
+     * fits evenly: the lowest multiple of fps from 60 up, else the highest.
+     * Left to itself, the S21 ran at 48Hz for 30fps, every frame 42ms.
+     */
+    private void pinPanel(int fps) {
+        Display display = getWindowManager().getDefaultDisplay();
+        Display.Mode now = display.getMode(), best = null;
+        StringBuilder all = new StringBuilder();
+        for (Display.Mode m : display.getSupportedModes()) {
+            all.append(' ').append(m.getModeId()).append('=').append(m.getPhysicalWidth()).append('x')
+                    .append(m.getPhysicalHeight()).append('@').append(m.getRefreshRate());
+            if (m.getPhysicalWidth() != now.getPhysicalWidth() || m.getPhysicalHeight() != now.getPhysicalHeight()) continue;
+            float k = m.getRefreshRate() / fps;
+            if (Math.abs(k - Math.round(k)) > 0.02f) continue;
+            float r = m.getRefreshRate(), b = best == null ? 0 : best.getRefreshRate();
+            if (best == null || (r >= 59 ? b < 59 || r < b : b < 59 && r > b)) best = m;
+        }
+        Log.i(Codecs.TAG, "panel modes" + all + "; now " + now.getModeId() + ", pinned "
+                + (best == null ? "none" : best.getModeId() + " at " + best.getRefreshRate() + "Hz") + " for " + fps + "fps");
+        if (best == null) return;
+        WindowManager.LayoutParams lp = getWindow().getAttributes();
+        lp.preferredDisplayModeId = best.getModeId();
+        getWindow().setAttributes(lp);
     }
 
     /** The link's sentence over the video, or nothing once connected. Any thread. */

@@ -84,9 +84,11 @@ refused, and the phone says which one has it.
 Settings are on the phone:
 
 - Under **Use as display**: the resolution, landscape or portrait, 30 or
-  60 fps, and smoothing (off, 20 or 50 ms; 50 at first), which holds each frame a
-  little to show them at an even pace. The PC's monitor takes exactly
-  that mode the next time the display starts. A tablet on Android 16 or
+  60 fps (60 at first), and smoothing (off, 20 or 50 ms; 50 at first),
+  which holds each frame a little to show them at an even pace. The PC's
+  monitor takes exactly that mode the next time the display starts, and
+  while it shows, the phone's screen refreshes at a rate the frame rate
+  fits evenly. A tablet on Android 16 or
   later ignores landscape or portrait: Android lets no app turn it, so
   the display takes the way the tablet is held when it connects.
 - Under **Use as webcam**: the front or back camera, the lens, the size

@@ -90,7 +90,7 @@ wait $HUBPID; sleep 2
 # its end-of-connection stats; the dump below catches that tail.
 kill $LOGPID 2>/dev/null; wait $LOGPID 2>/dev/null
 
-hub $T/collect.log --no-reverse --seconds 30
+hub $T/collect.log --no-reverse --seconds 120
 adb -s $SERIAL shell dumpsys SurfaceFlinger --timestats -dump > $T/ts.txt
 adb -s $SERIAL shell dumpsys SurfaceFlinger --timestats -disable >/dev/null
 adb -s $SERIAL logcat -d -T $START.000 -s ExoPhone:V AndroidRuntime:E > $T/logcat-tail.txt
