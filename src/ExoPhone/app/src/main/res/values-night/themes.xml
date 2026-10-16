@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The platform's dark parents; the rest of the theme is in values. -->
+    <style name="Exo.Base" parent="android:Theme.Material.NoActionBar" />
+    <style name="Exo.Dialog.Base" parent="android:Theme.Material.Dialog.Alert" />
+</resources>

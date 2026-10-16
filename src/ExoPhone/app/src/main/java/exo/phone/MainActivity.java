@@ -57,12 +57,11 @@ import java.util.List;
 public class MainActivity extends Activity {
     private static final int ASK_CAMERA = 1, ASK_LOCAL_NETWORK = 2;
     private static final String LOCAL_NETWORK = Discovery.LOCAL_NETWORK;
-    // A role's state, as the dot before its words shows it.
-    private static final int OFF = 0xFF9A9AA2, WAITING = 0xFFE0A030, WORKING = 0xFF3DB060;
-    // The design's colours.
-    private static final int SCREEN = 0xFFF7F4EE, CARD = 0xFFFFFFFF, TEXT = 0xFF1D1B20, SECONDARY = 0xFF5F5D6E,
-            DIVIDER = 0xFFECE7DE, OUTLINE = 0xFFC9C6D3, SWITCH_OFF = 0xFF8C8A9A, ACCENT = 0xFF3A3F8F,
-            TONAL = 0xFFE6E7F6, AMBER = 0xFF8A5A00, CALLOUT = 0xFFFBF1DA, CALLOUT_TEXT = 0xFF3A2800, CODE = 0xFF232659;
+    // The design's colours, from res/values, or res/values-night while the
+    // system's dark theme is on; read once in onCreate, which a theme
+    // change runs again. The state dots are the same in both.
+    private int OFF, WAITING, WORKING, SCREEN, CARD, TEXT, SECONDARY, DIVIDER, OUTLINE, SWITCH_OFF, ACCENT, ON_ACCENT,
+            TONAL, ON_TONAL, SEGMENT, AMBER, CALLOUT, CALLOUT_TEXT, CODE;
     private static final int FILLED = 0, OUTLINED = 1, TONED = 2;
 
     private TextView subtitle;
@@ -92,6 +91,25 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         ui = getSharedPreferences("ui", MODE_PRIVATE);
+        OFF = getColor(R.color.dot_off);
+        WAITING = getColor(R.color.dot_waiting);
+        WORKING = getColor(R.color.dot_working);
+        SCREEN = getColor(R.color.screen);
+        CARD = getColor(R.color.card);
+        TEXT = getColor(R.color.text);
+        SECONDARY = getColor(R.color.text_secondary);
+        DIVIDER = getColor(R.color.divider);
+        OUTLINE = getColor(R.color.outline);
+        SWITCH_OFF = getColor(R.color.outline_strong);
+        ACCENT = getColor(R.color.accent);
+        ON_ACCENT = getColor(R.color.on_accent);
+        TONAL = getColor(R.color.tonal);
+        ON_TONAL = getColor(R.color.on_tonal);
+        SEGMENT = getColor(R.color.segment_selected);
+        AMBER = getColor(R.color.problem);
+        CALLOUT = getColor(R.color.callout);
+        CALLOUT_TEXT = getColor(R.color.on_callout);
+        CODE = getColor(R.color.code);
 
         LinearLayout root = column(12);
 
@@ -186,8 +204,8 @@ public class MainActivity extends Activity {
         liveControls = live;
         torchSwitch = new Switch(this);
         int[][] onOff = {{android.R.attr.state_checked}, {}};
-        torchSwitch.setThumbTintList(new ColorStateList(onOff, new int[] {CARD, SWITCH_OFF}));
-        torchSwitch.setTrackTintList(new ColorStateList(onOff, new int[] {ACCENT, OUTLINE}));
+        torchSwitch.setThumbTintList(new ColorStateList(onOff, new int[] {ON_ACCENT, SWITCH_OFF}));
+        torchSwitch.setTrackTintList(new ColorStateList(onOff, new int[] {ACCENT, SWITCH_OFF}));
         torchSwitch.setOnCheckedChangeListener((s, on) -> {
             if (camera.torch == on) return;
             camera.torch = on;
@@ -395,7 +413,7 @@ public class MainActivity extends Activity {
         return t;
     }
 
-    private static void setNote(TextView t, String s, boolean problem) {
+    private void setNote(TextView t, String s, boolean problem) {
         t.setText(s);
         t.setTextColor(problem ? AMBER : SECONDARY);
         t.setVisibility(s == null ? View.GONE : View.VISIBLE);
@@ -431,7 +449,7 @@ public class MainActivity extends Activity {
 
     /** A background that ripples on a tap, inside the given shape. */
     private Drawable touchable(Drawable bg, float radiusDp) {
-        return new RippleDrawable(ColorStateList.valueOf(0x1F3A3F8F), bg, shape(0xFFFFFFFF, radiusDp, 0));
+        return new RippleDrawable(ColorStateList.valueOf(ACCENT & 0x00FFFFFF | 0x1F000000), bg, shape(CARD, radiusDp, 0));
     }
 
     /** A card's title, then its state as a dot and words; returns the words. */
@@ -493,7 +511,7 @@ public class MainActivity extends Activity {
 
     /** A pill button. */
     private TextView button(String s) {
-        TextView b = text(s, 15, CARD, MEDIUM);
+        TextView b = text(s, 15, ON_ACCENT, MEDIUM);
         b.setGravity(Gravity.CENTER);
         b.setPadding(dp(12), dp(12), dp(12), dp(12));
         style(b, FILLED);
@@ -501,7 +519,7 @@ public class MainActivity extends Activity {
     }
 
     private void style(TextView b, int kind) {
-        b.setTextColor(kind == FILLED ? CARD : ACCENT);
+        b.setTextColor(kind == FILLED ? ON_ACCENT : kind == TONED ? ON_TONAL : ACCENT);
         b.setBackground(touchable(kind == FILLED ? shape(ACCENT, 22, 0)
                 : kind == TONED ? shape(TONAL, 22, 0) : shape(CARD, 22, OUTLINE), 22));
     }
@@ -521,7 +539,7 @@ public class MainActivity extends Activity {
 
     private void select(TextView segment, boolean on) {
         segment.setTextColor(on ? TEXT : SECONDARY);
-        segment.setBackground(on ? shape(CARD, 10, 0) : null);
+        segment.setBackground(on ? shape(SEGMENT, 10, 0) : null);
         segment.setElevation(on ? dp(1) : 0);
     }
 

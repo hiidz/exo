@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The app screen's colours, dark: the system's dark theme is on. -->
+<resources>
+    <color name="screen">#16151B</color>
+    <color name="card">#222129</color>
+    <color name="text">#ECE9F2</color>
+    <color name="text_secondary">#B4B1C2</color>
+    <color name="divider">#34323D</color>
+    <color name="outline">#5A5768</color>
+    <color name="outline_strong">#8F8C9E</color>
+    <color name="accent">#B8BCFF</color>
+    <color name="on_accent">#1A1D52</color>
+    <color name="tonal">#34386E</color>
+    <color name="on_tonal">#DDE0FF</color>
+    <color name="segment_selected">#34323D</color>
+    <color name="callout">#3A2E12</color>
+    <color name="on_callout">#F6DFA6</color>
+    <color name="code">#F6DFA6</color>
+    <color name="problem">#F0B850</color>
+    <color name="dialog_surface">#2A2833</color>
+    <bool name="light_bars">false</bool>
+    <item name="scrim" format="float" type="dimen">0.6</item>
+</resources>

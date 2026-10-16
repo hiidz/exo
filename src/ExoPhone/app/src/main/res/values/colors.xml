@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The app screen's colours, light. values-night holds the dark ones;
+     Android picks by the system's dark theme setting. -->
+<resources>
+    <color name="screen">#F7F4EE</color>
+    <color name="card">#FFFFFF</color>
+    <color name="text">#1D1B20</color>
+    <color name="text_secondary">#5F5D6E</color>
+    <color name="divider">#ECE7DE</color>
+    <!-- Outlined buttons and the off switch's track; the off thumb and the text field's edge. -->
+    <color name="outline">#C9C6D3</color>
+    <color name="outline_strong">#8C8A9A</color>
+    <color name="accent">#3A3F8F</color>
+    <color name="on_accent">#FFFFFF</color>
+    <color name="tonal">#E6E7F6</color>
+    <color name="on_tonal">#3A3F8F</color>
+    <color name="segment_selected">#FFFFFF</color>
+    <color name="callout">#FBF1DA</color>
+    <color name="on_callout">#3A2800</color>
+    <color name="code">#232659</color>
+    <color name="problem">#8A5A00</color>
+    <color name="dialog_surface">#F4F0F7</color>
+    <!-- A role's state dot, the same in both themes. -->
+    <color name="dot_working">#3DB060</color>
+    <color name="dot_waiting">#E0A030</color>
+    <color name="dot_off">#9A9AA2</color>
+    <!-- The pairing code on the display screen, which is black in both themes. -->
+    <color name="saffron">#E0A526</color>
+    <bool name="light_bars">true</bool>
+    <item name="scrim" format="float" type="dimen">0.45</item>
+</resources>

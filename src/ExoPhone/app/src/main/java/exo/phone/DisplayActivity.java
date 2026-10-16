@@ -382,7 +382,7 @@ public class DisplayActivity extends Activity {
                 s.setSpan(new android.text.style.RelativeSizeSpan(56f / 26), at, end, 0);
                 s.setSpan(new android.text.style.TypefaceSpan("monospace"), at, end, 0);
                 s.setSpan(new android.text.style.StyleSpan(android.graphics.Typeface.BOLD), at, end, 0);
-                s.setSpan(new android.text.style.ForegroundColorSpan(0xFFE0A526), at, end, 0);
+                s.setSpan(new android.text.style.ForegroundColorSpan(getColor(R.color.saffron)), at, end, 0);
                 statusView.setText(s);
             }
             statusView.setVisibility(sentence == null ? View.GONE : View.VISIBLE);
