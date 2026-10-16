@@ -106,8 +106,6 @@ with Smart App Control on, Windows blocks Exo outright. To load its
 display driver, the setup adds Exo's own certificate, **Exo Release**,
 to the certificates Windows trusts; uninstalling removes it.
 
-Exo is not affiliated with SuperDisplay.
-
 Exo was built from scratch with Claude Opus 5.5. I reviewed, tested and
 run every change myself, but read the code with that in mind.
 
