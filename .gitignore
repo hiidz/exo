@@ -2,7 +2,7 @@
 build/
 .gradle/
 
-# Spike capture output, regenerable and large
+# Captured streams, regenerable and large
 *.h264
 *.mp4
 
@@ -23,10 +23,10 @@ build/
 bin/
 obj/
 
-# Spike capture stills, regenerable
+# Captured stills, regenerable
 *.png
 
-# ExoPhone test input and run output, local evidence (spikes/STATUS.md)
+# ExoPhone test input and run output, local evidence
 src/ExoPhone/testdata/
 
 # ExoDisplay: the WDK from NuGet, and build output (src/ExoDisplay/build.bat)

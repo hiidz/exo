@@ -1,11 +1,12 @@
-// The DLL's end of L7, the link from the hub (DECISIONS 5.9). One reader
+// The DLL's end of L7, the loopback link from the hub (its format in
+// ExoHub's Link/Wire.cs). One reader
 // thread per stream connects to the hub over loopback and hands each frame
 // to the stream as its new picture. With no link, or while the hub sends
 // IDLE, the stream serves the test card.
 //
 // It connects on the stream's first Start, not when the source is created:
 // creation happens inside the registering process and in svchost long
-// before anyone watches (TECHNICAL_DESIGN 3.2 (b)). It keeps the connection,
+// before anyone watches. It keeps the connection,
 // reconnecting as needed, until the stream shuts down. Creation only asks
 // the hub for the format, on a connection of its own (AskFormat).
 #pragma once

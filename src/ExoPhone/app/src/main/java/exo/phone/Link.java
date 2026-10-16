@@ -35,7 +35,7 @@ import javax.net.ssl.SSLSocket;
 /**
  * A connection to the hub: over USB, localabstract:exo, which adb reverse
  * carries to the hub's port; over Wi-Fi, the port in the picked PC's
- * discovery answer (Via, Discovery). Connects, runs the handshake in DECISIONS 5.7, then serves
+ * discovery answer (Via, Discovery). Connects, runs the handshake, then serves
  * its role until the connection ends, and starts again a second later,
  * forever. The one exception is a version refusal, which does not fix
  * itself, so the loop stops. Every change of state goes to the listener as
@@ -86,7 +86,7 @@ final class Link implements Runnable {
         }
 
         /**
-         * The hub's pointer shape (DECISIONS 11.1). hotX and hotY are the
+         * The hub's pointer shape. hotX and hotY are the
          * hotspot within the bitmap. Link thread. A default method: the
          * camera role has no cursor and need not implement it.
          */
@@ -108,7 +108,7 @@ final class Link implements Runnable {
 
     static final byte[] MAGIC = {'E', 'X', 'O', 0};
     // 2 added CURSOR_SHAPE, CURSOR_POS and TOUCH on the display connection.
-    // 3 added HELLO's rotation byte, after the serial (DECISIONS 6.4).
+    // 3 added HELLO's rotation byte, after the serial.
     // 4: the role is picked here, HELLO carries this app's identity and
     // name in place of the serial, and each side states the oldest version
     // it speaks. 5: the display role's HELLO carries its mode, rate and
@@ -355,7 +355,7 @@ final class Link implements Runnable {
                 public void timeout(int ms) throws IOException { ls.setSoTimeout(ms); }
                 public void close() throws IOException {
                     // close() alone leaves a read blocked on the S21 until
-                    // the hub's end closes too (cam/rot-fix-r2, 1s and more).
+                    // the hub's end closes too (1s and more).
                     try {
                         ls.shutdownInput();
                     } catch (IOException ignored) {
@@ -699,7 +699,7 @@ final class Link implements Runnable {
     /**
      * Any thread, never blocks: the write happens on the connection's writer
      * thread, the one PING uses. False when there is no display connection
-     * to send it on (FR-3.3).
+     * to send it on.
      */
     boolean sendTouch(byte[] body) {
         return sendUp(TOUCH, body);
@@ -813,7 +813,7 @@ final class Link implements Runnable {
         }
     }
 
-    /** Raw t1 to t4; the offline analysis relates the clocks (DECISIONS 5.7). */
+    /** Raw t1 to t4; the offline analysis (src/tools/LinkTimes.java) relates the clocks. */
     private static void writePongs(File f, ArrayList<long[]> pongs) {
         try (PrintWriter w = new PrintWriter(f)) {
             w.println("t1_ns,t2_us,t3_us,t4_ns");
@@ -907,7 +907,7 @@ final class Link implements Runnable {
                 continue;
             }
             if (type != FRAME || length < FRAME_FIELDS || !display) {
-                // Unknown types are skipped by their length (DECISIONS 5.7),
+                // Unknown types are skipped by their length,
                 // and so is any FRAME on a camera connection, which has no decoder.
                 if (skip.length < length) skip = new byte[length];
                 in.readFully(skip, 0, length);
@@ -944,7 +944,7 @@ final class Link implements Runnable {
                 continue;
             }
 
-            // DECISIONS 5.3, receiver side: nothing before SPS, PPS and an IDR.
+            // Nothing before SPS, PPS and an IDR, which nothing decodes without.
             if (firstParams == null && flags != (FLAG_KEYFRAME | FLAG_CONFIG)) {
                 counts.discardedBeforeKeyframe++;
                 // Done with it, so the hub may send more (protocol 6).
@@ -967,7 +967,8 @@ final class Link implements Runnable {
                 if (firstParams == null) {
                     firstParams = u.au.params;
                 } else if (!firstParams.equals(u.au.params)) {
-                    // A size change on the hub. Not handled in this slice.
+                    // New parameter sets mid-connection: counted and logged, the decoder
+                    // kept. A mode chosen on the phone reconnects instead.
                     counts.paramChanges++;
                     Log.w(Codecs.TAG, "link SPS/PPS changed mid-stream at seq " + u.seq + "; decoder not rebuilt");
                     firstParams = u.au.params;

@@ -17,16 +17,16 @@ import java.util.List;
  * preferences, and the one mode they make: what the display's HELLO carries
  * and the only mode the hub's monitor offers. Sizes are kept landscape, long
  * side first: always landscape, a portrait display being Windows' own
- * rotation of it (PLAN.md, Decide, Display).
+ * rotation of it.
  *
  * The size sent is the largest of the panel's own and same-aspect steps
  * below it that the decoder Decoder would pick takes at the chosen
- * rate; there is no picker (PLAN.md, Decide, Display), only the tools' extra.
+ * rate; there is no picker, only the tools' extra: text size is Windows'
+ * Scale.
  */
 final class DisplaySettings {
     static final int[] RATES = {30, 60};
-    // Smoothing.s buffer in ms, fixed: the one even at 60 on the tablet
-    // (PLAN.md, Decide, Phone and protocol).
+    // The smoothing buffer in ms, fixed: the one even at 60 on the TB375FC.
     static final int SMOOTHING = 50;
     // All of the panel, then three quarters, two thirds and half of it.
     private static final int[][] STEPS = {{1, 1}, {3, 4}, {2, 3}, {1, 2}};
@@ -71,9 +71,9 @@ final class DisplaySettings {
 
     void save(Context context) {
         prefs(context).edit()
-                .remove("display.portrait")  // Windows' setting since v3 step 6
+                .remove("display.portrait")  // now Windows' setting
                 .putInt("display.fps", fps)
-                .remove("display.size")  // no picker since v3 step 6: always the largest
+                .remove("display.size")  // no picker now: always the largest
                 .apply();
     }
 

@@ -20,7 +20,7 @@
 // --debug     D3D11 debug layer on, messages printed as they arrive. Slow.
 // --seconds N stop after N seconds, as if Ctrl+C was pressed.
 // --dump F    write the first converted frame to F as raw NV12. The one
-//             debug readback DECISIONS 4.1 allows; nothing reads back
+//             debug readback of the display path; nothing reads back
 //             without it.
 // --dump-after S  dump the first frame converted or resent after S
 //             seconds instead, since the first after a plug is black.
@@ -52,18 +52,19 @@ using Vortice.DXGI;
 using Vortice.MediaFoundation;
 
 // The longest the capture loop waits for an image, which can wait on
-// nothing else. A new connection is noticed within this (DECISIONS 5.4).
+// nothing else. A new connection is noticed within this.
 const double WakeMs = 100;
 
 // Retry waits double from the first to the cap and stay there. Keyed to
 // consecutive failed Reopen attempts, not to losses: one user action gives
-// a burst of losses that each recover in milliseconds (spike 2 step 4). The
+// a burst of losses that each recover in milliseconds. The
 // cap is the most a user waits after unlocking, so it stays short.
 const int FirstRetryMs = 100;
 const int MaxRetryMs = 1000;
 
-// DECISIONS 5.4: with nothing offered to the encoder for this long, the
-// kept image is offered again.
+// With nothing offered to the encoder for this long, the kept image is
+// offered again: a still desktop presents nothing, so a phone connecting
+// to it would otherwise show nothing.
 const double HeartbeatMs = 500;
 
 // The encoder's bitrate follows the display phone's rate and transport
@@ -150,7 +151,7 @@ catch (SocketException ex)
     return Refuse($"{clock.Elapsed.TotalSeconds,8:F3}s camera REFUSED: port {Wire.CameraPort}: {ex.SocketErrorCode}. " +
                   "Another hub, or an orphan of one, holds it.");
 }
-// The virtual camera, held for the hub's lifetime (DECISIONS 10 item 4).
+// The virtual camera, held for the hub's lifetime.
 // After L7, so an orphaned hub fails on the port before registering a
 // second camera. Null if registration failed; the hub runs on without it.
 using VirtualCamera vcam = VirtualCamera.Register(clock, camera);
@@ -159,7 +160,7 @@ var decoder = new CameraDecoder(camera, clock);
 // Null to refuse the camera role: no virtual camera for it to reach.
 CameraDecoder cameraRole = vcam != null ? decoder : null;
 // The listener binds each USB device a port, 0 so Windows picks it, held
-// exclusively; with the session ID in WELCOME it names this hub (5.7, 5.8).
+// exclusively; with the session ID in WELCOME it names this hub.
 using var display = new DisplaySender(clock) { BitrateOverride = bitrateAt30 };
 var touch = new TouchInjector(clock);
 // Before the listener, which tells it when the display connection comes
@@ -186,7 +187,7 @@ else
     Console.WriteLine($"{clock.Elapsed.TotalSeconds,8:F3}s adb off in settings");
 
 using var source = new DriverFrameSource(monitor, debugLayer);
-// The pointer the phone draws (DECISIONS 11.1), from the driver.
+// The pointer the phone draws, from the driver.
 using var pointer = new DriverCursor(clock, display, () => source.Output);
 Console.WriteLine($"target monitor {VirtualDisplay.MonitorId}, heartbeat {HeartbeatMs}ms, wake {WakeMs}ms, " +
                   $"debug layer {(debugLayer ? "ON" : "off")}, " +
@@ -227,7 +228,7 @@ Win32.timeBeginPeriod(1);
 // Windows 11 ignores timeBeginPeriod in a process with no visible window,
 // which the hub is in the tray. Without this, while a browser plays video,
 // the AMD encoder takes 31ms a frame instead of 9.5 and the display falls
-// to 30fps (PLAN.md, v3 step 2; SuperDisplay falls the same way).
+// to 30fps (SuperDisplay falls the same way).
 var throttling = new Win32.PowerThrottling
 {
     Version = Win32.PROCESS_POWER_THROTTLING_CURRENT_VERSION,
@@ -276,7 +277,7 @@ int debugMessages = 0;
 // made per frame.
 var textures = new HashSet<IntPtr>();
 
-// Per-frame Blt times, for the totals. The first NFR-1 data point.
+// Per-frame Blt times, for the totals.
 var submitMs = new List<double>();
 
 // Runs inside Next, while the texture is held. Records what to print and
@@ -341,12 +342,14 @@ while (!stop.IsCancellationRequested)
         prevPresent = 0;  // gaps are measured within one texture only
         touch.Target = CheckTouchTarget(o, t);
         lastPlacementQpc = Stopwatch.GetTimestamp();
-        // DECISIONS 5.4: the heartbeat is due at once after a recovery, and
+        // The heartbeat is due at once after a recovery, and
         // carries the forced IDR below if no new image comes first.
         lastOfferQpc = 0;
         converter ??= new Nv12Converter(source.Device, source.Context);
 
-        // DECISIONS 5.3 and 5.5 step 5. If the size changed, the encoder is
+        // After a recovery the next frame is an IDR, as on a new connection,
+        // so the phone never waits up to a minute for one. If the
+        // size changed, the encoder is
         // rebuilt on the first frame and starts with an IDR anyway, so this
         // only matters when it is kept.
         if (losses > 0 && encoder != null)
@@ -485,7 +488,7 @@ while (!stop.IsCancellationRequested)
         continue;
     }
 
-    // DECISIONS 5.4. Only with a device to send to, and never while a real
+    // The heartbeat resend. Only with a device to send to, and never while a real
     // frame is pending, so a resend never displaces one. A connection
     // waiting for its keyframe gets one now rather than at the heartbeat.
     // Stamped now, not with the kept image's present time, so the encoder's
@@ -591,7 +594,7 @@ devices.Dispose();
 monitor.Dispose();
 decoder.Dispose();
 // Before L7 closes, so the DLL in the Frame Server gets Shutdown with its
-// link still up, rather than a reset and a reconnect first (DECISIONS 5.9).
+// link still up, rather than a reset and a reconnect first.
 vcam?.Dispose();
 camera.Dispose();
 display.Dispose();
@@ -634,10 +637,10 @@ static int Refuse(string line)
     return 2;
 }
 
-// The one debug readback (DECISIONS 4.1). Writes the frame just converted
+// The one debug readback. Writes the frame just converted
 // as raw NV12, then has ffmpeg make a PNG of it. Throwaway inspection, so
 // ffmpeg is fine here. BT.709 limited range is what the converter is set
-// to write (DECISIONS 11.7); ffmpeg would assume BT.601 without being
+// to write; ffmpeg would assume BT.601 without being
 // told, and the PNG colours would be off when the conversion is right.
 static void DumpAndDecode(Nv12Converter converter, string path, string t)
 {
@@ -658,8 +661,9 @@ static void DumpAndDecode(Nv12Converter converter, string path, string t)
 }
 
 // Where touch lands: DXGI's rectangle for the EXO monitor's output, checked
-// against the monitor rectangle Windows gives for its centre (traps-touch
-// rule). Null, so touch is refused, if the two disagree.
+// against the monitor rectangle Windows gives for its centre. Null, so
+// touch is refused, if the two disagree: touch would land on the wrong
+// monitor.
 static OutputInfo CheckTouchTarget(OutputInfo o, string t)
 {
     var centre = new Win32.POINT { X = o.Left + o.Width / 2, Y = o.Top + o.Height / 2 };

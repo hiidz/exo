@@ -71,7 +71,7 @@ HRESULT ExoCreateDescriptors(const ExoFormat& format, IMFPresentationDescriptor*
     hr = MFCreatePresentationDescriptor(ARRAYSIZE(sds), sds, &pd);
     if (FAILED(hr)) return hr;
     // An unselected stream produces nothing, which looks like a camera that
-    // opens and shows black (spike 1).
+    // opens and shows black.
     hr = pd->SelectStream(0);
     if (FAILED(hr)) return hr;
 

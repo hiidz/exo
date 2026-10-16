@@ -2,7 +2,7 @@ using System.Runtime.InteropServices;
 
 namespace ExoHub;
 
-// The hub's job object (CLAUDE.md Process handling, DECISIONS 5.8). The hub
+// The hub's job object, with KILL_ON_JOB_CLOSE, so adb dies with it. The hub
 // joins it first thing, and every process it starts afterwards is born
 // inside, so nothing it starts can outlive it.
 //
@@ -78,7 +78,7 @@ static class Job
             throw new System.ComponentModel.Win32Exception();
     }
 
-    // Asked of the OS rather than assumed (DECISIONS 5.8).
+    // Asked of the OS rather than assumed.
     public static bool Contains(System.Diagnostics.Process p) =>
         IsProcessInJob(p.Handle, handle, out bool inJob) ? inJob : throw new System.ComponentModel.Win32Exception();
 }

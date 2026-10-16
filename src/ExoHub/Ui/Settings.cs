@@ -1,7 +1,7 @@
-// The PC window's settings (PLAN.md, PC app), in HKCU: per user, written
-// by the unelevated hub. Start with Windows is the hub's own Run value,
-// written here rather than by an elevated installer, which would write the
-// hive of whoever elevated (RESEARCH.md, Release and installer).
+// The PC window's settings, in HKCU: per user, written by the unelevated
+// hub. Start with Windows is the hub's own Run value, written here rather
+// than by an elevated installer, which would write the hive of whoever
+// elevated.
 
 using Microsoft.Win32;
 
@@ -33,7 +33,7 @@ static class Settings
         }
     }
 
-    // PLAN.md, Wi-Fi as built in step 4: a phone allowed once over Wi-Fi
+    // A phone allowed once over Wi-Fi
     // connects from then on, with the certificate it paired with; a deny is
     // not kept. Each allowed phone is a value under Paired, its identity,
     // holding its certificate's fingerprint (Pairing) and its name for

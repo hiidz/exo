@@ -1,6 +1,6 @@
 #!/bin/sh
-# Checks a hub run against the stall and frame rate criteria first written
-# for SC-11 (spike 4 FINDINGS, Notes added 2026-10-13). One line per
+# Checks a hub run against stall and frame rate criteria, first written
+# for the hour-long run of both roles (sc11run.sh). One line per
 # criterion: PASS, FAIL, or NOTE when there is nothing to judge.
 # Usage: runcheck.sh <run dir>
 # Reads hub.log, and if present the display CSV (<run>-link-N.csv),
@@ -8,7 +8,7 @@
 # role's per-second lines. Parts a run lacks are skipped.
 #
 # Limits: the thresholds (29fps, 145 frames per 5s, 500ms) are this
-# script's, not PROJECT_SPEC's. The first window after a connect is
+# script's own. The first window after a connect is
 # skipped, since it always reads about 27fps. Chrome's 5s timer jitters, so
 # the page is judged on its fps field, not its frame count. Only a run with
 # a single connection per role reads correctly; a replug restarts windows.

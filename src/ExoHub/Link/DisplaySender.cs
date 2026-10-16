@@ -1,5 +1,5 @@
-// Sends encoder output down the display connection (TECHNICAL_DESIGN 2.8),
-// bounded per DECISIONS 5.7.
+// Sends encoder output down the display connection, with a bounded number
+// of frames in flight.
 //
 // The encoder hands frames over on a Media Foundation thread under its own
 // lock, so Put only copies into a queue. This class's thread does the
@@ -20,13 +20,12 @@ sealed class DisplaySender : IDisposable
 {
     public const byte FlagKeyframe = 1, FlagConfig = 2;
     const int FrameHeader = Wire.HeaderSize + 4 + 3 * 8;  // seq, present, encoded, sent
-    // Frames sent and not yet acked, 6 as SuperDisplay's fixed window
-    // (SUPERDISPLAY-RE.md, FrameDone). A frame counts from its send until
-    // the phone has decoded it, about 30ms on the TB375FC at 2944x1840@60,
+    // Frames sent and not yet acked, 6 as SuperDisplay's fixed window. A
+    // frame counts from its send until the phone has decoded it, about 30ms on the TB375FC at 2944x1840@60,
     // so bursts filled a cap of 3 there: 2026-10-15, 60 s over USB, 3 sent
-    // 50/s and was at the cap 1135 times (t-60-strip), 6 sent 56/s, never
-    // at the cap, and present to output fell from 40.1 to 35.7ms median
-    // (t-60-cap6). On the S21 at 2400x1080@60 the cap barely mattered
+    // 50/s and was at the cap 1135 times, 6 sent 56/s, never
+    // at the cap, and present to output fell from 40.1 to 35.7ms median.
+    // On the S21 at 2400x1080@60 the cap barely mattered
     // (2026-10-14, 20 s: no cap 548 frames, 3 545). The cost lands on a
     // decoder that cannot keep up: up to 6 frames queue behind it.
     const int MaxInFlight = 6;
@@ -59,12 +58,12 @@ sealed class DisplaySender : IDisposable
     // The phone's display is out of view (PAUSE): only PONGs go, and the
     // capture loop encodes nothing, until RESUME. Under gate.
     bool paused;
-    // The next frame written is the first of its connection. For the replug
-    // timings in DECISIONS 5.8.
+    // The next frame written is the first of its connection. For replug
+    // timings.
     bool firstOfConnection;
     Action kick;  // under gate
 
-    // The cursor (DECISIONS 11.1): state, not a queue. Each slot holds the
+    // The cursor: state, not a queue. Each slot holds the
     // latest value and whether this connection still needs it, so a slow
     // phone gets the newest position, never a backlog. Kept across
     // connections and replayed on Attach, since a shape changes rarely and a
@@ -105,9 +104,10 @@ sealed class DisplaySender : IDisposable
     uint fps;  // under gate
 
     // CBR for the attached phone, which the capture loop builds the encoder
-    // at, matched as the rate is. NFR-3: 40 Mbps at 30fps, not to be tuned
-    // down, and at 60 the same bits a frame. Over Wi-Fi it starts at 40 Mbps,
-    // which got through here (PLAN.md, Wi-Fi as built in step 4), and moves.
+    // at, matched as the rate is: 40 Mbps at 30fps, not to be tuned down,
+    // since text sharpness is what suffers, and at 60 the same bits a frame.
+    // Over Wi-Fi it starts at 40 Mbps, which got through in testing, and
+    // moves.
     public const uint BitrateAt30 = 40_000_000, WifiStart = 40_000_000;
     // --bitrate, for measurements: per 30fps, whatever the transport.
     public uint BitrateOverride;
@@ -117,13 +117,12 @@ sealed class DisplaySender : IDisposable
     public uint BitrateFor(uint rate, bool wifi) =>
         BitrateOverride != 0 ? BitrateOverride * rate / 30 : Math.Min(BitrateAt30 * rate / 30, wifi ? WifiStart : uint.MaxValue);
 
-    // Over Wi-Fi the CBR target follows the network (PLAN.md, Transport
-    // and Wi-Fi): the encoder is built at BitrateFor, which is where the
-    // target starts, and takes each new target on the running encoder
+    // Over Wi-Fi the CBR target follows the network: the encoder is built at
+    // BitrateFor, which is where the target starts, and takes each new target on the running encoder
     // (TargetFor). Bitrate stays the encoder's identity. A queue is the
     // median ack time of a 250ms tick more than two frame intervals over
     // the lowest tick median of the last 5s; one ack is too noisy, 12 to
-    // 92ms on an idle USB link (s5-ratetest-r1). Or the 6-frame cap hit in
+    // 92ms on an idle USB link. Or the 6-frame cap hit in
     // the tick, which a link slow from the start shows when its floor is
     // already high. On a queue the target drops to three quarters of what
     // was acked in the last second, then waits a second for the queue to
@@ -148,7 +147,7 @@ sealed class DisplaySender : IDisposable
     }
 
     // The display connection, once its handshake is done. Discards until a
-    // keyframe carrying SPS and PPS, and asks the encoder for one (5.3).
+    // keyframe carrying SPS and PPS, and asks the encoder for one.
     public void Attach(Stream net, string who, uint rate, bool wifi)
     {
         lock (gate)
@@ -200,6 +199,8 @@ sealed class DisplaySender : IDisposable
         }
     }
 
+    // The display connection ended. One already replaced by a newer Attach
+    // changes nothing.
     public void Detach(Stream net)
     {
         lock (gate)
@@ -256,7 +257,7 @@ sealed class DisplaySender : IDisposable
         Log($"{serial} resumed, waiting for a forced IDR");
     }
 
-    // The capture loop reads these to decide on a resend (DECISIONS 5.4),
+    // The capture loop reads these to decide on a resend,
     // and encodes nothing without a device.
     public bool HasDevice { get { lock (gate) return stream != null && !paused; } }
     public bool KeyframeWanted { get { lock (gate) return keyframeWanted; } }
@@ -345,8 +346,8 @@ sealed class DisplaySender : IDisposable
     // Under gate. A new connection or a resume starts the signal again,
     // since the old acks say nothing about the link now. No cut for the
     // first 3s: the first keyframe and a cold decoder ack slowly, and read
-    // as a queue cut the S21 to the floor 1.5s in, 30s from 80 again
-    // (s5-s21-wifi60). A link slow from the start hits the cap after it.
+    // as a queue cut the S21 to the floor 1.5s in, 30s from 80 again.
+    // A link slow from the start hits the cap after it.
     void ResetSignal()
     {
         tickAcks.Clear();
@@ -409,6 +410,8 @@ sealed class DisplaySender : IDisposable
         return $"{serial} {(adaptive ? "Wi-Fi " : "")}target {was / 1e6:F1} -> {target / 1e6:F1} Mbps, {why}";
     }
 
+    // Whether the connection wants a keyframe, clearing the request. Only an
+    // encoder built for this connection's rate and bitrate takes it.
     public bool TakeKeyframeRequest(uint encoderFps, uint encoderBitrate)
     {
         lock (gate)
@@ -597,7 +600,7 @@ sealed class DisplaySender : IDisposable
     }
 
     // The listener's reader calls this for each PING: t1 is the phone's
-    // time from the PING, t2 the hub's when it was read (DECISIONS 5.7).
+    // time from the PING, t2 the hub's when it was read.
     public void Pong(Stream net, long t1, long t2)
     {
         lock (gate)

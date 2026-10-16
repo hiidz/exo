@@ -14,7 +14,7 @@ import android.util.Log;
 /**
  * Runs while the display is paused, out of view, and does nothing else: in
  * the foreground, the app keeps its network, which Android cuts from a
- * cached app over Wi-Fi about 5s after it leaves (PLAN.md, v3 step 5). The
+ * cached app over Wi-Fi about 5s after it leaves. The
  * connection itself stays in DisplayActivity's Link.
  */
 public class DisplayService extends Service {

@@ -1,20 +1,21 @@
-// Decodes the camera stream into L7, once for every client (FR-1.3). Its
-// frames come from the camera connection (DECISIONS 10 item 4, increment
-// D), through Submit on that connection's reader thread, so a decoder that
-// falls behind slows the reader and, over TCP, the phone.
+// Decodes the camera stream into L7, once for every client. Its frames
+// come from the camera connection, through Submit on that connection's
+// reader thread, so a decoder that falls behind slows the reader and, over
+// TCP, the phone.
 //
 // Each connection's stream begins with BeginStream: the
 // decoder is flushed, and every frame is discarded until one carries codec
-// config and a keyframe (DECISIONS 5.3).
+// config and a keyframe, since nothing before one can be decoded.
 //
 // Microsoft's software H.264 decoder, a synchronous MFT: one thread hands it
 // a compressed frame with ProcessInput, then asks for decoded ones with
 // ProcessOutput until it answers NEED_MORE_INPUT. No events and no D3D
 // device, unlike the encoder in H264Encoder.cs. Software because L7 is a
 // TCP socket, so a hardware decoder's GPU output would be read back anyway
-// (TECHNICAL_DESIGN 2.5), and 720p at 30fps is light work for a CPU.
+// for it, and 720p at 30fps is light work for a CPU. 1080p is heavier:
+// up to 39ms a frame, measured.
 //
-// Geometry comes from the decoder, never a constant (traps-camera). Its first
+// Geometry comes from the decoder, never a constant. Its first
 // ProcessOutput answers STREAM_CHANGE once it has parsed the SPS; the
 // output type is then set again and its frame size and stride read back,
 // and every frame goes onto L7 at exactly that size and stride.
@@ -43,7 +44,7 @@ sealed unsafe class CameraDecoder : IDisposable
     readonly object gate = new();
     bool waitForKeyframe = true;  // under gate
     long time;                    // under gate: the next input's sample time
-    bool flip;                    // under gate: this stream's picture turns 180 (DECISIONS 6.4)
+    bool flip;                    // under gate: this stream's picture turns 180
 
     // Set from the decoder's output type by SelectOutput. width and height
     // are the picture, the display aperture when set; codedHeight is the
@@ -86,7 +87,7 @@ sealed unsafe class CameraDecoder : IDisposable
             Log($"decoder {all[0].GetString(TransformAttributeKeys.MftFriendlyNameAttribute)}, of: {names}");
         }
 
-        // Low latency before the types, as on the encoder (DECISIONS 11.5):
+        // Low latency before the types, as on the encoder:
         // the decoder then outputs each frame as soon as it is decoded,
         // instead of holding frames for reordering. This decoder refused it
         // as VT_BOOL, the type the encoder takes, with E_INVALIDARG

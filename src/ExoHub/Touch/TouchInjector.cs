@@ -1,5 +1,4 @@
-// Touch from the display device, injected at the virtual display
-// (TECHNICAL_DESIGN 2.9, PROJECT_SPEC FR-3, spike 3 FINDINGS).
+// Touch from the display device, injected at the virtual display.
 //
 // TOUCH body, big-endian: sent i64 (phone microseconds), picture width and
 // height u16, count u8, then count entries of id u8, phase u8, x i32, y i32.
@@ -11,9 +10,9 @@
 // Two threads. The device thread parses each TOUCH, maps it to the desktop
 // and appends it to its finger's queue. This class's own thread owns
 // InitializeTouchInjection and every InjectTouchInput, and injects at most
-// once per 8ms (FR-3.2): above about 125Hz updates silently vanish. Each
+// once per 8ms: above about 125Hz updates silently vanish. Each
 // injected frame lists every finger that is down, because leaving one out
-// cancels the whole gesture (spike 3), and takes at most one DOWN or UP per
+// cancels the whole gesture, and takes at most one DOWN or UP per
 // finger, so a tap whose DOWN and UP arrive within one 8ms still becomes two
 // frames. A run of MOVEs comes to its last position.
 
@@ -253,7 +252,7 @@ sealed class TouchInjector : IDisposable
             if (!ok)
             {
                 Failures[error] = Failures.GetValueOrDefault(error) + 1;
-                // Backpressure, intermittent (spike 3): the same frame again
+                // Backpressure, intermittent: the same frame again
                 // next tick, a few times.
                 if (error == ERROR_NOT_READY && retries < 3)
                 {
@@ -263,7 +262,7 @@ sealed class TouchInjector : IDisposable
                     continue;
                 }
                 // Anything else, 87 above all, means Windows has lifted every
-                // contact itself (spike 3). Start clean; the next DOWN works.
+                // contact itself. Start clean; the next DOWN works.
                 Log($"InjectTouchInput FAILED, error {error}, {frame.Length} contacts; every contact dropped");
                 lock (gate) contacts.Clear();
                 gestureOver = true;
@@ -381,7 +380,7 @@ sealed class TouchInjector : IDisposable
         thread.Join(1000);
     }
 
-    // The contact as spike 3 injected it, with zero pixel error: a small
+    // The contact as measured with zero pixel error: a small
     // contact area following the point, a fixed orientation and pressure.
     static POINTER_TOUCH_INFO Info(int slot, uint flags, int x, int y) => new()
     {
@@ -419,7 +418,7 @@ sealed class TouchInjector : IDisposable
     }
 
     const uint PT_TOUCH = 2;
-    const uint TOUCH_FEEDBACK_DEFAULT = 1;  // Windows draws its touch visuals, so a landed touch shows on the tablet
+    const uint TOUCH_FEEDBACK_DEFAULT = 1;  // Windows draws its touch visuals, so a landed touch shows on the phone
     const uint POINTER_FLAG_INRANGE = 0x2, POINTER_FLAG_INCONTACT = 0x4, POINTER_FLAG_CANCELED = 0x8000;
     const uint POINTER_FLAG_DOWN = 0x10000, POINTER_FLAG_UPDATE = 0x20000, POINTER_FLAG_UP = 0x40000;
     const uint DownFlags = POINTER_FLAG_DOWN | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT;
@@ -460,7 +459,7 @@ sealed class TouchInjector : IDisposable
         public uint pressure;
     }
 
-    // Never mixed with the synthetic-pointer pair (FR-3.1).
+    // Never mixed with the synthetic-pointer pair.
     [DllImport("user32.dll", SetLastError = true)]
     static extern bool InitializeTouchInjection(uint maxCount, uint mode);
 

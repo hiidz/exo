@@ -1,6 +1,6 @@
-# Shell scripts run on the phone (bw.sh) or under Git Bash (gradlew), and
-# both break on CRLF line endings. core.autocrlf is true on this machine, so
-# without this a fresh checkout would convert them and the failure would be
-# silent or cryptic.
+# Shell scripts run under Git Bash (src/tools and gradlew) and break on CRLF
+# line endings. With core.autocrlf true, Git for Windows' default, a fresh
+# checkout would otherwise convert them and the failure would be silent or
+# cryptic.
 *.sh     text eol=lf
 gradlew  text eol=lf

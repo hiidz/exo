@@ -1,6 +1,6 @@
-// The tray icon and the settings window (PLAN.md, PC app):
-// connected phones, each one's role and whether it works, and only the
-// settings PLAN.md lists. WinForms, on its own STA thread, so the capture
+// The tray icon and the settings window: connected phones, each one's role
+// and whether it works, and a few PC settings; the rest live on the phone.
+// WinForms, on its own STA thread, so the capture
 // loop keeps the main thread. Quit cancels the hub's stop token, and the
 // hub's usual shutdown runs. Closing the window only hides it.
 //
@@ -152,8 +152,8 @@ sealed class Tray
         Label Heading(string text, int top) =>
             new() { Text = text, AutoSize = true, Font = heading, Margin = new Padding(0, top, 3, 6) };
 
-        // The list: one row a phone, its state as a coloured dot (PLAN.md,
-        // Decide, PC app). Sized by the DPI-scaled font, not in pixels.
+        // The list: one row a phone, its state as a coloured dot. Sized by the
+        // DPI-scaled font, not in pixels.
         int em = TextRenderer.MeasureText("M", form.Font).Width;
         var dots = new ImageList { ImageSize = new Size(em, em), ColorDepth = ColorDepth.Depth32Bit };
         foreach (var c in new[] { Color.FromArgb(61, 176, 96), Color.FromArgb(224, 160, 48), Color.Gray })
@@ -248,7 +248,7 @@ sealed class Tray
         HubState s = state();
         long now = Environment.TickCount64;
         // A row a phone, its roles together; then each USB device no
-        // connection came through, by its serial (PLAN.md, Decide, PC app).
+        // connection came through, by its serial.
         var rows = new List<(int Dot, string[] Cells)>();
         foreach (var g in s.Links.GroupBy(l => l.Phone.Id))
         {

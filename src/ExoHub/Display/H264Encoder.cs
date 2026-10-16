@@ -7,7 +7,7 @@ using Vortice.MediaFoundation;
 namespace ExoHub.Display;
 
 // The hardware H.264 encoder MFT, fed NV12 D3D11 textures with no CPU copy
-// (DECISIONS 4.1, spike 5).
+// on the way: the display frame never leaves the GPU.
 //
 // One instance per geometry. An encoder's media types are fixed for its
 // stream, so a new size means disposing this one and building another,
@@ -26,7 +26,7 @@ namespace ExoHub.Display;
 sealed class H264Encoder : IDisposable
 {
     // eAVEncH264VProfile_High from codecapi.h. MF_MT_MPEG2_PROFILE is the key
-    // the encoder honours for H.264 too (spike 5).
+    // the encoder honours for H.264 too.
     const uint ProfileHigh = 100;
     // eAVEncH264VLevel5_2, which is also the SPS's level_idc.
     const uint Level52 = 52;
@@ -70,8 +70,8 @@ sealed class H264Encoder : IDisposable
     // the 60Hz EXO monitor Windows hands over no more than 60 a second, and
     // the gate only made each frame wait for a slot: 2026-10-15, 60 s over
     // USB, without it present to output fell from 35.6 to 23.8ms median on
-    // the TB375FC at 2944x1840 (t-60-nogate) and from 20.1 to 5.5ms on the
-    // S21 (s-60-nogate), at the same frame rate and bitrate.
+    // the TB375FC at 2944x1840 and from 20.1 to 5.5ms on the S21, at the
+    // same frame rate and bitrate.
     readonly long interval;
     readonly Timer gateTimer;
     long nextDueQpc;      // 0 until the first submit; then when the next is allowed
@@ -107,7 +107,7 @@ sealed class H264Encoder : IDisposable
     public int Clamped { get; private set; }       // present times moved forward to stay increasing
 
     // A frame waits for a credit, the gate or the sender. A resend is not
-    // offered then, so it never displaces a real frame (DECISIONS 5.4).
+    // offered then, so it never displaces a real frame.
     public bool HasPending { get { lock (gate) return pending != null; } }
 
     // One line per forced IDR once its output has come out: whether the
@@ -126,7 +126,7 @@ sealed class H264Encoder : IDisposable
     }
     public int UnmatchedOutputs { get; private set; }
 
-    // Milliseconds per frame, for the caller's spreads. NFR-1's display rows.
+    // Milliseconds per frame, for the caller's spreads of each stage.
     public List<double> PresentToBltMs { get; } = new();  // DWM present to our Blt submit
     public List<double> BltToSubmitMs { get; } = new();   // waiting for the gate or a credit
     public List<double> SubmitToOutMs { get; } = new();   // inside the encoder
@@ -165,8 +165,8 @@ sealed class H264Encoder : IDisposable
                 throw new InvalidOperationException("no hardware H.264 encoder enumerated");
             report.Add($"hardware H.264 encoders: {string.Join(", ", all.Select(a => a.GetString(TransformAttributeKeys.MftFriendlyNameAttribute)))}");
 
-            // Spike 5 saw two identical AMDh264Encoder entries and used the
-            // first. Disposing the collection releases every entry, so the
+            // AMD lists two identical AMDh264Encoder entries; the first
+            // works. Disposing the collection releases every entry, so the
             // chosen one gets its own reference: QueryInterface returns the
             // same object with a reference this class owns. Kept because
             // ShutdownObject on it is how the MFT is torn down.
@@ -190,12 +190,12 @@ sealed class H264Encoder : IDisposable
         manager.ResetDevice(device).CheckError();
         mft.ProcessMessage(TMessageType.MessageSetD3DManager, (UIntPtr)(ulong)manager.NativePointer);
 
-        // Low latency and CBR before the media types, as in spike 5, and read
+        // Low latency and CBR before the media types, and read
         // back after them: S_OK from SetValue does not prove a value stuck.
         codec = new CodecApi(mft.NativePointer);
         codec.Set(CodecApi.LowLatencyMode, 1, CodecApi.VT_BOOL);
         // CBR, or with quality (1 to 100) the encoder's quality mode, for
-        // the Wi-Fi rate control measurement (PLAN.md, Transport and Wi-Fi).
+        // measuring against CBR (--quality).
         if (quality == 0)
             codec.Set(CodecApi.RateControlMode, 0, CodecApi.VT_UI4);  // eAVEncCommonRateControlMode_CBR
         else
@@ -203,8 +203,9 @@ sealed class H264Encoder : IDisposable
             codec.Set(CodecApi.RateControlMode, 3, CodecApi.VT_UI4);  // eAVEncCommonRateControlMode_Quality
             codec.Set(CodecApi.Quality, quality, CodecApi.VT_UI4);
         }
-        // DECISIONS 11.6: a keyframe a minute at the encoded rate. Every
-        // keyframe 5.3 needs is forced, and a forced one restarts the count.
+        // A keyframe a minute at the encoded rate, as a safety net. Every
+        // keyframe a new connection needs is forced, and a forced one
+        // restarts the count.
         codec.Set(CodecApi.GopSize, fps * 60, CodecApi.VT_UI4);
 
         // Output first: the encoder only knows what input it accepts once it
@@ -296,7 +297,7 @@ sealed class H264Encoder : IDisposable
     // shut.
     void TrySubmit()
     {
-        // DECISIONS 5.7: no new input while an encoded frame still waits
+        // Backpressure: no new input while an encoded frame still waits
         // for the sender. pending keeps being replaced meanwhile.
         if (credits == 0 || pending == null || (sender?.Busy ?? false))
             return;
@@ -318,7 +319,7 @@ sealed class H264Encoder : IDisposable
         if (firstQpc < 0)
             firstQpc = pendingQpc;
 
-        // A resend is stamped when offered (DECISIONS 5.4), so an image
+        // A resend is stamped when offered, so an image
         // presented just before that stamp but acquired after it would go
         // backwards. The time keys inFlight here and the phone's pts there,
         // so it must only increase.
@@ -330,8 +331,8 @@ sealed class H264Encoder : IDisposable
         lastSubmittedQpc = pendingQpc;
 
         // Media Foundation time is 100ns units. QPC ticks are converted
-        // through the counter's frequency, which is 10MHz on this machine
-        // but is not guaranteed to be. Present times only increase, so every
+        // through the counter's frequency, which is usually 10MHz but is
+        // not guaranteed to be. Present times only increase, so every
         // sample time is distinct and can key inFlight.
         long time = (pendingQpc - firstQpc) * 10_000_000 / Stopwatch.Frequency;
 
@@ -345,7 +346,7 @@ sealed class H264Encoder : IDisposable
         forceRequested = false;
         // Over Wi-Fi the sender moves the CBR target. The AMD MFT takes it
         // on the running encoder, from the next frame on, with no keyframe
-        // (2026-10-16, s5-ratetest-r1).
+        // (measured 2026-10-16).
         uint target = sender?.TargetFor(Fps, Bitrate) ?? 0;
         bool retarget = target != 0 && target != runningBitrate;
         if (retarget)
@@ -388,8 +389,9 @@ sealed class H264Encoder : IDisposable
         Submitted++;
     }
 
-    // DECISIONS 5.3: the next frame submitted is encoded as an IDR. Called
-    // after an ACCESS_LOST recovery, and later on phone reconnect.
+    // The next frame submitted is encoded as an IDR. Called after the
+    // capture recovers from a loss; a new connection asks through the
+    // sender instead (TakeKeyframeRequest).
     public void ForceKeyframe()
     {
         lock (gate)
@@ -454,7 +456,7 @@ sealed class H264Encoder : IDisposable
     }
 
     // Under the lock. The encoder provides its own output samples
-    // (MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, spike 5), so the buffer goes in
+    // (MFT_OUTPUT_STREAM_PROVIDES_SAMPLES), so the buffer goes in
     // with no sample and comes back with one this code owns.
     void Collect()
     {
@@ -515,7 +517,7 @@ sealed class H264Encoder : IDisposable
             Error ??= ex.ToString();
     }
 
-    // Shared by both media types. Colour per DECISIONS 11.7: BT.709 limited
+    // Shared by both media types. Colour: BT.709 limited
     // range, which is what the video processor writes. Tagging the types
     // tells the encoder what to write into the stream's VUI.
     static void SetVideoCommon(IMFMediaType t, uint width, uint height, uint fps)

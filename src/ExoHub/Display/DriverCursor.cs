@@ -8,7 +8,7 @@ using static ExoHub.Display.ExoDisplayDriver;
 namespace ExoHub.Display;
 
 // The pointer, as ExoDisplay forwards it. Windows keeps it out of the
-// images (a hardware cursor), and the phone draws it (DECISIONS 11.1). This
+// images (a hardware cursor), and the phone draws it. This
 // thread wakes on the driver's event, reads the pointer, and hands shape
 // and position to the sender, which sends the newest of each.
 sealed class DriverCursor : IDisposable

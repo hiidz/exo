@@ -1,6 +1,6 @@
-// Exo's adb, on or off from the window's "Enable adb connections" (PLAN.md,
-// PC app). Off ends tracking, then the hub's own server through its process
-// handle, never kill-server, so 5037 is free for another adb. A foreign
+// Exo's adb, on or off from the window's "Enable adb connections". Off ends
+// tracking, then the hub's own server through its process handle, never
+// kill-server, so 5037 is free for another adb. A foreign
 // server on 5037 leaves it off, with the reason shown, until the user turns
 // it on again.
 

@@ -1,12 +1,13 @@
-// L7, the link from the hub to ExoCamera.dll (DECISIONS 5.9). Listens on a
+// L7, the link from the hub to ExoCamera.dll (format in Wire.cs). Listens on a
 // fixed loopback port, because the DLL reads no config and so has no way to
-// learn a port Windows chose. Each client gets 5.7's handshake, then FRAMEs.
+// learn a port Windows chose. Each client gets the device connection's
+// handshake, then FRAMEs.
 //
-// A latest-frame slot (DECISIONS 5.1). One producer, the decoder,
+// A latest-frame slot. One producer, the decoder,
 // publishes each frame once, built as a whole L7 message.
 // Every client thread sends the newest message it has not sent; a frame
 // superseded before a client got to it is skipped, never queued. So one
-// decode serves every client (FR-1.3), and a slow client holds back only
+// decode serves every client, and a slow client holds back only
 // itself. A published message is not written again until it is free, so
 // client threads read it without the lock.
 //
@@ -22,7 +23,7 @@
 // SOURCE_START and SOURCE_STOP report (SetWatching). With nothing written
 // for a second, a client gets IDLE instead: the hub is alive and has no
 // picture for it, so the DLL shows its test card, and its no-message
-// timeout only fires on a hub that has hung (DECISIONS 5.9).
+// timeout only fires on a hub that has hung.
 //
 // One thread accepts and one thread serves each client, as DeviceListener.
 
@@ -68,7 +69,7 @@ sealed class CameraLink : IDisposable
     bool disposed;     // under gate
     int allocated;     // under gate: buffers ever made, for the log
     // Under gate. True until a virtual camera says otherwise, so a hub that
-    // registered none sends frames to any client, as before.
+    // registered none sends frames to any client.
     bool watching = true;
     CameraFormat format = CameraFormat.Default;  // under gate
 
@@ -102,7 +103,7 @@ sealed class CameraLink : IDisposable
     // rows, each stride bytes apart, as the producer's buffer has them: the
     // geometry is the producer's, sent as it is, and the DLL checks it.
     // stampQpc is when the frame came into being, from Stopwatch.
-    // flip turns the picture 180 degrees on the way in (DECISIONS 6.4).
+    // flip turns the picture 180 degrees on the way in.
     public void Publish(long stampQpc, int width, int height, int stride, ReadOnlySpan<byte> y, ReadOnlySpan<byte> uv, bool flip)
     {
         int ySize = stride * height, uvSize = stride * height / 2;
@@ -283,7 +284,7 @@ sealed class CameraLink : IDisposable
         byte purpose = body[4];
 
         // The PID is what the DLL says it is. The process name is looked up
-        // here, so the log shows which host loaded the DLL (TECHNICAL_DESIGN R5).
+        // here, so the log shows which host loaded the DLL.
         uint pid = BinaryPrimitives.ReadUInt32BigEndian(body);
         string exe;
         try

@@ -30,19 +30,21 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
 /**
- * The camera role for one connection (DECISIONS 10 item 4, increment D): the
- * camera CameraSettings picked into an H.264 encoder, and the encoded
- * frames into a bounded queue the link drains to the hub. A new one per connection, so every
- * connection starts with codec config and an IDR (DECISIONS 5.3).
+ * The camera role for one connection: the camera CameraSettings picked into
+ * an H.264 encoder, and the encoded frames into a bounded queue the link
+ * drains to the hub. A new one per connection, so every connection starts
+ * with codec config and an IDR, which the hub needs before it can decode
+ * anything.
  *
  * The camera draws straight into the encoder's input Surface, so no frame
  * passes through Java. Camera2 delivers its callbacks on a HandlerThread, a
  * thread with its own message loop. One plain thread drains the encoder.
- * Encoded frames cannot be dropped singly (5.7): when the queue is full the
+ * Encoded frames cannot be dropped singly, since later ones refer to them:
+ * when the queue is full the
  * drain discards up to the next keyframe and asks the encoder for one.
  */
 final class CameraRole {
-    // Spike 4's 8 Mbps at 1280x720 and 30fps, which delivered 7.75, as bits
+    // 8 Mbps at 1280x720 and 30fps, measured to deliver 7.75, as bits
     // a pixel; other sizes and rates scale with pixels a second.
     private static final double BITS_PER_PIXEL = 8_000_000.0 / (1280 * 720 * 30);
     private static final int QUEUE = 8;
@@ -152,12 +154,12 @@ final class CameraRole {
                 : CaptureRequest.FLASH_MODE_OFF);
     }
 
-    /** Why the camera or encoder failed, or null. The link ends the connection on it. */
     /** Whether failure came from restart, not from the camera. */
     boolean reopening() {
         return reopening;
     }
 
+    /** Why the camera or encoder failed, or null. The link ends the connection on it. */
     String failure() {
         return failure;
     }
@@ -185,13 +187,14 @@ final class CameraRole {
                 + ", sensorOrientation " + c.get(CameraCharacteristics.SENSOR_ORIENTATION)
                 + ", timestamp source " + c.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE)
                 + " (0 unknown, 1 realtime), fps ranges " + Arrays.toString(ranges) + ", chosen " + range);
-        // Spike 4's order: configure, then createInputSurface, then start.
+        // The order MediaCodec requires: configure, then createInputSurface,
+        // then start.
         MediaFormat f = MediaFormat.createVideoFormat(Codecs.AVC, width, height);
         f.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
         f.setInteger(MediaFormat.KEY_BIT_RATE, (int) Math.round(BITS_PER_PIXEL * width * height * fps));
         f.setInteger(MediaFormat.KEY_FRAME_RATE, fps);
         f.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
-        // An encoder key: frames out as they are encoded, not batched (traps-phone).
+        // An encoder key: frames out as they are encoded, not batched.
         if (Build.VERSION.SDK_INT >= 30) f.setInteger(MediaFormat.KEY_LATENCY, 1);
         encoder = MediaCodec.createEncoderByType(Codecs.AVC);
         encoder.configure(f, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
@@ -230,7 +233,7 @@ final class CameraRole {
 
     /**
      * The clockwise quarter turns the hub must give the picture to show it
-     * upright, as the device is held now (DECISIONS 6.4), for the lens in
+     * upright, as the device is held now, for the lens in
      * settings. A front camera turns the other way; its picture needs no
      * mirroring, since Camera2 gives it as others see you. Read at each
      * connect; a phone turned over while connected connects again
@@ -254,7 +257,7 @@ final class CameraRole {
         return turns;
     }
 
-    /** A fixed fps if offered; else the range topping out at fps with the highest floor (DECISIONS 6.4). */
+    /** A fixed fps if offered; else the range topping out at fps with the highest floor. */
     private static Range<Integer> chooseFps(Range<Integer>[] ranges, int fps) {
         Range<Integer> best = null;
         for (Range<Integer> r : ranges) {
@@ -334,7 +337,7 @@ final class CameraRole {
                 }
                 if ((info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
                     // SPS and PPS travel in front of the next IDR, as one
-                    // frame flagged KEYFRAME and CONFIG (DECISIONS 5.3).
+                    // frame flagged KEYFRAME and CONFIG.
                     config = data;
                     continue;
                 }

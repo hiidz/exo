@@ -1,6 +1,6 @@
 # Full-screen random noise on the EXO monitor, for a frame the encoder
-# cannot compress, to drive a FRAME past the wire's 4MiB limit. With the desktop still for
-# 25s first, the TB375FC at 2944x1840@30 over USB gave 5.4 to 6.3MB
+# cannot compress, to drive a FRAME past the wire's 4MiB limit. With the
+# desktop still for 25s first, the TB375FC at 2944x1840@30 over USB gave 5.4 to 6.3MB
 # P-frames in every run (2026-10-16). Run it with the display phone
 # connected; the EXO monitor is taken to be the one non-primary screen.
 #

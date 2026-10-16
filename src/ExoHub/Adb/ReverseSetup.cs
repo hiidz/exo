@@ -1,8 +1,7 @@
 // Each time any device reaches `device`, sets up the reverse from its
-// localabstract:exo to a port the listener binds for that device alone
-// (DECISIONS 5.8; PLAN.md, Transport and Wi-Fi), so the app on it can
-// connect whenever its user picks a role. The port closes when the device
-// leaves. Nothing is launched or granted: the role is picked on the phone,
+// localabstract:exo to a port the listener binds for that device alone, so
+// the port names the device. The app on it can then connect whenever its
+// user picks a role. The port closes when the device leaves. Nothing is launched or granted: the role is picked on the phone,
 // and the app asks for its own permissions. The handshakes that follow are
 // DeviceListener's.
 

@@ -1,5 +1,5 @@
 // The media stream: the object the Frame Server pulls samples from, with
-// RequestSample. One stream, serving every app (DECISIONS 7.5).
+// RequestSample. One stream, serving every app.
 #pragma once
 
 #include "exo_format.h"
@@ -12,7 +12,7 @@
 
 // IMFMediaStream2 adds the stream state the Frame Server sets directly. It
 // asked for it when an app stopped and reopened the camera, and pulled
-// nothing more without it (A4, 2026-10-11).
+// nothing more without it.
 class ExoStream : public IMFMediaStream2, public IMFGetService, public ExoNoKsControl
 {
 public:

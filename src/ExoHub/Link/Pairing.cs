@@ -1,4 +1,4 @@
-// Wi-Fi's TLS and its pairing (PLAN.md, Wi-Fi as built in step 4). The hub
+// Wi-Fi's TLS and its pairing. The hub
 // is the TLS server with its own self-signed certificate, made once and kept
 // in HKCU; the phone shows its own as the client's. A phone that holds no pin
 // for this hub, or that this hub has not allowed with the certificate it now

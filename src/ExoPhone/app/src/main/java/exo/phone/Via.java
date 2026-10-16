@@ -4,8 +4,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 
 /**
- * How this phone reaches the PC, picked on its home screen and kept (PLAN.md,
- * Wi-Fi as built in step 4): USB, through adb reverse, or Wi-Fi to one PC,
+ * How this phone reaches the PC, picked on its home screen and kept: USB, through adb reverse, or Wi-Fi to one PC,
  * found by the name its hub answers with, or at an address the user typed.
  */
 final class Via {

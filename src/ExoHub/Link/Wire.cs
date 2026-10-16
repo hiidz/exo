@@ -1,4 +1,4 @@
-// The device connection's wire format, DECISIONS 5.7. Big-endian throughout,
+// The device connection's wire format. Big-endian throughout,
 // through BinaryPrimitives; never BinaryWriter, which is little-endian.
 
 namespace ExoHub.Link;
@@ -8,7 +8,7 @@ static class Wire
     public static ReadOnlySpan<byte> Magic => "EXO\0"u8;
     // 2 added CURSOR_SHAPE, CURSOR_POS and TOUCH. Both roles share it, so a
     // version 1 app is refused on either connection. 3 added HELLO's
-    // rotation byte after the serial, clockwise quarter turns (DECISIONS 6.4).
+    // rotation byte after the serial, clockwise quarter turns.
     // 4: the role is picked on the phone, which names itself with an
     // identity it made, and each side states the oldest version it speaks.
     // 5: the display role's HELLO carries its mode, rate and panel size.
@@ -65,14 +65,14 @@ static class Wire
     public const int HeaderSize = 8;
     public const int MaxBody = 4 << 20;
 
-    // The display connection's cursor, hub to device (DECISIONS 11.1).
+    // The display connection's cursor, hub to device.
     // CURSOR_SHAPE: width, height, hotX, hotY as u16, then width * height
     // pixels, rows tight, each in byte order B, G, R, A, straight alpha.
     // CURSOR_POS: flags bit 0 visible; x, y i32, the hotspot in picture
     // pixels; the mouse update time i64, hub microseconds.
     public const byte TypeCursorShape = 4, TypeCursorPos = 5;
     public const byte FlagVisible = 1;
-    // TOUCH, device to hub, on the display connection (FR-3.3).
+    // TOUCH, device to hub, on the display connection.
     public const byte TypeTouch = 6;
     // ACK, device to hub, on the display connection: seq u32, every FRAME
     // up to and including it is done, decoded and on its way to the screen
@@ -83,11 +83,11 @@ static class Wire
     // display is out of view; the hub sends no frames and no cursor, and
     // the connection, and so the monitor, stays. RESUME: it shows again
     // with the same mode; the hub starts again with a forced IDR. A changed
-    // mode connects again instead (PLAN.md, Decide, Phone and protocol).
+    // mode connects again instead.
     public const byte TypePause = 8, TypeResume = 9;
 
-    // Discovery over Wi-Fi, UDP on DiscoveryPort, the one fixed LAN port
-    // (PLAN.md, Wi-Fi as built in step 4). Its own version. QUERY, phone to
+    // Discovery over Wi-Fi, UDP on DiscoveryPort, the one fixed LAN port,
+    // with its own version. QUERY, phone to
     // hub, broadcast or sent to a typed IP: magic, version u16, kind u8.
     // ANSWER, hub to the query's sender: magic, version u16, kind u8, the
     // Wi-Fi listener's TCP port u16, the session ID u64, name length u8 and
@@ -99,7 +99,7 @@ static class Wire
     public const ushort DiscoveryVersion = 1;
     public const byte KindQuery = 1, KindAnswer = 2;
 
-    // L7, the hub to ExoCamera.dll link (DECISIONS 5.9). The same frozen
+    // L7, the hub to ExoCamera.dll link. The same frozen
     // prefix and framing, its own version. The port is a constant because
     // the DLL reads no config; exo_link.h holds the same two numbers.
     public const int CameraPort = 27184;

@@ -6,7 +6,7 @@ namespace ExoHub.Display;
 // held, so a list of these needs no disposing.
 //
 // GdiName (\\.\DISPLAY12) is only valid inside this enumeration: it changed
-// to DISPLAY18 across a driver restart in spike 2. MonitorId is the EDID
+// to DISPLAY18 across one driver restart. MonitorId is the EDID
 // manufacturer and product code (ACR0721), which is what we match on.
 // Width and Height are the desktop's, after Turns: Windows' Display
 // orientation, clockwise quarter turns; the monitor's own pixels are the
@@ -26,7 +26,7 @@ record OutputInfo(uint AdapterIndex, uint OutputIndex, string AdapterName,
     // A picture pixel to the desktop, as an offset from Left and Top, and
     // back. Turned 90 (Windows' Portrait), the picture's top row is the
     // desktop's right column, read top down: measured from the driver's
-    // pointer against GetCursorPos (s6-winrot2), the opposite of reading
+    // pointer against GetCursorPos, the opposite of reading
     // DISPLAYCONFIG_ROTATION_ROTATE90 as the desktop turned clockwise.
     public (int X, int Y) ToDesktop(int px, int py) => Turns switch
     {
@@ -48,7 +48,7 @@ record OutputInfo(uint AdapterIndex, uint OutputIndex, string AdapterName,
 static class Outputs
 {
     // Walk every adapter and every output on it. The adapter is never chosen
-    // directly: two adapters on this box report the identical description,
+    // directly: two adapters on the RX 6600 PC Exo was built on report the identical description,
     // and only one has outputs. The output is what we look for, and the
     // adapter is whichever one owned it.
     public static List<OutputInfo> List(IDXGIFactory1 factory)

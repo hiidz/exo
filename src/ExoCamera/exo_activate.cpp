@@ -49,7 +49,7 @@ STDMETHODIMP ExoActivate::QueryInterface(REFIID riid, void** ppv)
     } else if (riid == IID_IMFAttributes) {
         *ppv = static_cast<IMFAttributes*>(this);
     } else {
-        // Logged because a miss logged this way is how spike 1 found that
+        // Logged because a miss logged this way is how it was found that
         // IMFActivate was wanted at all.
         *ppv = nullptr;
         ExoLogQiMiss("ExoActivate", riid);

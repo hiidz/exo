@@ -36,8 +36,7 @@ final class CameraSettings {
     static final int[][] SIZES = {{1920, 1080}, {1280, 720}, {640, 360}};
     static final int[] RATES = {30, 60};
     // The turn: Auto follows the phone between its two landscape ways; Fixed
-    // holds the way it lay as the webcam started (CameraService.locked;
-    // PLAN.md, Decide, Phone and protocol).
+    // holds the way it lay as the webcam started (CameraService.locked).
     static final int TURN_AUTO = 0, TURN_FIXED = 1;
     static final String[] TURNS = {"auto", "fixed"};
 

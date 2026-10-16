@@ -1,4 +1,4 @@
-# PROJECT_SPEC SC-10, the two disturbances a script can start. Run during a
+# Recovery: the two disturbances a script can start. Run during a
 # hub run (sc11run.sh); the hub log has the loss and the recovery, this log
 # has when each disturbance began.
 #

@@ -1,7 +1,7 @@
 // What the class factory hands out. MFCreateVirtualCamera's "CLSID of the
 // custom media source to be activated" is literal: the pipeline creates the
-// CLSID and asks it for IMFActivate, and ActivateObject returns the source
-// (spike 1 FINDINGS, "The contract is IMFActivate, not IMFMediaSource").
+// CLSID and asks it for IMFActivate, and ActivateObject returns the source.
+// The docs read otherwise; a logged QueryInterface miss showed it.
 //
 // IMFActivate inherits IMFAttributes, so every attribute method is
 // forwarded to a real store from MFCreateAttributes.

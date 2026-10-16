@@ -6,7 +6,8 @@ using Vortice.DXGI;
 
 namespace ExoHub.Display;
 
-// BGRA to NV12 on the GPU, through ID3D11VideoProcessor (DECISIONS 4.1).
+// BGRA to NV12 on the GPU, through ID3D11VideoProcessor, so the frame
+// never leaves the GPU.
 //
 // The video processor is D3D11's colour conversion and scaling unit. Three
 // kinds of object drive it: the enumerator says what the hardware can do
@@ -54,9 +55,9 @@ sealed class Nv12Converter : IDisposable
     // The frame the last Convert wrote, for DumpLast.
     Nv12Frame last;
 
-    // A copy of the last new desktop image, for resends (DECISIONS 5.4).
-    // BGRA rather than NV12 so a pointer can later be drawn on a copy of a
-    // pointer-free image before the Blt (11.1). Only ever a copy source:
+    // A copy of the last new desktop image, for resends while the desktop
+    // is still. BGRA rather than NV12 so a pointer could be drawn on a copy
+    // of a pointer-free image before the Blt. Only ever a copy source:
     // a resend writes a fresh pool frame. Sized with the processor.
     ID3D11Texture2D kept;
     bool keptFilled;
@@ -126,7 +127,7 @@ sealed class Nv12Converter : IDisposable
         return frame;
     }
 
-    // The kept image converted into a fresh pool frame (DECISIONS 5.4).
+    // The kept image converted into a fresh pool frame, for a resend.
     // Null before any new image at this size, or when every pool frame is
     // in use. Called on the capture thread, like Convert, but outside any
     // frame hold: the kept texture is the hub's own.
@@ -149,8 +150,9 @@ sealed class Nv12Converter : IDisposable
     {
         frame.BltQpc = t0;
 
-        // One view per frame, released before the frame is. A cached view
-        // would keep a reference to a texture DWM has taken back.
+        // One view per frame, released before the frame is, so no view
+        // outlives a texture a loss replaces. One cached per driver texture
+        // would also work; not done.
         using var input = videoDevice.CreateVideoProcessorInputView(bgra, vpEnum,
             new VideoProcessorInputViewDescription { ViewDimension = VideoProcessorInputViewDimension.Texture2D });
 
@@ -206,7 +208,7 @@ sealed class Nv12Converter : IDisposable
         if (d.Width % 2 != 0 || d.Height % 2 != 0)
             throw new InvalidOperationException($"NV12 needs even dimensions, input is {d.Width}x{d.Height}");
 
-        // Spike 5 found zero frame rates are not what broke it, but the
+        // Zero frame rates were found not to break it, but the
         // enumerator has documented error paths for invalid ones.
         var content = new VideoProcessorContentDescription
         {
@@ -246,7 +248,7 @@ sealed class Nv12Converter : IDisposable
             MiscFlags = ResourceOptionFlags.None,
         });
 
-        // Colour spaces, DECISIONS 11.7. Both are set rather than left to
+        // Colour spaces. Both are set rather than left to
         // the driver, whose own getters misreport its defaults. In: the SDR
         // desktop, sRGB full range. Out: BT.709 limited ("studio") range,
         // which is what the stream is tagged and what a decoder assumes
@@ -270,7 +272,7 @@ sealed class Nv12Converter : IDisposable
         Rebuilds++;
     }
 
-    // The one CPU readback DECISIONS 4.1 allows: debugging only, off by
+    // The one CPU readback the display path has: debugging only, off by
     // default, never on the production path. Writes the last converted
     // frame as tightly packed NV12 (the Y rows, then the interleaved UV
     // rows, each Width bytes) and returns what it saw.

@@ -1,8 +1,8 @@
 // The mouse pointer on the EXO monitor. Windows never draws it into the
 // image (a hardware cursor); ExoDisplay forwards the shape and the position
-// separately (DriverCursor), and the phone draws it (DECISIONS 11.1,
-// option B). The shape arrives in DXGI's Desktop Duplication structs, which
-// DriverCursor fills from IddCx's.
+// separately (DriverCursor), and the phone draws it over the video, so it
+// moves at the phone's rate rather than the stream's. The shape arrives in
+// DXGI's Desktop Duplication structs, which DriverCursor fills from IddCx's.
 
 using Vortice.DXGI;
 

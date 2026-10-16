@@ -1,7 +1,7 @@
 // The COM in-process server: DllMain, the four exported entry points, and
 // the class factory. MFCreateVirtualCamera asks COM for CLSID_ExoCamera,
 // COM loads this DLL and calls DllGetClassObject, and the factory it gets
-// back creates the object (TECHNICAL_DESIGN 3.1).
+// back creates the object.
 #include <initguid.h>  // first, and only here: defines the GUID bytes once
 #include "exo_guid.h"
 #include "exo_activate.h"
@@ -19,7 +19,7 @@ static LONG g_locks = 0;  // IClassFactory::LockServer holds
 static HMODULE g_module = NULL;
 
 // Interfaces already logged as missing, so each is logged once. A small
-// fixed table: the spike and A4 saw about a dozen distinct IIDs. Past its
+// fixed table: about a dozen distinct IIDs were ever seen. Past its
 // end, misses are counted and not logged.
 struct QiMiss
 {
@@ -151,8 +151,8 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved)
         g_module = module;
         DisableThreadLibraryCalls(module);
     } else if (reason == DLL_PROCESS_DETACH && reserved == NULL) {
-        // FreeLibrary: an unload, whose timing in svchost is an open
-        // question (TECHNICAL_DESIGN 3.5), so it is logged.
+        // FreeLibrary: an unload, whose timing in svchost is not
+        // documented, so it is logged.
         //
         // reserved is non-NULL when the whole process is exiting. Every
         // other thread is already gone by then, possibly one that held the
@@ -206,7 +206,8 @@ static LONG SetString(const char* subkey, const char* name, const char* value)
 }
 
 // HKLM, never HKCU: the Frame Server runs as LOCAL SERVICE, whose HKCU is
-// not the user's (traps-camera). So this needs an elevated regsvr32.
+// not the user's, and a camera registered there is never found. So this
+// needs an elevated regsvr32.
 // ThreadingModel Both: COM may call the objects from any thread, and they
 // lock for themselves.
 STDAPI DllRegisterServer(void)

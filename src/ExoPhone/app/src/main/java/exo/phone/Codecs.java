@@ -13,7 +13,7 @@ import java.util.List;
 
 /**
  * Logs what MediaCodecList says about every AVC decoder on this device: the
- * per-device decoder check DECISIONS 11.2 and TECHNICAL_DESIGN 4.2 ask for.
+ * per-device decoder check, since decoders differ from phone to phone.
  * Measures only; nothing here changes how decoding is done.
  */
 final class Codecs {
@@ -47,7 +47,7 @@ final class Codecs {
 
     /**
      * The highest frame rate the decoder info claims for w x h, as
-     * SuperDisplay sets operating-rate (RESEARCH.md, How others do it); 0
+     * SuperDisplay sets operating-rate; 0
      * when it does not say or takes no such size.
      */
     static int maxRate(MediaCodecInfo info, int w, int h) {

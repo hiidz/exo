@@ -45,8 +45,8 @@ HRESULT ExoSource::Init()
 {
     // Reference counted by Media Foundation. Never paired with MFShutdown:
     // this DLL lives in processes it does not own, and dropping a global
-    // count during their teardown is the mistake traps-camera names for
-    // WSACleanup.
+    // count during their teardown is the same mistake as WSACleanup would
+    // be there.
     HRESULT hr = MFStartup(MF_VERSION, MFSTARTUP_LITE);
     if (FAILED(hr)) return hr;
     hr = MFCreateEventQueue(&m_events);
@@ -58,9 +58,9 @@ HRESULT ExoSource::Init()
     if (FAILED(hr)) return hr;
 
     // A device source must describe itself with these, or registration
-    // fails with MF_E_ATTRIBUTENOTFOUND, naming nothing (spike 1). The
-    // spike's MF_VIRTUALCAMERA_PROVIDE_ASSOCIATED_CAMERA_SOURCES is left
-    // out until a test shows it matters (TECHNICAL_DESIGN 9).
+    // fails with MF_E_ATTRIBUTENOTFOUND, naming nothing.
+    // MF_VIRTUALCAMERA_PROVIDE_ASSOCIATED_CAMERA_SOURCES is left out: no
+    // test has shown it matters.
     hr = MFCreateAttributes(&m_sourceAttrs, 2);
     if (FAILED(hr)) return hr;
     hr = m_sourceAttrs->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
@@ -75,7 +75,8 @@ HRESULT ExoSource::Init()
     hr = m_streamAttrs->SetGUID(MF_DEVICESTREAM_STREAM_CATEGORY, PINNAME_VIDEO_CAPTURE);
     if (FAILED(hr)) return hr;
     // Necessary for a second app at once, not sufficient: Multi-App Camera
-    // must also be on (DECISIONS 6.2). Do not remove it.
+    // must also be on, per camera in Windows' camera settings. Do not
+    // remove it.
     hr = m_streamAttrs->SetUINT32(MF_DEVICESTREAM_FRAMESERVER_SHARED, 1);
     if (FAILED(hr)) return hr;
     hr = m_streamAttrs->SetUINT32(MF_DEVICESTREAM_ATTRIBUTE_FRAMESOURCE_TYPES, MFFrameSourceTypes_Color);
@@ -213,7 +214,7 @@ STDMETHODIMP ExoSource::Start(IMFPresentationDescriptor* pd, const GUID* timeFor
         // The pipeline learns of the stream from this event, which carries
         // it. A stopped stream is new to the caller; an active one is
         // updated. Announcing a stopped stream as updated got it stopped
-        // again at once and never pulled (A4, 2026-10-11).
+        // again at once and never pulled.
         hr = m_events->QueueEventParamUnk(active ? MEUpdatedStream : MENewStream, GUID_NULL, S_OK,
                                           static_cast<IMFMediaStream*>(m_stream.Get()));
         if (SUCCEEDED(hr)) hr = m_stream->Start();
@@ -239,7 +240,7 @@ STDMETHODIMP ExoSource::Start(IMFPresentationDescriptor* pd, const GUID* timeFor
 
 STDMETHODIMP ExoSource::Stop()
 {
-    // The Frame Server has never called this (TECHNICAL_DESIGN 3.2 (b)).
+    // The Frame Server has never been seen calling this.
     // Logged so that the first time it does is visible.
     HRESULT hr = CheckShutdown();
     if (SUCCEEDED(hr)) hr = m_stream->Stop();
@@ -297,7 +298,7 @@ STDMETHODIMP ExoSource::GetStreamAttributes(DWORD streamId, IMFAttributes** attr
     }
     *attrs = nullptr;
     // There is one stream. Whether callers pass its identifier or its index
-    // is not documented; spike 1 ignored the argument and worked, so this
+    // is not documented; ignoring the argument has always worked, so this
     // does too, and logs what arrives.
     ExoLog("GetStreamAttributes streamId=%lu", streamId);
     HRESULT hr = CheckShutdown();
@@ -309,11 +310,10 @@ STDMETHODIMP ExoSource::GetStreamAttributes(DWORD streamId, IMFAttributes** attr
 
 STDMETHODIMP ExoSource::SetD3DManager(IUnknown* manager)
 {
-    // Accepted and not used: frames come from system memory, over a socket
-    // (TECHNICAL_DESIGN 2.5), and are copied into whatever samples the
-    // allocator provides. The prototype answered the same way
-    // (ExoCamSource/MediaStream.cpp:198-202). E_NOTIMPL, as before, is a
-    // suspect for the Windows Camera app never starting the stream.
+    // Accepted and not used: frames come from system memory, over a socket,
+    // and are copied into whatever samples the allocator provides.
+    // Returning E_NOTIMPL here is suspected of keeping the Windows Camera
+    // app from starting the stream.
     ExoLog("SetD3DManager %p", (void*)manager);
     return manager ? S_OK : E_POINTER;
 }

@@ -1,10 +1,7 @@
 // The CLSID Windows knows this media source by. Generated once on
-// 2026-10-11 and fixed: changing it orphans the registration. Not the
-// spike's {817E768C-...}, which is still registered and loads the spike
-// DLL (TECHNICAL_DESIGN 9).
+// 2026-10-11 and fixed: changing it orphans the registration.
 //
-// One CLSID, one camera. The CLSID pool for several cameras is open
-// (DECISIONS 6.4).
+// One CLSID, one camera.
 #pragma once
 
 #include <guiddef.h>

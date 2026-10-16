@@ -26,7 +26,7 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * Decodes access units to a Surface and measures every frame. They come
- * from an Annex-B file, or from the hub through Link (DECISIONS 5.7). All
+ * from an Annex-B file, or from the hub through Link. All
  * codec calls and callbacks run on one HandlerThread, so nothing here is
  * locked; the one thing shared with another thread is the live queue.
  */
@@ -103,7 +103,7 @@ final class Decoder {
 
     /**
      * From the link. The first unit offered must carry SPS and PPS with an
-     * IDR; Link discards everything before one (DECISIONS 5.3). smoothingMs
+     * IDR; Link discards everything before one. smoothingMs
      * holds each frame to an even pace, 0 for none (DisplaySettings).
      */
     static Decoder ofLink(File csv, int hintWidth, int hintHeight, int fps, boolean lowLatency, String codecName,
@@ -141,7 +141,7 @@ final class Decoder {
     /**
      * Called by Link's reader thread. Blocks while two units are already
      * waiting, so a slow decoder slows the socket instead of growing a
-     * queue (DECISIONS 5.7).
+     * queue.
      */
     void offer(Unit u) throws InterruptedException, IOException {
         // Waits in slices so a decoder that has died, which will never take
@@ -171,7 +171,7 @@ final class Decoder {
                 Log.e(Codecs.TAG, "cannot open " + file, e);
                 return;
             }
-            // DECISIONS 5.3: discard everything before codec config and an IDR.
+            // Discard everything before codec config and an IDR.
             while ((pending = fromFile()) != null && !(pending.au.idr && pending.au.params != null)) skipped++;
             if (pending == null) {
                 Log.e(Codecs.TAG, "no SPS/PPS with an IDR in " + file);
@@ -295,7 +295,6 @@ final class Decoder {
         }
     };
 
-    /** Queues as many access units as there are free buffers and due frames. */
     /**
      * When to show f, as SuperDisplay paces frames: the hub's present time
      * plus a base offset plus the buffer chosen on the phone. The base is
@@ -324,6 +323,7 @@ final class Decoder {
         return at;
     }
 
+    /** Queues as many access units as there are free buffers and due frames. */
     private void feed() {
         if (codec == null || finished) return;
         while (!inputDone && !freeInputs.isEmpty()) {

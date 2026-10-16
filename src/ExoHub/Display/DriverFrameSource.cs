@@ -18,8 +18,8 @@ enum FrameKind
 // The display source: ExoDisplay's own copy of each desktop image, through
 // the texture the driver shares (exo_display.h, ExoFrameInfo). Windows hands
 // every image of the monitor to the driver, the secure desktop's included,
-// so the UAC prompt and lock screen lose nothing: a mode change or a new render adapter
-// brings a new texture, and an unplug takes it away.
+// so the UAC prompt and lock screen lose nothing. A mode change or a new
+// render adapter brings a new texture, and an unplug takes it away.
 //
 // Owns the D3D11 device, made on the render adapter the driver names at the
 // first Reopen, and kept: the converter and encoder are built on it.
@@ -86,8 +86,8 @@ sealed class DriverFrameSource : IDisposable
         else if (!f.RenderAdapter.Equals(deviceAdapter))
         {
             // The converter and encoder live on the device, so a new render
-            // adapter needs them all rebuilt. Not built: render adapters do
-            // not change on this machine.
+            // adapter needs them all rebuilt. Not built: on the one-GPU PC
+            // Exo was built on, the render adapter never changed.
             throw new InvalidOperationException(
                 $"render adapter is now {Hex(f.RenderAdapter)}, device is on {Hex(deviceAdapter)}");
         }
@@ -208,7 +208,7 @@ sealed class DriverFrameSource : IDisposable
     }
 
     // DriverType must be Unknown when an explicit adapter is passed.
-    // VideoSupport is what the BGRA to NV12 stage needs (spike 5).
+    // VideoSupport is what the BGRA to NV12 stage needs.
     ID3D11Device CreateDevice(Luid luid)
     {
         using var factory = DXGI.CreateDXGIFactory1<IDXGIFactory4>();
@@ -225,7 +225,7 @@ sealed class DriverFrameSource : IDisposable
 
         // The encoder MFT calls into this device from its own threads.
         // Without this the symptom is intermittent corruption rather than an
-        // error (spike 5).
+        // error.
         using (var mt = created.QueryInterface<ID3D11Multithread>())
             mt.SetMultithreadProtected(true);
 

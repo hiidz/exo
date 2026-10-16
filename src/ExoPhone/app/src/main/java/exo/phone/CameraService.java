@@ -19,12 +19,12 @@ import java.io.File;
 import java.io.IOException;
 
 /**
- * The camera role as a foreground service of type camera (DECISIONS 10 item
- * 4, D2a), so capture goes on with the screen off. Android lets such a
- * service use the camera only if it was started while the app was visible,
- * which is why MainActivity starts it, from "Use as webcam".
+ * The camera role as a foreground service of type camera, so capture goes on
+ * with the screen off. Android lets such a service use the camera only if it
+ * was started while the app was visible, which is why MainActivity starts it,
+ * from "Use as webcam".
  *
- * A partial wake lock keeps the CPU running with the screen off (traps-phone).
+ * A partial wake lock keeps the CPU running with the screen off.
  * The service runs until MainActivity stops it or the app is force-stopped.
  * Its status, the link's sentence, is in the notification and on
  * MainActivity's screen.
@@ -164,8 +164,8 @@ public class CameraService extends Service {
     /**
      * HELLO's rotation for settings s. Away from the app, on the home screen
      * or with the screen off, the display reads portrait, a quarter turn the
-     * hub refuses, so with Auto the last landscape stands in (DECISIONS
-     * 6.4); before any landscape, 0, which turned() puts right.
+     * hub refuses, so with Auto the last landscape stands in; before any
+     * landscape, 0, which turned() puts right.
      */
     private int turns(CameraSettings s) throws IOException {
         int turns = CameraRole.rotation(this, s);

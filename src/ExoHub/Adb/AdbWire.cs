@@ -1,4 +1,4 @@
-// The adb host protocol on TCP 5037, client side (DECISIONS 5.8). Every
+// The adb host protocol on TCP 5037, client side. Every
 // request is a 4 digit hex length then ASCII; the reply is OKAY, or FAIL
 // then a hex-length reason (AOSP adb docs/dev/overview.md). One connection
 // per request, as adb's own client does.
@@ -110,7 +110,9 @@ static class AdbWire
 
     // reverse:forward, plain rather than norebind, so a stale mapping for
     // the same name is replaced. Returns the raw reply after the request,
-    // escaped, so DECISIONS 5.8's "two statuses" is checked on the wire.
+    // escaped, so its two statuses, one for the service opening and one
+    // for the forward itself (adb_client.cpp's adb_command), are checked on
+    // the wire.
     // Throws AdbFailException on a FAIL in either place.
     public static string Reverse(string serial, string device, string host)
     {

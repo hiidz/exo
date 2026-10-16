@@ -1,6 +1,6 @@
 // Answers each phone's discovery QUERY on the LAN with the Wi-Fi listener's
 // port, the session and this PC's name, as SuperDisplay's phone finds its
-// PC (PLAN.md, Pairing and discovery). The answer goes back to the query's
+// PC. The answer goes back to the query's
 // sender, unicast, so the phone needs no multicast lock. Layout in Wire.cs.
 
 using System.Buffers.Binary;

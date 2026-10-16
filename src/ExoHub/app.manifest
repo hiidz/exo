@@ -3,7 +3,7 @@
   Per-monitor DPI awareness, declared here rather than in code because the
   awareness context is latched by the first display call, and the manifest
   applies before Main runs. Without it, IDXGIOutput DesktopCoordinates comes
-  back self-inconsistent on a scaled display (spike 2 FINDINGS, DPI section).
+  back self-inconsistent on a scaled display.
   dpiAware is the fallback for Windows versions that ignore dpiAwareness.
 -->
 <assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">

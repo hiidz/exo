@@ -2,11 +2,11 @@
 // carry it to the pipeline.
 //
 // Set when the source is created: the Frame Server reads the formats once,
-// at registration, and never again (RESEARCH.md, Camera format). So the
+// at registration, and never again. So the
 // source asks the hub, which answers with the size and rate set on the
 // camera phone, and the hub registers the camera again when that changes.
 // With no hub to ask, the default. Frames arriving from the hub carry
-// their own geometry and are checked against it (DECISIONS 5.9).
+// their own geometry and are checked against it, never assumed.
 #pragma once
 
 #include <windows.h>
@@ -32,8 +32,7 @@ const ExoFormat EXO_DEFAULT_FORMAT = { 1280, 720, 30 };
 // The id the pipeline uses for our one stream. Must be 0, its index. With 1,
 // WinRT MediaCapture named the source Source#0 and built no frame source
 // from it, so no frame reader: the Windows Camera app and the Settings
-// preview stayed grey while browsers worked (spike 1 FINDINGS, Notes added
-// 2026-10-13; src/tools/CamProbe shows it).
+// preview stayed grey while browsers worked (src/tools/CamProbe shows it).
 const DWORD EXO_STREAM_ID = 0;
 
 // Each returns a new object with one reference, owned by the caller.

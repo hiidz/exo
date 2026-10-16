@@ -4,13 +4,13 @@
     <!-- The camera role. MainActivity asks for it the first time the user
          picks "Use as webcam". -->
     <uses-permission android:name="android.permission.CAMERA" />
-    <!-- Wi-Fi (PLAN.md, Wi-Fi as built in step 4): sockets to the LAN, the
+    <!-- Wi-Fi: sockets to the LAN, the
          Wi-Fi network to bind them to, and Android 17's local network
          permission, asked for when the user picks Wi-Fi. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
-    <!-- CameraService, so capture goes on with the screen off (D2a). The
+    <!-- CameraService, so capture goes on with the screen off. The
          camera type needs its own permission from Android 14. The
          notification permission is asked for with the camera's. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -25,12 +25,12 @@
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
 
     <!-- NoActionBar: the default theme draws an ActionBar over the content
-         (spike 4 FINDINGS, traps). -->
+         and hides its top. -->
     <application
         android:label="Exo"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
         <!-- fullUser: the settings screen turns with the device, unless
-             its rotation is locked (PLAN.md, Decide, Display). A portrait
+             its rotation is locked. A portrait
              reading reaches the webcam as its last landscape way
              (CameraService.turns). -->
         <activity

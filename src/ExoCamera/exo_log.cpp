@@ -7,7 +7,7 @@
 
 // The directory must already exist with a DACL that lets LOCAL SERVICE
 // write. Only an elevated process can set that on an existing directory,
-// so it is ExoSetup's job, not the DLL's (TECHNICAL_DESIGN 3.4).
+// so it is ExoSetup's job, not the DLL's.
 static const char* kDir = "C:\\Windows\\Temp\\Exo\\logs";
 static const LONGLONG kMaxBytes = 4LL * 1024 * 1024;
 

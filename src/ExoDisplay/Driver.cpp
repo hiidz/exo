@@ -36,7 +36,7 @@ using namespace std;
 using namespace Microsoft::IndirectDisp;
 using namespace Microsoft::WRL;
 
-// One display at a time (CLAUDE.md, out of scope), so connector 0 always.
+// One display at a time, by design, so connector 0 always.
 static const UINT MaxMonitors = 1;
 
 // opLock serialises plugging and unplugging: the IOCTL handler and the
@@ -389,7 +389,6 @@ HRESULT Direct3DDevice::Init()
 		return hr;
 	}
 
-	// Find the specified render adapter
 	hr = DxgiFactory->EnumAdapterByLuid(AdapterLuid, IID_PPV_ARGS(&Adapter));
 	if (FAILED(hr))
 	{
@@ -423,12 +422,10 @@ SwapChainProcessor::SwapChainProcessor(IDDCX_SWAPCHAIN hSwapChain, shared_ptr<Di
 
 SwapChainProcessor::~SwapChainProcessor()
 {
-	// Alert the swap-chain processing thread to terminate
 	SetEvent(m_hTerminateEvent.Get());
 
 	if (m_hThread.Get())
 	{
-		// Wait for the thread to terminate
 		WaitForSingleObject(m_hThread.Get(), INFINITE);
 	}
 
@@ -464,7 +461,6 @@ void SwapChainProcessor::Run()
 
 void SwapChainProcessor::RunCore()
 {
-	// Get the DXGI device interface
 	ComPtr<IDXGIDevice> DxgiDevice;
 	HRESULT hr = m_Device->Device.As(&DxgiDevice);
 	if (FAILED(hr))
@@ -482,12 +478,10 @@ void SwapChainProcessor::RunCore()
 		return;
 	}
 
-	// Acquire and release buffers in a loop
 	for (;;)
 	{
 		ComPtr<IDXGIResource> AcquiredBuffer;
 
-		// Ask for the next buffer from the producer
 		IDARG_OUT_RELEASEANDACQUIREBUFFER Buffer = {};
 		hr = IddCxSwapChainReleaseAndAcquireBuffer(m_hSwapChain, &Buffer);
 
@@ -514,7 +508,6 @@ void SwapChainProcessor::RunCore()
 			}
 			else if (WaitResult == WAIT_OBJECT_0 + 1)
 			{
-				// We need to terminate
 				break;
 			}
 			else
@@ -598,7 +591,7 @@ bool SwapChainProcessor::EnsureShared()
 	desc.Format = image.Format;
 	desc.SampleDesc.Count = 1;
 	desc.Usage = D3D11_USAGE_DEFAULT;
-	// The hub's video processor reads it, which needs both (traps-display).
+	// The hub's video processor reads it, which needs both.
 	desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
 	desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
 
@@ -770,10 +763,8 @@ void IndirectDeviceContext::InitAdapter()
 
 	if (NT_SUCCESS(Status))
 	{
-		// Store a reference to the WDF adapter handle
 		m_Adapter = AdapterInitOut.AdapterObject;
 
-		// Store the device context object into the WDF object context
 		auto* pContext = WdfObjectGet_IndirectDeviceContextWrapper(AdapterInitOut.AdapterObject);
 		pContext->pContext = this;
 	}
@@ -835,7 +826,6 @@ NTSTATUS IndirectDeviceContext::CreateMonitor(const ExoAddMonitor& params, Indir
 		monitorCtxList.push_back(pContext);
 	}
 
-	// Tell the OS that the monitor has been plugged in
 	IDARG_OUT_MONITORARRIVAL ArrivalOut;
 	Status = IddCxMonitorArrival(MonitorCreateOut.MonitorObject, &ArrivalOut);
 	if (!NT_SUCCESS(Status))
@@ -885,7 +875,6 @@ void IndirectMonitorContext::AssignSwapChain(const IDDCX_SWAPCHAIN& SwapChain, c
 		return;
 	}
 
-	// Create a new swap-chain processing thread
 	m_ProcessingThread.reset(new SwapChainProcessor(SwapChain, Device, NewFrameEvent));
 
 	// A hardware cursor, so Windows leaves the pointer out of the frames and
@@ -914,7 +903,6 @@ void IndirectMonitorContext::AssignSwapChain(const IDDCX_SWAPCHAIN& SwapChain, c
 void IndirectMonitorContext::UnassignSwapChain()
 {
 	StopCursor();
-	// Stop processing the last swap-chain
 	m_ProcessingThread.reset();
 }
 

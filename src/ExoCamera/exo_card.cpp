@@ -6,7 +6,7 @@
 
 using Microsoft::WRL::ComPtr;
 
-// Eight bars in studio range, Y 16 to 235, the values spike 1 verified by
+// Eight bars in studio range, Y 16 to 235, values verified by
 // eye and by reading frames back. Colour accuracy is not the point of a
 // test card.
 struct Bar { BYTE y, u, v; };

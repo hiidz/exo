@@ -10,8 +10,7 @@
 
 using Microsoft::WRL::ComPtr;
 
-// Samples in the pool taken from the Frame Server's allocator. The
-// prototype used 10 (ExoCamSource/MediaStream.cpp:150).
+// Samples in the pool taken from the Frame Server's allocator.
 static const DWORD kPoolSamples = 10;
 
 ExoStream::ExoStream() : ExoNoKsControl("ExoStream")
@@ -84,7 +83,8 @@ HRESULT ExoStream::Start()
     if (SUCCEEDED(hr)) {
         hr = m_events->QueueEventParamVar(MEStreamStarted, GUID_NULL, S_OK, nullptr);
     }
-    // Connect on the first Start, not at creation (TECHNICAL_DESIGN 3.2 (b)).
+    // Connect on the first Start, not at creation, which happens long
+    // before anyone watches.
     // Later Starts, from the source or from SetStreamState, find it started.
     if (SUCCEEDED(hr)) {
         m_link.Start(this, m_format);
@@ -227,7 +227,7 @@ STDMETHODIMP ExoStream::GetStreamDescriptor(IMFStreamDescriptor** sd)
 
 // Records the request and returns: the frame clock answers it. Answering at
 // once let the Frame Server pull 18,000 times a second, and its own sample
-// pool did not slow it (DECISIONS 5.1). Never blocks.
+// pool did not slow it. Never blocks.
 STDMETHODIMP ExoStream::RequestSample(IUnknown* token)
 {
     AcquireSRWLockExclusive(&m_lock);
@@ -313,7 +313,7 @@ void ExoStream::Tick()
     }
     if (SUCCEEDED(hr)) hr = CopyPicture(m_format, picture.Get(), sample.Get());
     // Stamped now, from the clock the pipeline compares against. Never from
-    // zero, which gets every frame discarded (spike 1's root cause), and not
+    // zero, which gets every frame discarded, and not
     // from a fixed step either, which drifted 6.5 minutes ahead.
     if (SUCCEEDED(hr)) hr = sample->SetSampleTime(MFGetSystemTime());
     if (SUCCEEDED(hr)) hr = sample->SetSampleDuration(m_format.FrameDuration());
@@ -336,9 +336,8 @@ void ExoStream::Tick()
 // Copies src, NV12 in the advertised geometry with rows f.width bytes
 // apart, into dst's buffer. dst's row pitch comes from the buffer itself:
 // the Frame Server's samples may be GPU surfaces whose rows are padded, and
-// a pitch assumed from a constant would write out of bounds inside svchost
-// (traps-camera). The UV plane follows pitch * height bytes after the first
-// row, as the prototype placed it (ExoCamSource/MediaStream.cpp:412).
+// a pitch assumed from a constant would write out of bounds inside
+// svchost. The UV plane follows pitch * height bytes after the first row.
 HRESULT ExoStream::CopyPicture(const ExoFormat& f, IMFMediaBuffer* src, IMFSample* dst)
 {
     ComPtr<IMFMediaBuffer> buffer;
@@ -471,7 +470,7 @@ ExoStream::Counts ExoStream::Count(Kind kind, LONGLONG serveTicks, HRESULT hr, L
 }
 
 // Logs outside the lock. The first success gets its own line: "no
-// requests" and "requests served unseen" must not look the same (spike 1).
+// requests" and "requests served unseen" must not look the same.
 void ExoStream::Report(const Counts& c)
 {
     if (c.firstServed) {
@@ -492,7 +491,6 @@ void ExoStream::Report(const Counts& c)
 // The Frame Server sets the state directly, without going through the
 // source. Running and stopped behave as the source's Start and Stop do for
 // this stream, events included; paused only from running, with no event.
-// The prototype did the same (ExoCamSource/MediaStream.cpp:574-600).
 
 STDMETHODIMP ExoStream::SetStreamState(MF_STREAM_STATE value)
 {

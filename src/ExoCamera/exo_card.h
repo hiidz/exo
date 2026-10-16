@@ -1,6 +1,7 @@
-// The test card: what apps see whenever the DLL has no frame from the hub
-// (DECISIONS 5.2). Colour bars, so it is never mistaken for black, which is
-// indistinguishable from a bug anywhere else in the chain.
+// The test card: what apps see whenever the DLL has no frame from the hub,
+// so a camera that opens always shows something. Colour bars, so it is
+// never mistaken for black, which is indistinguishable from a bug anywhere
+// else in the chain.
 #pragma once
 
 #include "exo_format.h"

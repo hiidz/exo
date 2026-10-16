@@ -1,17 +1,14 @@
 // Registers ExoCamera.dll's media source as a virtual camera and holds it
-// for the hub's lifetime (DECISIONS 10 item 4). The DLL must already be
-// registered in HKLM.
+// for the hub's lifetime. The DLL must already be registered in HKLM.
 //
-// Session lifetime and current-user access, as spike 1: the camera exists
-// only while the hub holds it, and no administrator is needed. Both are
-// carried forward, not decided (DECISIONS 5.2, 6.2). With session lifetime
+// Session lifetime and current-user access: the camera exists only while
+// the hub holds it, and no administrator is needed. With session lifetime
 // Multi-App Camera resets to Off on every hub start.
 //
 // Windows reports whether anyone is streaming through a callback passed to
 // IMFVirtualCamera.Start: SOURCE_START when the first consumer starts,
-// SOURCE_STOP when the last one stops (spike 1 FINDINGS, "The Start
-// callback works"). They switch L7's frames on and off; while off, the DLL
-// gets IDLE and shows its test card (DECISIONS 5.9).
+// SOURCE_STOP when the last one stops. They switch L7's frames on and off;
+// while off, the DLL gets IDLE and shows its test card.
 //
 // The callback is a COM object implemented in C#. SharpGen's CallbackBase
 // supplies QueryInterface, AddRef and Release and builds the native vtable
@@ -82,7 +79,7 @@ sealed class VirtualCamera : IDisposable
 
     // After MFStartup, at link's format. Returns null after logging why, so
     // the hub runs on without a camera: nothing else depends on it, and link
-    // keeps sending frames to any client, as before.
+    // keeps sending frames to any client.
     public static VirtualCamera Register(Stopwatch clock, CameraLink link)
     {
         var v = new VirtualCamera(clock, link);
@@ -94,8 +91,8 @@ sealed class VirtualCamera : IDisposable
 
     // The camera phone's format. Windows reads a camera's formats only when
     // it is registered, so a new one is registered again: an app streaming
-    // from the camera loses it, and the next to open it gets the new one
-    // (RESEARCH.md, Camera format). The DLL's new source asks link for it.
+    // from the camera loses it, and the next to open it gets the new one,
+    // which the DLL's new source asks link for.
     public void Use(CameraFormat format)
     {
         lock (gate)
@@ -142,7 +139,7 @@ sealed class VirtualCamera : IDisposable
     void Log(string line) => Console.WriteLine($"{clock.Elapsed.TotalSeconds,8:F3}s vcam {line}");
 
     // Nothing may escape into Windows, so everything is caught here. The
-    // event is on GetObject (spike 1); the result itself is not one, and its
+    // event is on GetObject; the result itself is not one, and its
     // state is empty. The result is Windows' and is not released here; the
     // object and the event are ours.
     void OnEvent(IMFAsyncResult result)

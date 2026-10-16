@@ -43,7 +43,7 @@ final class Discovery {
     }
 
     // Android 17's runtime permission for LAN sockets; earlier versions
-    // do not define it, and need nothing (RESEARCH.md, Transport, 5).
+    // do not define it, and need nothing.
     static final String LOCAL_NETWORK = "android.permission.ACCESS_LOCAL_NETWORK";
 
     /** The permission exists here and is not granted. */

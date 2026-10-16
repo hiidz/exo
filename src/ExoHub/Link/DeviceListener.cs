@@ -1,8 +1,8 @@
 // The loopback ports each USB device's localabstract:exo reaches through
-// adb reverse, one a serial, so a connection's port names its device
-// (PLAN.md, Transport and Wi-Fi), and the Wi-Fi port. Accepts, runs the
-// handshake in DECISIONS 5.7, and holds the display connection and the
-// camera connection, whose frames go to the camera decoder.
+// adb reverse, one a serial, so a connection's port names its device, and
+// the Wi-Fi port. Accepts, runs the handshake (Wire.cs), and holds the
+// display connection and the camera connection, whose frames go to the
+// camera decoder.
 //
 // One thread accepts and one thread serves each connection. There are only
 // ever a few connections, and a blocking thread each reads top to bottom.
@@ -25,14 +25,14 @@ sealed class DeviceListener : IDisposable
 {
     const int HelloTimeoutMs = 2000;
     // About one and a half frames at 40 Mbps. Set, because Windows otherwise
-    // autotunes it and a fast-completing write would hide a backlog (5.7).
+    // autotunes it and a fast-completing write would hide a backlog.
     const int SendBufferBytes = 256 * 1024;
 
     readonly Dictionary<string, TcpListener> usb = new();  // loopback, a serial's, for adb reverse; under itself
-    readonly TcpListener wifi;      // every interface, for Wi-Fi (PLAN.md, Transport and Wi-Fi)
+    readonly TcpListener wifi;      // every interface, for Wi-Fi
     readonly Stopwatch clock;
     readonly DisplaySender sender;
-    readonly TouchInjector touch;   // TOUCH from the display connection (FR-3.3)
+    readonly TouchInjector touch;   // TOUCH from the display connection
     readonly CameraDecoder camera;  // null: the camera role is refused
     readonly VirtualCamera vcam;    // registered again for the camera phone's format
     readonly VirtualDisplay monitor;  // plugged for the display connection
@@ -41,7 +41,7 @@ sealed class DeviceListener : IDisposable
     Connection cameraConn;  // under gate
 
     // Random per hub start, sent in every WELCOME. A phone that logs a new
-    // value is talking to a new hub instance (DECISIONS 5.7).
+    // value is talking to a new hub instance.
     public ulong SessionId { get; } = BinaryPrimitives.ReadUInt64BigEndian(RandomNumberGenerator.GetBytes(8));
     public int WifiPort => ((IPEndPoint)wifi.LocalEndpoint).Port;
     // Asks the PC's user whether a phone may connect over Wi-Fi; blocks until
@@ -103,7 +103,8 @@ sealed class DeviceListener : IDisposable
 
     // A port for this USB device alone, for its reverse; the same one while
     // it stays. Loopback only, so nothing on the LAN can connect. Port 0 and
-    // exclusive, so with WELCOME's session ID it names this hub (5.7, 5.8).
+    // exclusive, so with WELCOME's session ID it names this hub, never an
+    // orphan from a crash still listening.
     public int Listen(string serial)
     {
         TcpListener l;
@@ -306,7 +307,7 @@ sealed class DeviceListener : IDisposable
         if (role == Wire.RoleDisplay && monitor.Unavailable is string why)
             return Refuse(net, name, Wire.DisplayUnavailable, $"ExoDisplay {why}");
         // Landscape only: a quarter turn would make the picture 720x1280,
-        // which ExoCamera.dll refuses (TECHNICAL_DESIGN 3.3).
+        // which ExoCamera.dll refuses.
         if (rotation != 0 && rotation != 2)
             return Refuse(net, name, Wire.BadHello, $"rotation {rotation * 90} degrees, only 0 and 180 are supported");
         DisplayMode mode = default;
@@ -432,7 +433,7 @@ sealed class DeviceListener : IDisposable
                 return null;
             }
             // The same phone: the app restarted before this end saw the old
-            // connection go. The new one wins (DECISIONS 5.7).
+            // connection go. The new one wins.
             replaced = held;
             if (role == Wire.RoleCamera)
                 cameraConn = conn;
@@ -601,7 +602,7 @@ sealed class DeviceListener : IDisposable
     // The camera role's connection: each FRAME into the decoder, on this
     // thread, and each PING answered with a PONG, written here since this is
     // the only thread writing this socket. Nothing from the phone is dropped
-    // here (5.7): a decoder that falls behind slows this read, and TCP
+    // here: a decoder that falls behind slows this read, and TCP
     // carries that back to the phone's queue.
     void ReadCamera(Stream net, Connection conn)
     {

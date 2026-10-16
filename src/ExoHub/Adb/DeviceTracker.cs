@@ -1,5 +1,5 @@
 // Holds host:track-devices on the hub's own adb server and turns each list
-// into per-serial transitions (DECISIONS 5.8, PROJECT_SPEC FR-4.2). Never
+// into per-serial transitions. Never
 // polls `adb devices`, never kill-server.
 //
 // The server sends the whole list on every change, and once at connect
@@ -107,8 +107,8 @@ sealed class DeviceTracker
                 Log("server closed the tracking socket");
                 return;
             }
-            // Raw, escaped, so the format in DECISIONS 5.8 is checked
-            // against what this server actually sends.
+            // Raw, escaped, so the documented format is checked against
+            // what this server actually sends.
             Log($"list \"{list.Replace("\t", "\\t").Replace("\n", "\\n")}\"");
             var next = new Dictionary<string, string>();
             foreach (string line in list.Split('\n', StringSplitOptions.RemoveEmptyEntries))

@@ -67,10 +67,10 @@ public class DisplayActivity extends Activity {
     // The mode this start sent, or sends once the window has turned.
     private DisplaySettings settings;
 
-    // The hub's pointer, drawn over the video (DECISIONS 11.1) on a surface
+    // The hub's pointer, drawn over the video on a surface
     // of its own, as SuperDisplay does: a View over the SurfaceView shows
-    // only inside the spot its last layout saw, so a fast pointer vanished
-    // (PLAN.md, v3 step 2). The link thread writes the latest state under
+    // only inside the spot its last layout saw, so a fast pointer vanished.
+    // The link thread writes the latest state under
     // cursorLock and posts one draw to the cursor thread; cursorPosted keeps
     // it to one waiting at a time, so a burst of positions comes to one
     // draw, with the newest. Drawing waits for a free buffer, which must
@@ -141,7 +141,7 @@ public class DisplayActivity extends Activity {
             public void surfaceDestroyed(SurfaceHolder holder) {
             }
         });
-        // Touch on the video goes up the display connection (FR-3.3).
+        // Touch on the video goes up the display connection.
         view.setOnTouchListener(this::onTouch);
 
         if (Build.VERSION.SDK_INT >= 30) {
@@ -165,7 +165,7 @@ public class DisplayActivity extends Activity {
         if (name == null) pinPanel(settings.fps);
         // Landscape, flipping with the device by the sensor whether or not
         // its rotation is locked, as SuperDisplay's default; portrait is
-        // Windows' Display orientation (PLAN.md, Decide, Display).
+        // Windows' Display orientation.
         // configChanges keeps the activity, and the link, through any turn.
         // Where Android ignores this (Android 17 on a large screen), the
         // window turns as the device does and the picture is fitted to it.
@@ -215,7 +215,7 @@ public class DisplayActivity extends Activity {
                 if (link != null) {
                     // Back in view. The same mode, held the same way,
                     // resumes the connection; otherwise it connects again,
-                    // as a new start does (PLAN.md, Decide, Phone and protocol).
+                    // as a new start does.
                     if (!link.paused()) return;
                     DisplayService.stop(DisplayActivity.this);
                     DisplaySettings now = DisplaySettings.load(DisplayActivity.this);
@@ -315,7 +315,7 @@ public class DisplayActivity extends Activity {
             @Override
             public void surfaceDestroyed(SurfaceHolder holder) {
                 // Out of view: the connection pauses and stays, or, before
-                // one was accepted or with an older hub, ends as before.
+                // one was accepted or with an older hub, ends.
                 if (link != null && !link.pause()) {
                     link.stop();
                     link = null;
@@ -365,7 +365,7 @@ public class DisplayActivity extends Activity {
     private static final int DOWN = 1, MOVE = 2, UP = 3, CANCEL = 4;
 
     // One gesture, first finger down to last finger up, for its log line.
-    // The gaps between events are the panel's touch report rate (R11).
+    // The gaps between events are the panel's touch report rate.
     private long gestureStartNs, lastTouchNs;
     private final ArrayList<Long> touchGapsNs = new ArrayList<>();
     private int gestureEvents, gestureMaxPointers, gestureUnsent;
@@ -443,8 +443,7 @@ public class DisplayActivity extends Activity {
      * Any thread. Queues one draw at the next vsync unless one is already
      * waiting. Once a vsync, not once a position: drawn as fast as buffers
      * freed, the surface's queue filled and each cursor reached the panel
-     * about six vsyncs, 101.6ms median, after it was drawn
-     * (t-curlat-surface).
+     * about six vsyncs, 101.6ms median, after it was drawn.
      */
     private void postCursor() {
         synchronized (cursorLock) {
@@ -545,7 +544,7 @@ public class DisplayActivity extends Activity {
     /**
      * Back goes to the app's screen and keeps the connection, paused, once
      * the hub has accepted it at protocol 9 or later; there "Stop display"
-     * ends it. Before that, back ends the display as before.
+     * ends it. Before that, back ends the display.
      */
     private void back() {
         if (link != null && link.canPause()) {

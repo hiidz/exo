@@ -1,4 +1,5 @@
-// Starts and owns the pinned adb server (DECISIONS 5.8, PROJECT_SPEC FR-5).
+// Starts and owns the pinned adb server: the adb shipped beside the hub,
+// never one found on PATH.
 //
 // The server runs as `adb.exe -L tcp:localhost:5037 server nodaemon`, a
 // direct child, rather than through adb's own fork-server launch, which
@@ -19,7 +20,7 @@ sealed class AdbServer
     readonly Stopwatch clock;
     public Process Child { get; private set; }
 
-    // The last line the server wrote, where its real error is (CLAUDE.md).
+    // The last line the server wrote, where its real error is.
     public string LastLine { get; private set; } = "";
 
     public AdbServer(Stopwatch clock) => this.clock = clock;
@@ -27,7 +28,7 @@ sealed class AdbServer
     void Log(string line) => Console.WriteLine($"{clock.Elapsed.TotalSeconds,8:F3}s adb {line}");
 
     // Something already answering on 5037 is foreign whatever version it
-    // reports: the hub has not started its own yet (DECISIONS 5.8). Returns
+    // reports: the hub has not started its own yet. Returns
     // the reason to refuse, or null when 5037 is free.
     public string CheckForeign()
     {
@@ -36,8 +37,8 @@ sealed class AdbServer
         Log($"probe of {AdbWire.ServerPort} took {Stopwatch.GetElapsedTime(t0).TotalMilliseconds:F1}ms: " +
             (foreign == null ? "free" : $"answered protocol {foreign}"));
         return foreign == null ? null
-            : $"FOREIGN adb server on {AdbWire.ServerPort}, protocol {foreign}; Exo does not share adb " +
-              "(PROJECT_SPEC 1). Stop it, then turn adb connections off and on in the window.";
+            : $"FOREIGN adb server on {AdbWire.ServerPort}, protocol {foreign}; Exo does not share adb. " +
+              "Stop it, then turn adb connections off and on in the window.";
     }
 
     // Spawns the server and returns once it answers host:version. Returns
@@ -62,8 +63,8 @@ sealed class AdbServer
         Child.BeginOutputReadLine();
         Log($"started {exe} pid {Child.Id}, in hub job: {Job.Contains(Child)}");
 
-        // nodaemon gives no ready signal, so this polls host:version, the one
-        // poll DECISIONS 5.8 allows. The wait is on the child's process
+        // nodaemon gives no ready signal, so this polls host:version, the
+        // hub's one poll, bounded. The wait is on the child's process
         // handle, so a server that exits ends it at once.
         int attempts = 0;
         while (true)

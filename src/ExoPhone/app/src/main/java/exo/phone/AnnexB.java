@@ -65,7 +65,7 @@ final class AnnexB {
     /**
      * SPS and PPS ahead of the first slice, start codes included, or null.
      * For a buffer already known to be one access unit, as each link
-     * message is (DECISIONS 5.7): reads NAL headers only up to the first
+     * message is: reads NAL headers only up to the first
      * slice, never the slice data, which is nearly all of the bytes.
      */
     ByteBuffer leadingParams() {

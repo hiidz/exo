@@ -3,8 +3,8 @@ using Vortice.Direct3D11.Debug;
 
 namespace ExoHub.Display;
 
-// Reads what the D3D11 debug layer has to say. Spike 5: the layer turned a
-// wrong guess about bind flags into a one-line answer.
+// Reads what the D3D11 debug layer has to say. It once turned a wrong
+// guess about bind flags into a one-line answer.
 //
 // The layer does not print to the console. It stores messages in an
 // ID3D11InfoQueue on the device, which exists only when the device was

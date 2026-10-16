@@ -1,11 +1,12 @@
-# Builds a release into dist\ (PLAN.md, Release): the PC installer,
+# Builds a release into dist\: the PC installer,
 # Exo-<version>-setup.exe, and the phone app, Exo-<version>.apk. The
 # version is the phone app's versionName in src/ExoPhone/app/build.gradle.
 #
 #   release.ps1           both
 #   release.ps1 -PcOnly   the installer only, no keystore needed
 #
-# Needs, made once by the author (PLAN.md, Release, Keys):
+# Needs, made once by the author and kept outside the repo, so no password
+# passes through it:
 #   - the release certificate, CN=Exo Release, in CurrentUser\My; it signs
 #     the display driver, and the installer trusts it on the user's PC
 #   - the APK keystore, C:\Users\you\keys\exo-release.jks, alias exo,

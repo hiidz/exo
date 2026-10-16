@@ -1,6 +1,6 @@
 // exodevice: the Exo display adapter's root device, for the installer.
 // pnputil cannot create a root device and the WDK's devcon may not be
-// shipped (PLAN.md, Release), so this does the two calls devcon would.
+// redistributed, so this does the two calls devcon would.
 // Elevated.
 //
 //   exodevice install <ExoDisplay.inf>   create Root\ExoDisplay, or update its driver

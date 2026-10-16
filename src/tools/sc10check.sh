@@ -1,5 +1,5 @@
 #!/bin/sh
-# PROJECT_SPEC SC-10 from one hub.log: each disturbance and how long its
+# Recovery from one hub.log: each disturbance and how long its
 # service took to come back. runcheck.sh does not fit a run like this: it
 # counts every LOST and DEPARTED as a fault.
 # Usage: sc10check.sh <run dir>

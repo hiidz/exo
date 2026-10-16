@@ -13,8 +13,7 @@ extern LONG g_objects;
 // For QueryInterface misses. Logs the first miss for each object and
 // interface, and counts the rest: the Frame Server probes the source about
 // 370 times a second while streaming, and a line each rolled the log over
-// within minutes (A4, 2026-10-11). object is a string literal naming the
-// class.
+// within minutes. object is a string literal naming the class.
 void ExoLogQiMiss(const char* object, REFIID riid);
 
 // For refused IKsControl requests, the same way: the first of each object,

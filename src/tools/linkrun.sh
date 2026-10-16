@@ -1,5 +1,5 @@
 #!/bin/sh
-# One live run over the link (DECISIONS 5.7, 5.8). Moving content on the EXO monitor,
+# One live run over the link. Moving content on the EXO monitor,
 # the hub for N seconds, and the app on SERIAL started with the display role,
 # SurfaceFlinger timestats around it,
 # then the phone's CSVs pulled and LinkTimes run on them. Pull the cable
@@ -8,7 +8,8 @@
 # Usage: linkrun.sh <seconds> <tag> <serial> [moving|static|browser|fast] [relaunches] [fps] [smoothing]
 # browser shows content60.html in Edge on the EXO monitor, one image a vsync.
 # fast paints only the moving strip, several images a vsync.
-# static paints the text once and nothing moves (DECISIONS 5.4). relaunches
+# static paints the text once and nothing moves, so only the hub's
+# heartbeat resends reach the phone. relaunches
 # restarts the app that many times, evenly spaced, each a new connection.
 # fps is 30 or 60, 30 by default; the display is landscape at full size.
 # smoothing is the phone's smoothing buffer in ms, 0 (off, the default
@@ -20,7 +21,7 @@
 #
 # Every adb command here runs while a hub owns 5037. Run with no hub, adb
 # would start a server of its own, and the hub refuses a server it did not
-# start (DECISIONS 5.8). So the collection afterwards goes through a second,
+# start. So the collection afterwards goes through a second,
 # short hub run that sets no reverse, so the app cannot reconnect, and whose
 # server dies with it.
 export MSYS_NO_PATHCONV=1
@@ -43,7 +44,7 @@ hub() {
     HUBPID=$!
     until grep -q "holding host:track-devices" $LOG 2>/dev/null; do
         kill -0 $HUBPID 2>/dev/null || { echo "hub exited:"; grep REFUSED $LOG; exit 1; }
-        # A foreign adb on 5037 no longer ends the hub; it runs on without.
+        # A foreign adb on 5037 does not end the hub; it runs on without adb.
         grep -q "adb REFUSED" $LOG && { echo "hub refused adb:"; grep REFUSED $LOG; kill $HUBPID; exit 1; }
         sleep 0.2
     done

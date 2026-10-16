@@ -1,5 +1,5 @@
 #!/bin/sh
-# PROJECT_SPEC SC-11, an hour of both. The S21 as camera feeding Chrome, the
+# An hour of both roles. The S21 as camera feeding Chrome, the
 # TB375FC as display with moving content on the EXO monitor, one hub for N seconds.
 # Shaped like linkrun.sh: hub, live logcat from a device time, timestats,
 # then a second hub that sets no reverse to collect. Adds the Chrome page
@@ -7,11 +7,10 @@
 # Usage: sc11run.sh <seconds> <tag> [display fps, 30]
 # DISPVIA and CAMVIA in the environment, usb (the default) or wifi, pick
 # each phone's transport; the phone keeps it for later starts.
-# DISPVIA and CAMVIA in the environment, usb (the default) or wifi, pick
-# each phone's transport; the phone keeps it for later starts.
 #
 # Every adb call uses the hub's own adb.exe and runs only while a hub owns
-# 5037 (DECISIONS 5.8). The sampler stops 60s before --seconds runs out, so
+# 5037, since any adb run with no server answering starts one the hub then
+# refuses. The sampler stops 60s before --seconds runs out, so
 # it cannot race the hub's exit and leave a server the next hub refuses.
 export MSYS_NO_PATHCONV=1
 sh C:/Dev/Exo/src/tools/preflight.sh || exit 1
@@ -32,7 +31,7 @@ hub() {
     HUBPID=$!
     until grep -q "holding host:track-devices" $LOG 2>/dev/null; do
         kill -0 $HUBPID 2>/dev/null || { say "hub exited:"; grep REFUSED $LOG; exit 1; }
-        # A foreign adb on 5037 no longer ends the hub; it runs on without.
+        # A foreign adb on 5037 does not end the hub; it runs on without adb.
         grep -q "adb REFUSED" $LOG && { say "hub refused adb:"; grep REFUSED $LOG; kill $HUBPID; exit 1; }
         sleep 0.2
     done

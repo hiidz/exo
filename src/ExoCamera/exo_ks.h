@@ -1,7 +1,7 @@
 // IKsControl for a source with no kernel driver behind it. The Frame Server
 // never calls Start, and never asks the stream for a sample, until both the
-// source and the stream answer QueryInterface for IKsControl (spike 1
-// FINDINGS, "IKsControl and IMFGetService are what unblock Start"). It does
+// source and the stream answer QueryInterface for IKsControl, and
+// IMFGetService with it: without them it probed for both and gave up. It does
 // not need any property to work, so every request is refused with the
 // conventional "no such property" answer.
 //
@@ -16,7 +16,7 @@
 #include <ksproxy.h>
 
 // Declared in the SDK but defined by no import library we link, so spelled
-// out here (spike 1).
+// out here.
 static const GUID EXO_IID_IKsControl =
     { 0x28F54685, 0x06FD, 0x11D2, { 0xB2, 0x7A, 0x00, 0xA0, 0xC9, 0x22, 0x31, 0x96 } };
 

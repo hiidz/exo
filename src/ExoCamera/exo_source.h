@@ -1,6 +1,6 @@
 // The media source: what ExoActivate::ActivateObject returns and the Frame
-// Server drives. One per camera registration, not one per consumer
-// (DECISIONS 7.5), so one source serves every app.
+// Server drives. One per camera registration, not one per consumer: the
+// Frame Server shares it, so one source serves every app.
 #pragma once
 
 #include "exo_ks.h"
@@ -45,8 +45,7 @@ public:
     STDMETHODIMP GetService(REFGUID service, REFIID riid, LPVOID* ppv) override;
 
     // IMFSampleAllocatorControl: the Frame Server hands the stream its
-    // allocator, whose pool paces the requests (DECISIONS 5.1). The
-    // prototype did the same (ExoCamSource/MediaSource.cpp:320-347).
+    // allocator, whose samples the stream fills.
     STDMETHODIMP SetDefaultAllocator(DWORD outputStreamId, IUnknown* allocator) override;
     STDMETHODIMP GetAllocatorUsage(DWORD outputStreamId, DWORD* inputStreamId, MFSampleAllocatorUsage* usage) override;
 

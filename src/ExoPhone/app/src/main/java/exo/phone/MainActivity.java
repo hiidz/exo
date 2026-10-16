@@ -31,7 +31,7 @@ import java.util.List;
 /**
  * Exo's screen on the phone: one page in three sections, Connection,
  * Display and Webcam, each a heading with its state, then its settings as
- * labelled rows whose value opens a choice list (PLAN.md, Decide, PC app).
+ * labelled rows whose value opens a choice list.
  * "Use as display" opens DisplayActivity, full screen, until the user
  * leaves it. "Use as webcam" starts CameraService, which goes on with the
  * screen off until the same button stops it, and asks for the camera
@@ -402,7 +402,7 @@ public class MainActivity extends Activity {
     /**
      * A display setting picked: the settings follow it and are kept, and the
      * size is worked out again for the rate, the largest the
-     * decoder takes (PLAN.md, Decide, Display).
+     * decoder takes.
      */
     private void displayPicked(int fps) {
         if (fps == settings.fps) return;

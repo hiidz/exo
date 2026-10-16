@@ -2,12 +2,11 @@ using static ExoHub.Win32;
 
 namespace ExoHub.Display;
 
-// Where the EXO monitor sits on the desktop (PLAN.md, display driver
-// decision): extended, never primary, never a clone. Windows extends onto a
-// new monitor by itself and remembers where the user put it, so this acts
+// Where the EXO monitor sits on the desktop: extended, never primary, never
+// a clone. Windows extends onto a new monitor by itself and remembers where the user put it, so this acts
 // only when the monitor is inactive, overlaps another display, or is
 // primary. Unelevated SetDisplayConfig with a supplied config works
-// (measured 2026-10-14 on VDD).
+// (measured 2026-10-14 on VDD, another indirect display driver).
 //
 // The monitor is named by what IOCTL_EXO_ADD_MONITOR returned: the driver's
 // adapter LUID and the target ID, never by a GDI name.
@@ -21,6 +20,7 @@ static class Topology
         Bad,       // active, but primary or overlapping another display
     }
 
+    // Where the monitor stands now; what describes it for the log.
     public static State Check(uint luidLow, int luidHigh, uint target, out string what)
     {
         Query(QDC_ONLY_ACTIVE_PATHS, out var paths, out var modes);
@@ -59,8 +59,8 @@ static class Topology
     // is active. Where touch lands, so it is read again whenever it may
     // have moved.
     // turns: Windows' Display orientation, clockwise quarter turns, 0 to 3.
-    // The source mode keeps the unturned size (2026-10-16, s6-winrot: after
-    // Portrait the hub still read 2944x1840), so a quarter turn swaps it here.
+    // The source mode keeps the unturned size (2026-10-16: after Portrait
+    // the hub still read 2944x1840), so a quarter turn swaps it here.
     public static bool Placement(uint luidLow, int luidHigh, uint target,
                                  out (int x, int y, int w, int h) rect, out (uint num, uint den) refresh, out int turns)
     {

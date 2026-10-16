@@ -1,6 +1,6 @@
 // Opens Exo Camera the way the Windows Camera app does, through WinRT
 // MediaCapture and a MediaFrameReader, and prints what each step returns,
-// including the error the app does not show (DECISIONS 10 item 6, SC-2).
+// including the error the Windows Camera app does not show.
 // Three readers in turn: CPU memory, Auto memory (GPU allowed), and Auto
 // converted to BGRA. Close the Camera app first: it holds the camera.
 // Usage: CamProbe [seconds per reader, default 5]

@@ -5,22 +5,21 @@ plugins {
 android {
     namespace = 'exo.phone'
 
-    // AGP 9 DSL: compileSdk is a block (spike 4 FINDINGS, toolchain).
+    // AGP 9 DSL: compileSdk is a block.
     compileSdk {
         version = release(37)
     }
 
     defaultConfig {
         applicationId = 'exo.phone'
-        // 29 as TECHNICAL_DESIGN 4.5 records. KEY_LOW_LATENCY is API 30 and
-        // is guarded at runtime (DECISIONS 11.5).
+        // KEY_LOW_LATENCY is API 30 and is guarded at runtime.
         minSdk = 29
         targetSdk = 37
         versionCode = 2
         versionName = '2.0.0'
     }
 
-    // The release key (PLAN.md, Release): its keystore and password come
+    // The release key: its keystore and password come
     // from the environment, set by src/ExoSetup/release.ps1, never the repo.
     // Without them assembleRelease fails rather than ship an unsigned APK.
     signingConfigs {

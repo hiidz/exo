@@ -4,7 +4,7 @@ namespace ExoHub.Display;
 
 // ICodecAPI, reached by raw vtable call. Vortice binds nearly all of Media
 // Foundation but not this, and it is where low latency, rate control, GOP
-// length and force-keyframe live. The technique is spike 5's CodecApi.cs.
+// length and force-keyframe live.
 //
 // A COM pointer points at a vtable pointer, which points at an array of
 // function pointers in header declaration order. A call is: read the array,

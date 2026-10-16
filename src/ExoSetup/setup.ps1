@@ -1,4 +1,4 @@
-# ExoSetup (TECHNICAL_DESIGN 5, PROJECT_SPEC SC-13). Installs Exo from this
+# ExoSetup, the developer install. Installs Exo from this
 # repository's build outputs, in place, or with -Uninstall reverses it.
 #
 #   setup.ps1              install
@@ -10,8 +10,8 @@
 # and unlocked, and no hub may be running, since the install uses the hub's
 # pinned adb.exe and starts its own short-lived server.
 #
-# Install does four things, and uninstall undoes each:
-#   1. the DLL's log folder, with a DACL LOCAL SERVICE can write to (3.4)
+# Install does five things, and uninstall undoes each:
+#   1. the DLL's log folder, with a DACL LOCAL SERVICE can write to
 #   2. regsvr32 on exocam.dll, HKLM, so the Frame Server can load it
 #   3. a desktop shortcut that starts the hub
 #   4. the phone app on every attached phone
@@ -48,7 +48,8 @@ Start-Transcript "$env:TEMP\exo-setup.log" | Out-Null
 function Step($s) { Write-Output "--- $s" }
 
 # Every attached phone, through a server of our own that is stopped by PID
-# afterwards, never kill-server (CLAUDE.md). Refused while another adb runs:
+# afterwards, never kill-server, which would end any other adb user's
+# server too. Refused while another adb runs:
 # a hub would refuse the server this leaves, and this would reuse its one.
 function OnEachPhone([scriptblock]$action) {
     if (Get-Process adb, ExoHub -ErrorAction SilentlyContinue) {
@@ -126,7 +127,7 @@ $lnk.Save()
 
 Step 'firewall'
 # Before the hub's first LAN listen, so Windows never prompts. Every
-# profile: a new network is Public (RESEARCH.md, Transport, 5). TCP for the
+# profile: Windows marks a new network Public. TCP for the
 # Wi-Fi listener's port 0, UDP for discovery.
 RemoveFirewallRules
 New-NetFirewallRule -DisplayName 'Exo' -Direction Inbound -Program $hub -Action Allow -Profile Any |

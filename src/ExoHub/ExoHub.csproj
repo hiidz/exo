@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- No console: a tray icon and a window (PLAN.md, PC app). The tools
+    <!-- No console: a tray icon and a window. The tools
          redirect stdout and still read it; otherwise see HubLog.cs. -->
     <OutputType>WinExe</OutputType>
     <UseWindowsForms>true</UseWindowsForms>
@@ -20,7 +20,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
-  <!-- The pinned adb (PROJECT_SPEC FR-5.3, DECISIONS 5.8). Three files, copied
+  <!-- The pinned adb, never one from PATH. Three files, copied
        into adb\ beside ExoHub.exe: adb.exe imports AdbWinApi.dll, which loads
        AdbWinUsbApi.dll by name. Not committed; .gitignore excludes them.
        Kept out of a single-file publish: the hub starts adb from disk. -->

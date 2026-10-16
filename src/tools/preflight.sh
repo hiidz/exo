@@ -1,5 +1,5 @@
 #!/bin/sh
-# What has to be clear before a tool starts its hub (CLAUDE.md, Traps): no
+# What has to be clear before a tool starts its hub: no
 # hub already running (Start with Windows puts one in the tray), nothing on
 # 5037 (the hub refuses a server it did not start, and a stray one outlives
 # a run), and no screensaver (the EXO monitor goes grey and touch fails).

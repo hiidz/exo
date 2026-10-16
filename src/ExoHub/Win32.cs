@@ -2,7 +2,9 @@ using System.Runtime.InteropServices;
 
 namespace ExoHub;
 
-// The few user32 calls the hub needs that DXGI does not cover.
+// The Win32 calls the hub needs that Vortice does not cover: user32,
+// including the display topology, cfgmgr32 for ExoDisplay's interface, and a
+// few from kernel32 and winmm.
 //
 // A P/Invoke struct must match the C layout byte for byte. Sequential stops
 // the CLR reordering fields, CharSet.Unicode makes the strings WCHAR, and
@@ -37,8 +39,8 @@ static class Win32
     }
 
     // The hotspot in virtual-desktop pixels, physical because the manifest
-    // makes this process per-monitor aware. Only to check DXGI's pointer
-    // position against an independent source.
+    // makes this process per-monitor aware. Only to check the driver's
+    // pointer position against an independent source.
     [DllImport("user32.dll")]
     public static extern bool GetCursorPos(out POINT point);
 
@@ -61,7 +63,7 @@ static class Win32
 
     public const uint MONITOR_DEFAULTTONULL = 0;
 
-    // The monitor rectangle touch is injected into (traps-touch), in
+    // The monitor rectangle touch is injected into, in
     // physical pixels because this process is per-monitor aware.
     [DllImport("user32.dll")]
     public static extern IntPtr MonitorFromPoint(POINT point, uint flags);

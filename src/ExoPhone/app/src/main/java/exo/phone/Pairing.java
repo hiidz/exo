@@ -202,6 +202,7 @@ final class Pairing {
 
     private static Attempt attempt;
 
+    /** The pairing under way with target, or a new one if none is or it was with another PC. */
     static synchronized Attempt attempt(String target) {
         if (attempt == null || !attempt.target.equals(target)) attempt = new Attempt(target);
         return attempt;

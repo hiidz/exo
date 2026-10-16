@@ -1,6 +1,6 @@
 // Per-frame stage times across the link, from one connection's
-// two CSVs (Decoder and Link). Relates the clocks from the PONGs as
-// DECISIONS 5.7 describes: theta = hub - phone, fitted as a + b*t over the
+// two CSVs (Decoder and Link). Relates the clocks from the PONGs, as NTP
+// does: theta = hub - phone, fitted as a + b*t over the
 // lowest-delay sample in each window.
 //
 // Usage: java LinkTimes.java <frames.csv> <pongs.csv> [windowSeconds]

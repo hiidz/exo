@@ -14,7 +14,7 @@ sealed class Nv12Frame
     public ID3D11VideoProcessorOutputView View;
 
     // When the Blt into this frame was submitted, as a QPC value. Set by the
-    // converter; the start of the NFR-1 figure "Blt submit to sample out".
+    // converter; the start of the stage "Blt submit to sample out".
     public long BltQpc;
 
     // Null while the encoder holds the frame. The pool must hold no
@@ -31,7 +31,7 @@ sealed class Nv12Frame
 // The NV12 textures the converter writes and the encoder reads.
 //
 // The encoder keeps input samples after ProcessInput returns
-// (MFT_INPUT_STREAM_HOLDS_BUFFERS, spike 5), so one reused texture would be
+// (MFT_INPUT_STREAM_HOLDS_BUFFERS), so one reused texture would be
 // overwritten while the encoder may still read it. Every frame is a tracked
 // sample: IMFTrackedSample.SetAllocator arms a one-shot callback that fires
 // when the last reference to the sample is released, and that callback puts
@@ -156,8 +156,8 @@ sealed class Nv12Pool : IDisposable
             Error ??= ex.ToString();
     }
 
-    // RenderTarget is what the video processor's output view requires
-    // (spike 5). The sample wraps the texture through a DXGI surface
+    // RenderTarget is what the video processor's output view requires.
+    // The sample wraps the texture through a DXGI surface
     // buffer, so the encoder reads the texture itself, never a copy.
     // MFCreateVideoSampleFromSurface makes a sample that implements
     // IMFTrackedSample; MFCreateSample does not.

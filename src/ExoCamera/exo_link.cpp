@@ -14,13 +14,15 @@
 
 using Microsoft::WRL::ComPtr;
 
-// 5.7's limits and timeouts, which 5.9 applies to this link.
+// The device link's limit and handshake timeout, the same on this link
+// (Wire.MaxBody and the hub's HelloTimeoutMs).
 static const DWORD kMaxBody = 4u << 20;
 static const DWORD kWelcomeTimeoutMs = 2000;
-// AskFormat's connect. With the hub up, the whole ask took 0.9 to 7.3ms (2026-10-15).
+// AskFormat's connect. With the hub up, the whole ask took 0.9 to 7.3ms
+// (2026-10-15).
 static const DWORD kFormatConnectMs = 250;
 // No message for this long is a dead hub, or an orphan that accepts and
-// never sends (CLAUDE.md, Process handling): back to the card, and
+// never sends, left from a crash: back to the card, and
 // reconnect. A live hub with no frame to send sends IDLE every second.
 static const DWORD kFrameTimeoutMs = 3000;
 // Message types after the handshake.
@@ -51,7 +53,7 @@ static DWORD GetU32(const BYTE* p) { return (DWORD)GetU16(p) << 16 | GetU16(p + 
 static LONGLONG GetI64(const BYTE* p) { return (LONGLONG)((ULONGLONG)GetU32(p) << 32 | GetU32(p + 4)); }
 
 // Once per process. Never paired with WSACleanup: this DLL must not be the
-// one that drops Winsock's count while a host process tears down (traps-camera).
+// one that drops Winsock's count while a host process it does not own tears down.
 static INIT_ONCE g_wsaOnce = INIT_ONCE_STATIC_INIT;
 static int g_wsaResult = -1;
 static BOOL CALLBACK StartWinsock(PINIT_ONCE, PVOID, PVOID*)
@@ -63,7 +65,7 @@ static BOOL CALLBACK StartWinsock(PINIT_ONCE, PVOID, PVOID*)
 }
 
 // The account this process runs as. In the Frame Server it should read
-// NT AUTHORITY\LOCAL SERVICE, which is the point of R6.
+// NT AUTHORITY\LOCAL SERVICE, which decides what the DLL may open.
 static void LogAccount()
 {
     HANDLE token = nullptr;
@@ -99,7 +101,7 @@ void ExoLink::Start(ExoStream* stream, const ExoFormat& format)
     bool started = false;
     if (!already && !stopping) {
         // A thread running this DLL's code must keep the DLL loaded: svchost
-        // unloaded it 30s after Shutdown in spike 1. So the reader takes its
+        // was seen unloading it 30s after Shutdown. So the reader takes its
         // own reference on the module, and gives it back as it exits, in
         // FreeLibraryAndExitThread. It also holds the stream, which keeps
         // DllCanUnloadNow refusing while it runs.
@@ -235,7 +237,7 @@ bool ExoLink::Connect()
     double ms = MsSince(t0);
     if (rc == SOCKET_ERROR) {
         // 10061 refused (no hub), 10060 timed out, 10013 access denied
-        // (a firewall or service hardening rule, TECHNICAL_DESIGN 3.3).
+        // (a firewall or service hardening rule).
         int err = WSAGetLastError();
         m_failures++;
         if (err != m_lastConnectError) {
@@ -280,7 +282,8 @@ ExoLink::Outcome ExoLink::Exchange(UINT_PTR socketValue, bool formatOnly, BYTE* 
     DWORD timeout = kWelcomeTimeoutMs;
     setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
 
-    // HELLO: 5.7's frozen prefix, then this process's ID, so the hub logs
+    // HELLO: the frozen prefix (magic, version u16, body length u16, as in
+    // Wire.cs), then this process's ID, so the hub logs
     // which host it is talking to, then what the connection is for: 0 for
     // frames, 1 for the format alone, after which the hub closes it.
     BYTE hello[13] = { 'E', 'X', 'O', 0 };
@@ -308,7 +311,7 @@ ExoLink::Outcome ExoLink::Exchange(UINT_PTR socketValue, bool formatOnly, BYTE* 
         return Retry;
     }
     if (status != 0) {
-        // A refusal's body is always UTF-8 text (5.7). A version mismatch
+        // A refusal's body is always UTF-8 text. A version mismatch
         // will not fix itself, so stop retrying, as the phone does.
         ExoLog("link: REFUSED by hub (protocol %u), status %u: %.*s%s", version, status, (int)length,
                (const char*)body, status == 1 ? "; not retrying until the camera is re-created" : "");
@@ -443,7 +446,7 @@ void ExoLink::ReadFrames()
             stride = GetU32(m_scratch + 20);
         }
         // Geometry comes with every frame and is checked, never assumed: a
-        // wrong stride is an out-of-bounds read inside svchost (traps-camera).
+        // wrong stride is an out-of-bounds read inside svchost.
         // Computed in 64 bits, so no stride can wrap the size to a small one.
         ULONGLONG want = kBodyPrefix + (ULONGLONG)stride * h * 3 / 2;
         bool fits = length >= kBodyPrefix && w == m_format.width && h == m_format.height && stride >= w && want == length;

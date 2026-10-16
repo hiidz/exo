@@ -1,4 +1,4 @@
-; Exo's PC installer (PLAN.md, Release). Built by release.ps1, which
+; Exo's PC installer. Built by release.ps1, which
 ; stages the files and passes AppVersion, Stage, Out and CertThumb; not
 ; meant to be compiled by hand.
 ;

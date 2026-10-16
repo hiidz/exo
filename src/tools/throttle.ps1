@@ -1,5 +1,5 @@
-# Caps the hub's outbound traffic, the display stream, for v3 step 5's run
-# on a throttled link. A Windows QoS policy on ExoHub.exe in the ActiveStore,
+# Caps the hub's outbound traffic, the display stream, for a run on a
+# throttled link. A Windows QoS policy on ExoHub.exe in the ActiveStore,
 # so a reboot also removes it. The hub stays unelevated; only this elevates.
 #
 #   throttle.ps1 -Mbps 8    cap at 8 Mbps, or change the cap
