@@ -34,25 +34,37 @@ static class Settings
     }
 
     // PLAN.md, Wi-Fi as built in step 4: a phone allowed once over Wi-Fi
-    // connects from then on; a deny is not kept. Each allowed phone is a
-    // value under Allowed, its identity, holding its name for whoever reads
-    // the registry.
-    public static bool WifiWithoutAsking
+    // connects from then on, with the certificate it paired with; a deny is
+    // not kept. Each allowed phone is a value under Paired, its identity,
+    // holding its certificate's fingerprint (Pairing) and its name for
+    // whoever reads the registry. Not Allowed, 2.0's list, made before TLS:
+    // those phones pair again.
+    public static bool IsAllowed(string id, string fingerprint)
     {
-        get => Read("WifiWithoutAsking", 0) != 0;
-        set => Write("WifiWithoutAsking", value ? 1 : 0);
+        using var k = Registry.CurrentUser.OpenSubKey(Key + @"\Paired");
+        return k?.GetValue(id) is string[] v && v.Length > 0 && v[0] == fingerprint;
     }
 
-    public static bool IsAllowed(string id)
+    public static void Allow(string id, string fingerprint, string name)
     {
-        using var k = Registry.CurrentUser.OpenSubKey(Key + @"\Allowed");
-        return k?.GetValue(id) != null;
+        using var k = Registry.CurrentUser.CreateSubKey(Key + @"\Paired");
+        k.SetValue(id, new[] { fingerprint, name }, RegistryValueKind.MultiString);
     }
 
-    public static void Allow(string id, string name)
+    // The hub's TLS certificate with its key, PKCS#12, null before the first
+    // Wi-Fi start. Uninstall removes it with the rest, so phones pair again.
+    public static byte[] Certificate
     {
-        using var k = Registry.CurrentUser.CreateSubKey(Key + @"\Allowed");
-        k.SetValue(id, name);
+        get
+        {
+            using var k = Registry.CurrentUser.OpenSubKey(Key);
+            return k?.GetValue("Certificate") as byte[];
+        }
+        set
+        {
+            using var k = Registry.CurrentUser.CreateSubKey(Key);
+            k.SetValue("Certificate", value, RegistryValueKind.Binary);
+        }
     }
 
     public static bool AdbEnabled

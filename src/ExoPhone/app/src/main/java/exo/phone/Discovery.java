@@ -31,12 +31,14 @@ final class Discovery {
         final int port;
         final long session;
         final String name;
+        final int protocol;  // the newest the hub speaks; 0 from a hub too old to say
 
-        Answer(InetAddress address, int port, long session, String name) {
+        Answer(InetAddress address, int port, long session, String name, int protocol) {
             this.address = address;
             this.port = port;
             this.session = session;
             this.name = name;
+            this.protocol = protocol;
         }
     }
 
@@ -113,7 +115,8 @@ final class Discovery {
         if (b.remaining() < n) return null;
         byte[] name = new byte[n];
         b.get(name);
-        return new Answer(p.getAddress(), port, session, new String(name, StandardCharsets.UTF_8));
+        int protocol = b.remaining() >= 2 ? b.getShort() & 0xffff : 0;
+        return new Answer(p.getAddress(), port, session, new String(name, StandardCharsets.UTF_8), protocol);
     }
 
     private Discovery() {

@@ -21,7 +21,10 @@ static class Wire
     // 9: the display phone sends PAUSE when its display goes out of view and
     // RESUME when it shows again unchanged. A phone below 9 never pauses; it
     // drops the connection instead, so 7 and 8 are still spoken.
-    public const ushort Version = 9, Oldest = 7;
+    // 10: every Wi-Fi connection is TLS, with pairing (Pairing.cs). Over USB
+    // nothing changed, so 7 to 9 still speak there; a plain HELLO over Wi-Fi
+    // is refused as a version mismatch.
+    public const ushort Version = 10, Oldest = 7, TlsFrom = 10;
 
     // HELLO is frozen up to its body: magic, the newest version the device
     // speaks u16, body length u16. From 4 on the body starts with the oldest
@@ -30,8 +33,12 @@ static class Wire
     // display role appends width u16, height u16 (portrait is taller than
     // wide), fps u8 (30 or 60), then the panel's width and height in mm u16,
     // 0 when unknown. From 7 the camera role appends width u16, height u16
-    // (landscape, as the sensor gives it) and fps u8 (30 or 60).
+    // (landscape, as the sensor gives it) and fps u8 (30 or 60). From 10
+    // both roles then append pairing u8, 1 when the phone holds no pin for
+    // this PC and so asks for the code, and its commitment [32], SHA-256 of
+    // its pairing nonce. Read over Wi-Fi only.
     public const int MaxHelloBody = 256, IdSize = 16, MaxName = 64, DisplayFields = 9, CameraFields = 5;
+    public const int PairFields = 1 + 32, NonceSize = 32;
     public const byte RoleCamera = 1, RoleDisplay = 2;
 
     // WELCOME: magic, version u16, status u8, body length u16, body. Accepted
@@ -45,7 +52,10 @@ static class Wire
     // From 8, Wi-Fi only. Pending is not an answer: its text is the PC's
     // name, and the real WELCOME follows once the PC's user answers. Denied:
     // the PC's user said no, and the phone stops asking until its user
-    // starts the role again.
+    // starts the role again. From 10 Pending's body starts with the hub's
+    // pairing nonce [32], then the name, and the phone answers it with its
+    // own nonce [32], raw, which must hash to HELLO's commitment. Both sides
+    // then show the code (Pairing.Code).
     public const byte Pending = 6, Denied = 7;
 
     // Every message after the handshake: type, flags, reserved u16, body length u32.
@@ -78,7 +88,10 @@ static class Wire
     // hub, broadcast or sent to a typed IP: magic, version u16, kind u8.
     // ANSWER, hub to the query's sender: magic, version u16, kind u8, the
     // Wi-Fi listener's TCP port u16, the session ID u64, name length u8 and
-    // the PC's UTF-8 name. A packet of another kind or version is ignored.
+    // the PC's UTF-8 name, then the newest device protocol the hub speaks
+    // u16, so a phone can tell a hub too old for TLS before it connects (an
+    // answer without it is from one). A packet of another kind or version
+    // is ignored.
     public const int DiscoveryPort = 27185;
     public const ushort DiscoveryVersion = 1;
     public const byte KindQuery = 1, KindAnswer = 2;

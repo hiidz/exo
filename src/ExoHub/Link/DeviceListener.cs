@@ -11,6 +11,8 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Net.Security;
+using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Text;
 using ExoHub.Camera;
@@ -44,7 +46,7 @@ sealed class DeviceListener : IDisposable
     public int WifiPort => ((IPEndPoint)wifi.LocalEndpoint).Port;
     // Asks the PC's user whether a phone may connect over Wi-Fi; blocks until
     // answered, and remembers an allow. Null until the tray is up: no answer.
-    public Func<Phone, bool> Ask;
+    public Func<Phone, string, bool> Ask;
 
     sealed class Connection(Socket socket, Phone phone, byte role, byte rotation, DisplayMode mode, string serial)
     {
@@ -92,8 +94,8 @@ sealed class DeviceListener : IDisposable
         this.camera = camera;
         this.vcam = vcam;
         // Port 0, so an orphan hub cannot be mistaken for this one: the
-        // phone learns the port and session from Discovery's answer. No TLS,
-        // as SuperDisplay (PLAN.md, Wi-Fi as built in step 4).
+        // phone learns the port and session from Discovery's answer. TLS on
+        // every connection to it (Pairing).
         wifi = new TcpListener(IPAddress.Any, 0) { ExclusiveAddressUse = true };
         wifi.Start();
         new Thread(() => AcceptLoop(wifi, null)) { IsBackground = true, Name = "accept-wifi" }.Start();
@@ -151,6 +153,36 @@ sealed class DeviceListener : IDisposable
         }
     }
 
+    // The connection's stream: plain over USB, which adb already guards, and
+    // TLS over Wi-Fi once the client starts it. A plain start over Wi-Fi is
+    // an app from before TLS, which Handshake refuses with a sentence.
+    Stream Open(Socket s, string serial, string who)
+    {
+        var net = new NetworkStream(s, ownsSocket: true);
+        // A TLS handshake record starts 0x16; a HELLO starts with 'E'.
+        Span<byte> first = stackalloc byte[1];
+        if (serial != null || s.Receive(first, SocketFlags.Peek) != 1 || first[0] != 0x16)
+            return net;
+        var tls = new SslStream(net, leaveInnerStreamOpen: false);
+        try
+        {
+            tls.AuthenticateAsServer(new SslServerAuthenticationOptions
+            {
+                ServerCertificate = Pairing.Certificate,
+                ClientCertificateRequired = true,
+                // Any certificate: Handshake checks it against the pairing.
+                RemoteCertificateValidationCallback = (_, cert, _, _) => cert != null,
+            });
+        }
+        catch
+        {
+            tls.Dispose();
+            throw;
+        }
+        Log($"{who} TLS {tls.SslProtocol} {tls.NegotiatedCipherSuite}");
+        return tls;
+    }
+
     // One connection, from accept to close.
     void Serve(Socket s, string serial)
     {
@@ -158,8 +190,8 @@ sealed class DeviceListener : IDisposable
         Connection conn = null;
         try
         {
-            using var net = new NetworkStream(s, ownsSocket: true);
             s.ReceiveTimeout = HelloTimeoutMs;
+            using Stream net = Open(s, serial, who);
             conn = Handshake(s, net, who, serial);
             if (conn == null)
                 return;
@@ -194,10 +226,14 @@ sealed class DeviceListener : IDisposable
                 touch.ConnectionEnded();
             }
         }
-        catch (Exception ex) when (ex is IOException or EndOfStreamException or ObjectDisposedException)
+        catch (Exception ex) when (ex is IOException or EndOfStreamException or ObjectDisposedException or
+                                         AuthenticationException or SocketException)
         {
-            // IOException wraps the SocketException for a reset or a timeout.
-            string why = ex.InnerException is SocketException se ? se.SocketErrorCode.ToString() : ex.GetType().Name;
+            // IOException wraps the SocketException for a reset or a timeout;
+            // Open's peek throws it bare. AuthenticationException is a TLS
+            // handshake that failed.
+            string why = (ex as SocketException ?? ex.InnerException as SocketException) is { } se
+                ? se.SocketErrorCode.ToString() : ex.GetType().Name;
             Log($"{conn?.Phone.ToString() ?? who} closed: {why}");
         }
         finally
@@ -214,7 +250,7 @@ sealed class DeviceListener : IDisposable
 
     // Reads a HELLO and answers it. Returns the accepted connection, or null
     // after a refusal, which has already been logged and sent.
-    Connection Handshake(Socket s, NetworkStream net, string who, string serial)
+    Connection Handshake(Socket s, Stream net, string who, string serial)
     {
         bool overWifi = serial == null;
         Span<byte> head = stackalloc byte[8];
@@ -243,6 +279,9 @@ sealed class DeviceListener : IDisposable
         // The version both speak. Every version since the oldest the hub
         // speaks keeps 4's body as its start, so it parses the same.
         ushort version = Math.Min(newest, Wire.Version);
+        if (overWifi && (net is not SslStream || version < Wire.TlsFrom))
+            return Refuse(net, who, Wire.VersionMismatch,
+                          $"device speaks protocol {oldest} to {newest} without TLS; Wi-Fi needs {Wire.TlsFrom}: update the app");
 
         int nameAt = 2 + 1 + Wire.IdSize + 1;
         if (length < nameAt || body[nameAt - 1] > Wire.MaxName || length < nameAt + body[nameAt - 1] + 1)
@@ -293,25 +332,75 @@ sealed class DeviceListener : IDisposable
                 return Refuse(net, name, Wire.BadHello, $"display mode {mode} unsupported");
         }
 
-        // Over Wi-Fi, anyone on the network can get here: the PC's user
-        // allows each phone once (PLAN.md, Wi-Fi as built in step 4). The
-        // phone hears Pending and waits; nothing is held meanwhile.
-        if (overWifi && !Ui.Settings.WifiWithoutAsking && !Ui.Settings.IsAllowed(phone.Id))
+        // Over Wi-Fi, anyone on the network can get here: a phone pairs once,
+        // when either side holds no pin for the other, and the PC's user
+        // allows it after comparing the code (Pairing). The phone hears
+        // Pending and waits; nothing is held meanwhile.
+        if (overWifi)
         {
-            if (version < 8)
-                return Refuse(net, name, Wire.VersionMismatch, $"protocol {version} cannot be asked about over Wi-Fi");
-            // Before the tray is up there is nobody to ask: closed without an
-            // answer, so the phone tries again.
-            if (Ask is not { } ask)
+            int pairAt = nameAt + body[nameAt - 1] + 1 + (role == Wire.RoleCamera ? Wire.CameraFields : Wire.DisplayFields);
+            if (length < pairAt + Wire.PairFields)
+                return Refuse(net, name, Wire.BadHello, $"hello {length} bytes, no pairing fields");
+            var phoneCert = ((SslStream)net).RemoteCertificate;
+            string fingerprint = Pairing.Fingerprint(phoneCert);
+            bool phoneAsks = body[pairAt] != 0;
+            if (phoneAsks || !Ui.Settings.IsAllowed(phone.Id, fingerprint))
             {
-                Log($"{name} over Wi-Fi from {who}: closed, nobody to ask yet");
-                return null;
+                // Before the tray is up there is nobody to ask: closed without
+                // an answer, so the phone tries again.
+                if (Ask is not { } ask)
+                {
+                    Log($"{name} over Wi-Fi from {who}: closed, nobody to ask yet");
+                    return null;
+                }
+                if (PairingProblem != null)
+                    return Refuse(net, name, Wire.Denied, "pairing is paused after abandoned pairings");
+                byte[] commitment = body[(pairAt + 1)..(pairAt + Wire.PairFields)];
+                string key = phone.Id + Convert.ToHexString(commitment);
+                byte[] hubNonce = NonceFor(key);
+                Log($"{name} over Wi-Fi from {who}: pairing, {(phoneAsks ? "the phone holds no pin" : "not allowed here")}");
+                SendWelcome(net, Wire.Version, Wire.Pending, [.. hubNonce, .. Encoding.UTF8.GetBytes(Dns.GetHostName())]);
+                // The phone reveals its nonce at once. One that does not has
+                // seen the code this PC would show and may try again with a
+                // new commitment until it matches the code on the phone it
+                // sits in front of: so only a few, then no pairing until
+                // the hub starts again.
+                byte[] phoneNonce = new byte[Wire.NonceSize];
+                bool revealed;
+                try
+                {
+                    net.ReadExactly(phoneNonce);
+                    revealed = SHA256.HashData(phoneNonce).AsSpan().SequenceEqual(commitment);
+                }
+                catch (Exception ex) when (ex is IOException or EndOfStreamException)
+                {
+                    revealed = false;
+                }
+                if (!revealed)
+                {
+                    lock (nonces)
+                    {
+                        nonces.Remove(key);
+                        if (++abandoned >= MaxAbandoned)
+                            PairingProblem = "Wi-Fi pairing is paused: something on the network started pairing and " +
+                                             "gave up several times. Restart Exo to pair again.";
+                    }
+                    Log($"{name} pairing ABANDONED ({abandoned} since the last answer)");
+                    return null;
+                }
+                string code = Pairing.Code(Pairing.Certificate, phoneCert, phoneNonce, hubNonce);
+                Log($"{name} code {code}, asking the PC's user");
+                bool yes = ask(phone, code);
+                lock (nonces)
+                {
+                    nonces.Remove(key);
+                    abandoned = 0;
+                }
+                if (!yes)
+                    return Refuse(net, name, Wire.Denied, "the PC's user did not allow this phone");
+                Ui.Settings.Allow(phone.Id, fingerprint, phone.Name);
+                Log($"{name} allowed by the PC's user, certificate {fingerprint[..16]}");
             }
-            Log($"{name} over Wi-Fi from {who}: asking the PC's user");
-            SendWelcome(net, Wire.Version, Wire.Pending, Encoding.UTF8.GetBytes(Dns.GetHostName()));
-            if (!ask(phone))
-                return Refuse(net, name, Wire.Denied, "the PC's user did not allow this phone");
-            Log($"{name} allowed by the PC's user");
         }
 
         var conn = new Connection(s, phone, role, rotation, mode, serial) { Format = format };
@@ -352,7 +441,27 @@ sealed class DeviceListener : IDisposable
         return conn;
     }
 
-    Connection Refuse(NetworkStream net, string who, byte status, string reason)
+    // The hub's nonce for one pairing, by the phone's identity and
+    // commitment: the phone keeps its nonce for the whole pairing, so a
+    // second role or a retry gets the same nonce here and shows the same
+    // code. Dropped once the PC's user answers, or the pairing is abandoned.
+    readonly Dictionary<string, byte[]> nonces = new();
+    const int MaxAbandoned = 5;
+    int abandoned;  // under nonces: pairings abandoned since the last answer
+    // For the window: set once pairing paused, until the hub restarts.
+    public volatile string PairingProblem;
+
+    byte[] NonceFor(string key)
+    {
+        lock (nonces)
+        {
+            if (!nonces.TryGetValue(key, out var n))
+                nonces[key] = n = RandomNumberGenerator.GetBytes(Wire.NonceSize);
+            return n;
+        }
+    }
+
+    Connection Refuse(Stream net, string who, byte status, string reason)
     {
         Log($"{who} REFUSED status {status}: {reason}");
         SendWelcome(net, Wire.Version, status, Encoding.UTF8.GetBytes(reason));
@@ -360,7 +469,7 @@ sealed class DeviceListener : IDisposable
     }
 
     // Also L7's WELCOME, which has the same layout at its own version.
-    internal static void SendWelcome(NetworkStream net, ushort version, byte status, ReadOnlySpan<byte> body)
+    internal static void SendWelcome(Stream net, ushort version, byte status, ReadOnlySpan<byte> body)
     {
         Span<byte> head = stackalloc byte[9];
         Wire.Magic.CopyTo(head);
@@ -373,7 +482,7 @@ sealed class DeviceListener : IDisposable
 
     // After the handshake. PING is answered through the sender, the one
     // thread that writes this socket; anything else is skipped by its length.
-    void ReadMessages(NetworkStream net, Connection conn)
+    void ReadMessages(Stream net, Connection conn)
     {
         Span<byte> head = stackalloc byte[Wire.HeaderSize];
         byte[] body = new byte[256];
@@ -431,7 +540,7 @@ sealed class DeviceListener : IDisposable
     // the only thread writing this socket. Nothing from the phone is dropped
     // here (5.7): a decoder that falls behind slows this read, and TCP
     // carries that back to the phone's queue.
-    void ReadCamera(NetworkStream net, Connection conn)
+    void ReadCamera(Stream net, Connection conn)
     {
         const int FrameFields = 4 + 3 * 8;  // seq; present, encoded, sent
         camera.BeginStream(conn.Phone.ToString(), flip: conn.Rotation == 2);

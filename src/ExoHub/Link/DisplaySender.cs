@@ -53,7 +53,7 @@ sealed class DisplaySender : IDisposable
     readonly Queue<(uint seq, long qpc, int bytes)> inFlight = new();  // under gate
     readonly Timer stallCheck;
     readonly Thread thread;
-    NetworkStream stream;  // under gate; null with no device
+    Stream stream;  // under gate; null with no device
     string serial;
     bool keyframeWanted, waitForKeyframe, disposed;
     // The phone's display is out of view (PAUSE): only PONGs go, and the
@@ -149,7 +149,7 @@ sealed class DisplaySender : IDisposable
 
     // The display connection, once its handshake is done. Discards until a
     // keyframe carrying SPS and PPS, and asks the encoder for one (5.3).
-    public void Attach(NetworkStream net, string who, uint rate, bool wifi)
+    public void Attach(Stream net, string who, uint rate, bool wifi)
     {
         lock (gate)
         {
@@ -200,7 +200,7 @@ sealed class DisplaySender : IDisposable
         }
     }
 
-    public void Detach(NetworkStream net)
+    public void Detach(Stream net)
     {
         lock (gate)
         {
@@ -227,7 +227,7 @@ sealed class DisplaySender : IDisposable
         }
     }
 
-    public void Pause(NetworkStream net)
+    public void Pause(Stream net)
     {
         lock (gate)
         {
@@ -240,7 +240,7 @@ sealed class DisplaySender : IDisposable
         Log($"{serial} paused, its display out of view");
     }
 
-    public void Resume(NetworkStream net)
+    public void Resume(Stream net)
     {
         lock (gate)
         {
@@ -284,7 +284,7 @@ sealed class DisplaySender : IDisposable
     // The listener's reader calls this for each ACK on the display
     // connection: every frame up to seq is done. One from a connection since
     // replaced, or for frames already written off, changes nothing.
-    public void Ack(NetworkStream net, uint seq)
+    public void Ack(Stream net, uint seq)
     {
         Action k = null;
         lock (gate)
@@ -465,7 +465,7 @@ sealed class DisplaySender : IDisposable
         while (true)
         {
             Frame f = null;
-            NetworkStream net;
+            Stream net;
             Action k = null;
             bool first = false;
             bool isPong = false, isPos = false;
@@ -566,7 +566,7 @@ sealed class DisplaySender : IDisposable
 
     // The listener's reader calls this for each PING: t1 is the phone's
     // time from the PING, t2 the hub's when it was read (DECISIONS 5.7).
-    public void Pong(NetworkStream net, long t1, long t2)
+    public void Pong(Stream net, long t1, long t2)
     {
         lock (gate)
         {
@@ -577,7 +577,7 @@ sealed class DisplaySender : IDisposable
         }
     }
 
-    void WritePong(NetworkStream net, long t1, long t2)
+    void WritePong(Stream net, long t1, long t2)
     {
         Span<byte> m = stackalloc byte[Wire.HeaderSize + 24];
         m.Clear();
@@ -597,7 +597,7 @@ sealed class DisplaySender : IDisposable
         }
     }
 
-    void WriteCursorShape(NetworkStream net, CursorImage s)
+    void WriteCursorShape(Stream net, CursorImage s)
     {
         Span<byte> m = stackalloc byte[Wire.HeaderSize + 8];
         m.Clear();
@@ -619,7 +619,7 @@ sealed class DisplaySender : IDisposable
         }
     }
 
-    void WriteCursorPos(NetworkStream net, bool visible, int x, int y, long mouseQpc)
+    void WriteCursorPos(Stream net, bool visible, int x, int y, long mouseQpc)
     {
         Span<byte> m = stackalloc byte[Wire.HeaderSize + 16];
         m.Clear();

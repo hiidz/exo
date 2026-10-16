@@ -204,7 +204,8 @@ if (HubLog.FilePath != null)
     ExoHub.Ui.Settings.FirstRun();
 var tray = new ExoHub.Ui.Tray(
     () => new ExoHub.Ui.HubState(devices.Snapshot(), adb.Devices, adb.Problem, monitor.Unavailable,
-                                 vcam == null ? "the camera could not be registered" : null, wifiProblem),
+                                 vcam == null ? "the camera could not be registered" : null, wifiProblem,
+                                 devices.PairingProblem),
     () => stop.Cancel(),
     on =>
     {

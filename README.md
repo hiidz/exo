@@ -68,8 +68,13 @@ by**.
 
 - **USB:** plug the phone in.
 - **Wi-Fi:** tap **Pick a PC** and choose yours, or type its address.
-  The first time, the PC asks whether to allow the phone. If you say no,
-  the phone stops trying until you start its role again.
+  The first time, the PC asks whether to allow the phone, and both show
+  the same 6-digit code: allow only if they match. After that the phone
+  connects without asking. If you say no, the phone stops trying until
+  you start its role again. Everything over Wi-Fi is encrypted.
+- **Picking the PC again** pairs again, with a new code. Do that if the
+  phone says the PC is not the one it paired with, after Exo was
+  installed on the PC again.
 
 Then tap **Use as display** or **Use as webcam**, or both. A role
 another phone already holds is refused, and the phone says which one
@@ -98,7 +103,6 @@ role, USB or Wi-Fi, mode and state; with no phone, the steps to start.
 It also holds:
 
 - **Start with Windows,** on from the first run.
-- **Allow Wi-Fi connections without asking,** off by default.
 - **Enable adb connections (USB).** Turn it off to free USB debugging
   for Android Studio or another adb tool; Exo cannot share it. If one is
   running when Exo starts, the window says so: close it, then turn this
@@ -110,10 +114,6 @@ It also holds:
 
 ## What you will notice
 
-- **Wi-Fi is not encrypted.** Anyone on the same network can see the
-  screen and the camera, and with **Allow Wi-Fi connections without
-  asking** on, send touches to the PC. Use Wi-Fi only on a network you
-  trust.
 - **One camera app at a time.** A second app gets "Camera Reserved By
   Another App". Windows' Multi-App Camera setting (Settings, Bluetooth &
   devices, Cameras, Exo, Advanced camera options) allows sharing, but

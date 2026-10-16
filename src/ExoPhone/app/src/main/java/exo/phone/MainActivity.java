@@ -510,6 +510,12 @@ public class MainActivity extends Activity {
         else state(webcamState, WAITING, ws);
     }
 
+    /** The user picked this PC, again or anew: it pairs again, with a code (Pairing). */
+    private void pick(Via v) {
+        Pairing.forget(this, v.target());
+        setVia(v);
+    }
+
     private void setVia(Via v) {
         via = v;
         via.save(this);
@@ -523,7 +529,7 @@ public class MainActivity extends Activity {
         pcValue.setText(via.target() == null ? "Pick one" : via.target());
         if (!via.wifi) viaStatus.setText("Plug this phone into the PC, with USB debugging on.");
         else if (needsLocalNetwork()) viaStatus.setText(Link.NEEDS_PERMISSION);
-        else viaStatus.setText("On the same Wi-Fi as the PC. The PC asks to allow this phone the first time.");
+        else viaStatus.setText("On the same Wi-Fi as the PC. The first time, the PC asks to allow this phone, and both show a code to compare.");
     }
 
     private boolean needsLocalNetwork() {
@@ -569,7 +575,7 @@ public class MainActivity extends Activity {
                 new AlertDialog.Builder(this)
                         .setTitle(pcs.isEmpty() ? "No PC answered. Is Exo running on it?" : "Connect to")
                         .setItems(items.toArray(new String[0]), (d, which) -> {
-                            if (which < pcs.size()) setVia(new Via(true, pcs.get(which).name, null));
+                            if (which < pcs.size()) pick(new Via(true, pcs.get(which).name, null));
                             else typeAddress();
                         })
                         .show();
@@ -587,7 +593,7 @@ public class MainActivity extends Activity {
                 .setView(field)
                 .setPositiveButton("Connect", (d, w) -> {
                     String ip = field.getText().toString().trim();
-                    if (!ip.isEmpty()) setVia(new Via(true, null, ip));
+                    if (!ip.isEmpty()) pick(new Via(true, null, ip));
                 })
                 .setNegativeButton("Cancel", null)
                 .show();

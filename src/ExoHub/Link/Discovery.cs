@@ -42,7 +42,7 @@ sealed class Discovery : IDisposable
         byte[] name = Encoding.UTF8.GetBytes(Dns.GetHostName());
         if (name.Length > Wire.MaxName)
             name = name[..Wire.MaxName];
-        answer = new byte[4 + 2 + 1 + 2 + 8 + 1 + name.Length];
+        answer = new byte[4 + 2 + 1 + 2 + 8 + 1 + name.Length + 2];
         var a = answer.AsSpan();
         Wire.Magic.CopyTo(a);
         BinaryPrimitives.WriteUInt16BigEndian(a[4..], Wire.DiscoveryVersion);
@@ -51,6 +51,7 @@ sealed class Discovery : IDisposable
         BinaryPrimitives.WriteUInt64BigEndian(a[9..], session);
         a[17] = (byte)name.Length;
         name.CopyTo(a[18..]);
+        BinaryPrimitives.WriteUInt16BigEndian(a[(18 + name.Length)..], Wire.Version);
 
         // Exclusive, so a second hub fails here rather than sharing queries.
         var s = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp) { ExclusiveAddressUse = true };

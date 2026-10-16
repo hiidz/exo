@@ -28,6 +28,10 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
+import java.security.cert.X509Certificate;
+
+import javax.net.ssl.SSLSocket;
+
 /**
  * A connection to the hub: over USB, localabstract:exo, which adb reverse
  * carries to the hub's port; over Wi-Fi, the port in the picked PC's
@@ -112,9 +116,10 @@ final class Link implements Runnable {
     // the hub caps the frames in flight. 7: the camera role's HELLO carries
     // its size and rate. 8: over Wi-Fi the hub may answer PENDING, then
     // ACCEPTED or DENIED. 9: the display sends PAUSE when it goes out of
-    // view and RESUME when it shows again unchanged. HELLO's layout is in
-    // the hub's Wire.cs.
-    static final int VERSION = 9, OLDEST = 7;
+    // view and RESUME when it shows again unchanged. 10: Wi-Fi is TLS, and
+    // HELLO carries the pairing fields (Pairing). HELLO's layout is in the
+    // hub's Wire.cs.
+    static final int VERSION = 10, OLDEST = 7, TLS_FROM = 10;
     static final int PAUSES_FROM = 9;
     static final int ROLE_CAMERA = 1, ROLE_DISPLAY = 2;
     static final int ACCEPTED = 0, VERSION_MISMATCH = 1, BAD_HELLO = 2, ROLE_TAKEN = 3;
@@ -127,6 +132,7 @@ final class Link implements Runnable {
     static final String NO_WIFI = "This phone is not on Wi-Fi. Join the PC's network.";
     static final String NEEDS_PERMISSION = "Exo needs the Nearby devices permission to find the PC. Pick Wi-Fi again to allow it.";
     static final String BLOCKED = "Android does not let Exo use the network. Allow network data for Exo in Settings, Apps.";
+    static final String HUB_TOO_OLD = "Exo on the PC is too old for this app. Update Exo on the PC.";
     private static final int CONNECT_TIMEOUT_MS = 3000, FIND_MS = 1000;
     static final int FRAME = 1, PING = 2, PONG = 3, FLAG_KEYFRAME = 1, FLAG_CONFIG = 2;
     static final int CURSOR_SHAPE = 4, CURSOR_POS = 5, TOUCH = 6, ACK = 7, PAUSE = 8, RESUME = 9, FLAG_VISIBLE = 1;
@@ -187,7 +193,7 @@ final class Link implements Runnable {
     private String sentence(int status, int hubVersion, String text) {
         switch (status) {
             case VERSION_MISMATCH:
-                return hubVersion < oldest ? "Exo on the PC is too old for this app. Update Exo on the PC."
+                return hubVersion < oldest ? HUB_TOO_OLD
                         : "This app is too old for Exo on the PC. Update the Exo app.";
             case ROLE_TAKEN:
                 return (role == ROLE_DISPLAY ? "The PC's display" : "The PC's webcam") + " is in use by " + text + ".";
@@ -242,6 +248,11 @@ final class Link implements Runnable {
                     lastFailure = what;
                 }
                 if (e instanceof Reopen) continue;  // on purpose, so no wait
+                if (e instanceof Refusal) {
+                    refused = true;
+                    status(e.getMessage());
+                    break;
+                }
                 if (!stopped) status(e instanceof NoWifi ? NO_WIFI : blocked(e) ? blockedSentence(context) : waiting());
             }
             if (stopped || refused) break;
@@ -265,6 +276,16 @@ final class Link implements Runnable {
     private static final class Reopen extends IOException {
         Reopen(String what) {
             super(what);
+        }
+    }
+
+    /**
+     * Found before HELLO and not fixed by trying again: a hub too old for
+     * TLS, or not the PC this phone paired with. The message is the sentence.
+     */
+    private static final class Refusal extends IOException {
+        Refusal(String sentence) {
+            super(sentence);
         }
     }
 
@@ -297,6 +318,11 @@ final class Link implements Runnable {
         OutputStream out() throws IOException;
 
         void timeout(int ms) throws IOException;
+
+        /** The PC's certificate over Wi-Fi; null over USB, which is plain. */
+        default X509Certificate hub() {
+            return null;
+        }
     }
 
     private String waiting() {
@@ -348,12 +374,27 @@ final class Link implements Runnable {
         Discovery.Answer hub = null;
         for (Discovery.Answer a : found) if (to != null || a.name.equalsIgnoreCase(via.pc)) hub = a;
         if (hub == null) throw new IOException("no answer from " + via.target());
+        // A hub from before TLS would close on the TLS handshake, and the
+        // phone could only say it is looking.
+        if (hub.protocol < TLS_FROM) throw new Refusal(HUB_TOO_OLD);
         Socket t = net.getSocketFactory().createSocket();
+        Pairing.HubTrust trust = new Pairing.HubTrust(Pairing.pin(context, via.target()));
+        SSLSocket[] tls = new SSLSocket[1];
         Conn c = new Conn() {
-            public InputStream in() throws IOException { return t.getInputStream(); }
-            public OutputStream out() throws IOException { return t.getOutputStream(); }
-            public void timeout(int ms) throws IOException { t.setSoTimeout(ms); }
-            public void close() throws IOException { t.close(); }
+            public InputStream in() throws IOException { return tls[0].getInputStream(); }
+            public OutputStream out() throws IOException { return tls[0].getOutputStream(); }
+            // The TLS socket's own: its reads keep their own timeout.
+            public void timeout(int ms) throws IOException { tls[0].setSoTimeout(ms); }
+            public X509Certificate hub() { return trust.hub; }
+            // The plain socket first, which wakes a blocked read or write, so
+            // neither can keep the TLS socket's close waiting.
+            public void close() throws IOException {
+                try {
+                    t.close();
+                } finally {
+                    if (tls[0] != null) tls[0].close();
+                }
+            }
         };
         socket = c;
         if (stopped) {
@@ -364,12 +405,17 @@ final class Link implements Runnable {
             // Small messages such as ACK and PING go at once.
             t.setTcpNoDelay(true);
             t.connect(new InetSocketAddress(hub.address, hub.port), CONNECT_TIMEOUT_MS);
+            t.setSoTimeout(WELCOME_TIMEOUT_MS);
+            tls[0] = Pairing.wrap(t, hub.address.getHostAddress(), hub.port, trust);
         } catch (IOException e) {
             c.close();
+            if (trust.wrong) throw new Refusal(via.target() + " is not the PC this phone paired with. If Exo was"
+                    + " installed on it again, pick the PC again to pair.");
             throw e;
         }
-        Log.i(Codecs.TAG, String.format("link over Wi-Fi to \"%s\" at %s:%d, session %016x", hub.name,
-                hub.address.getHostAddress(), hub.port, hub.session));
+        Log.i(Codecs.TAG, String.format("link over Wi-Fi to \"%s\" at %s:%d, session %016x, %s %s", hub.name,
+                hub.address.getHostAddress(), hub.port, hub.session, tls[0].getSession().getProtocol(),
+                tls[0].getSession().getCipherSuite()));
         return c;
     }
 
@@ -381,11 +427,20 @@ final class Link implements Runnable {
             DataInputStream in = new DataInputStream(new BufferedInputStream(s.in()));
             DataOutputStream out = new DataOutputStream(new BufferedOutputStream(s.out()));
 
+            // Over Wi-Fi the PC is proven by its pin, or by the code: with no
+            // pin this phone asks to pair, and goes on only once the code was
+            // shown (Pairing).
+            X509Certificate hubCert = s.hub();
+            boolean pairs = hubCert != null && Pairing.pin(context, via.target()) == null;
+            Pairing.Attempt attempt = hubCert != null ? Pairing.attempt(via.target()) : null;
+            String code = null;
+
             byte[] myName = me.nameBytes();
             byte[] tail = listener.helloTail();
+            int pairFields = version >= TLS_FROM ? 1 + Pairing.NONCE_SIZE : 0;
             out.write(MAGIC);
             out.writeShort(version);
-            out.writeShort(2 + 1 + Identity.ID_SIZE + 1 + myName.length + 1 + tail.length);
+            out.writeShort(2 + 1 + Identity.ID_SIZE + 1 + myName.length + 1 + tail.length + pairFields);
             out.writeShort(oldest);
             out.writeByte(role);
             out.write(me.id);
@@ -393,6 +448,10 @@ final class Link implements Runnable {
             out.write(myName);
             out.writeByte(listener.rotation());
             out.write(tail);
+            if (pairFields > 0) {
+                out.writeByte(pairs ? 1 : 0);
+                out.write(attempt != null ? attempt.commitment : new byte[Pairing.NONCE_SIZE]);
+            }
             out.flush();
 
             byte[] magic = new byte[4];
@@ -408,13 +467,31 @@ final class Link implements Runnable {
             int status = in.readUnsignedByte();
             byte[] body = new byte[in.readUnsignedShort()];
             in.readFully(body);
-            // Over Wi-Fi the PC may ask its user first; the answer is the
-            // next WELCOME. Waiting longer than ASK_MS gives up and asks
-            // again, which joins the same question on the PC.
+            // Over Wi-Fi the PC may ask its user first, after both sides show
+            // the code; the answer is the next WELCOME. Waiting longer than
+            // ASK_MS gives up and asks again, which joins the same question
+            // on the PC, with the same code.
             if (status == PENDING) {
-                String pc = new String(body, StandardCharsets.UTF_8);
-                Log.i(Codecs.TAG, "link pending: " + pc + " is asking its user");
-                status("Allow this phone on " + pc + ": Exo asks there.");
+                if (attempt == null || body.length < Pairing.NONCE_SIZE) {
+                    throw new IOException("PENDING without pairing, " + body.length + " bytes");
+                }
+                byte[] hubNonce = java.util.Arrays.copyOf(body, Pairing.NONCE_SIZE);
+                // Stops rather than starting over: a stranger posing as the
+                // PC would otherwise get a new try at the code each time.
+                if (!attempt.hubNonce(hubNonce)) {
+                    Pairing.end(attempt);
+                    throw new Refusal("Pairing with " + via.target() + " started over on the PC. Start again to pair.");
+                }
+                out.write(attempt.nonce);
+                out.flush();
+                String pc = new String(body, Pairing.NONCE_SIZE, body.length - Pairing.NONCE_SIZE, StandardCharsets.UTF_8);
+                try {
+                    code = Pairing.code(hubCert, Pairing.certificate(), attempt.nonce, hubNonce);
+                } catch (java.security.cert.CertificateException e) {
+                    throw new IOException(e);
+                }
+                Log.i(Codecs.TAG, "link pending: " + pc + " is asking its user, code " + code);
+                status("Allow this phone on " + pc + ": Exo asks there. Allow it only if the PC shows " + code + ".");
                 s.timeout(ASK_MS);
                 in.readFully(magic);
                 if (!java.util.Arrays.equals(magic, MAGIC)) throw new IOException("WELCOME has bad magic");
@@ -431,6 +508,7 @@ final class Link implements Runnable {
                         + ", ours " + oldest + " to " + version + ": " + text);
                 // Any other refusal may clear, so the loop tries again.
                 refused = status == VERSION_MISMATCH || status == DENIED;
+                if (status == DENIED) Pairing.end(attempt);
                 status(sentence(status, hubVersion, text));
                 return;
             }
@@ -440,6 +518,16 @@ final class Link implements Runnable {
                 refused = true;
                 status("Exo on the PC and this app do not agree on a version. Update Exo on both.");
                 return;
+            }
+            if (pairs && code == null) throw new IOException("the PC accepted without pairing");
+            if (code != null) {
+                try {
+                    Pairing.pin(context, via.target(), Pairing.fingerprint(hubCert));
+                } catch (java.security.cert.CertificateException e) {
+                    throw new IOException(e);
+                }
+                Pairing.end(attempt);
+                Log.i(Codecs.TAG, "link paired with " + via.target());
             }
             Log.i(Codecs.TAG, String.format("link accepted after %d attempts, WELCOME in %.1fms, protocol %d,"
                     + " session %016x, identity %s \"%s\"", attempts, welcomeMs, hubVersion,
