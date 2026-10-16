@@ -16,10 +16,12 @@ import java.util.List;
  * The display role's settings, set on the phone and kept in the app's
  * preferences, and the one mode they make: what the display's HELLO carries
  * and the only mode the hub's monitor offers. Sizes are kept landscape, long
- * side first, and turned only when portrait is sent.
+ * side first: always landscape, a portrait display being Windows' own
+ * rotation of it (PLAN.md, Decide, Display).
  *
- * The sizes offered are the panel's own and same-aspect steps below it, each
- * only if the decoder Decoder would pick takes it, turned, at the chosen rate.
+ * The size sent is the largest of the panel's own and same-aspect steps
+ * below it that the decoder Decoder would pick takes at the chosen
+ * rate; there is no picker (PLAN.md, Decide, Display), only the tools' extra.
  */
 final class DisplaySettings {
     static final int[] RATES = {30, 60};
@@ -31,7 +33,6 @@ final class DisplaySettings {
 
     final int panelW, panelH;  // physical pixels, landscape
     final int mmW, mmH;        // the panel's size, landscape; 0 when not believable
-    boolean portrait;
     int fps = 60;
     int smoothing = SMOOTHING; // ms, 0 is off; only the tools change it, not kept
     String codec;              // a decoder name from the tools, as Decoder takes it; not kept
@@ -63,39 +64,35 @@ final class DisplaySettings {
                 dm.xdpi, dm.ydpi, inches, s.mmW, s.mmH, believable ? "" : " (not believable, sent as unknown)"));
 
         SharedPreferences p = prefs(context);
-        s.portrait = p.getBoolean("display.portrait", false);
         s.fps = p.getInt("display.fps", 60);
-        s.refresh(p.getString("display.size", null));
+        s.refresh(null);
         return s;
     }
 
     void save(Context context) {
         prefs(context).edit()
-                .putBoolean("display.portrait", portrait)
+                .remove("display.portrait")  // Windows' setting since v3 step 6
                 .putInt("display.fps", fps)
-                .putString("display.size", size == null ? null : size[0] + "x" + size[1])
+                .remove("display.size")  // no picker since v3 step 6: always the largest
                 .apply();
     }
 
     /**
      * The tools' extras, through the same fields as the pickers: --ei rate,
-     * --es orientation portrait or landscape, --es size WxH (landscape) or
-     * full, the largest the decoder takes, --ei smoothing (ms, 0
-     * off), and DisplayActivity's -e codec. Kept, as a picker's change would
-     * be, but for smoothing and codec.
+     * --es size WxH or full, the largest the decoder takes, --ei smoothing
+     * (ms, 0 off), and DisplayActivity's -e codec. Kept, as a picker's change would
+     * be, but for size, smoothing and codec.
      */
     void apply(Intent in) {
         fps = in.getIntExtra("rate", fps);
         smoothing = in.getIntExtra("smoothing", smoothing);
-        String o = in.getStringExtra("orientation");
-        if (o != null) portrait = o.equals("portrait");
         codec = in.getStringExtra("codec");
         String want = in.getStringExtra("size");
         refresh("full".equals(want) ? null : want != null ? want : size == null ? null : size[0] + "x" + size[1]);
     }
 
     /**
-     * Works out the sizes for the rate and orientation now set, and keeps
+     * Works out the sizes for the rate now set, and keeps
      * the one named "WxH" if it is still among them, else the largest.
      */
     void refresh(String keep) {
@@ -103,12 +100,11 @@ final class DisplaySettings {
         for (int[] st : STEPS) {
             int w = even(panelW * st[0] / (double) st[1]), h = even(panelH * st[0] / (double) st[1]);
             if (!sizes.isEmpty() && sizes.get(sizes.size() - 1)[0] == w) continue;
-            int ow = portrait ? h : w, oh = portrait ? w : h;
-            String decoder = Codecs.chooseDecoder(Codecs.decoderFormat(ow, oh, fps, true), codec);
+            String decoder = Codecs.chooseDecoder(Codecs.decoderFormat(w, h, fps, true), codec);
             if (decoder != null) {
                 sizes.add(new int[] {w, h});
             } else {
-                Log.i(Codecs.TAG, "display size " + ow + "x" + oh + " at " + fps + "fps: no decoder takes it");
+                Log.i(Codecs.TAG, "display size " + w + "x" + h + " at " + fps + "fps: no decoder takes it");
             }
         }
         size = sizes.isEmpty() ? null : sizes.get(0);
@@ -118,27 +114,23 @@ final class DisplaySettings {
     }
 
     int width() {
-        return portrait ? size[1] : size[0];
+        return size[0];
     }
 
     int height() {
-        return portrait ? size[0] : size[1];
+        return size[1];
     }
 
     /** The display role's fields after HELLO's rotation, laid out in the hub's Wire.cs. */
     byte[] helloTail() {
         return ByteBuffer.allocate(9).putShort((short) width()).putShort((short) height()).put((byte) fps)
-                .putShort((short) (portrait ? mmH : mmW)).putShort((short) (portrait ? mmW : mmH)).array();
-    }
-
-    String label(int[] s) {
-        return s[0] + " x " + s[1] + (s[0] == panelW ? " (full)" : "");
+                .putShort((short) mmW).putShort((short) mmH).array();
     }
 
     @Override
     public String toString() {
         return size == null ? "no size the decoder takes at " + fps + "fps"
-                : width() + "x" + height() + " at " + fps + "fps, " + (portrait ? "portrait" : "landscape")
+                : width() + "x" + height() + " at " + fps + "fps"
                 + ", smoothing " + (smoothing == 0 ? "off" : smoothing + "ms");
     }
 

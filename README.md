@@ -1,16 +1,16 @@
 # Exo
 
-Turns an Android phone into a webcam and a second monitor with touch for a
+Turns an Android device into a webcam and a second monitor with touch for a
 Windows 11 PC, by USB or on the same Wi-Fi. One phone can be both, or two
 phones one role each.
 
 ## What you get
 
-- **A webcam called Exo** that any Windows camera app can pick. The
+- **A webcam** that any Windows camera app can pick. The
   picture comes from a phone's camera, upright, at 1920x1080, 1280x720
   or 640x360, 30fps, or 60 where the phone's camera offers it.
 - **A second monitor** on a phone or tablet, at the panel's own
-  resolution or a lower one set on the phone, landscape or portrait, 30
+  resolution (the largest its decoder takes), landscape or portrait, 30
   or 60 fps, with touch acting as touch on that part of the desktop.
   About a tenth of a second behind the PC.
 
@@ -89,17 +89,23 @@ says so. Settings changed
 meanwhile apply when you go back to the display, which then reconnects
 in about a second.
 
-Settings are on the phone:
+Settings are on the phone, on Exo's one screen: **Connection**, **Display** and
+**Webcam**, each with its state (Off, Connected, or what it waits on).
+Tap a setting to change it:
 
-- Under **Use as display**: the resolution, landscape or portrait, 30 or
-  60 fps (60 at first). The phone holds each frame 50 ms to show them at
-  an even pace. The PC's
-  monitor takes exactly that mode when the display starts or shows again, and
-  while it shows, the phone's screen refreshes at a rate the frame rate
-  fits evenly. A tablet on Android 16 or
-  later ignores landscape or portrait: Android lets no app turn it, so
-  the display takes the way the tablet is held when it connects.
-- Under **Use as webcam**: the front or back camera, the lens, the size
+- Under **Display**: 30 or 60 fps (60 at first). The PC's monitor is the
+  phone's full screen, long side across. The phone keeps it that way and
+  turns it the right way up when you turn the phone upside down, even with
+  auto-rotate off. For a portrait display, set the monitor's **Display
+  orientation** to Portrait in Windows' display settings, then hold the
+  phone upright: touch and the pointer follow. If it comes out upside
+  down, pick Portrait (flipped) instead; Windows remembers it. On an
+  Android 17 tablet, Android may turn the display with the tablet
+  regardless; with auto-rotate off it stays landscape. The
+  phone holds each frame 50 ms to show them at an even pace, and while
+  the display shows, its screen refreshes at a rate the frame rate fits
+  evenly.
+- Under **Webcam**: the front or back camera, the lens, the size
   and frame rate the PC's camera offers apps, a torch where there is one,
   and zoom, exposure and focus (left at the start for auto), which change
   the picture as you move them. The turn: Auto keeps the picture upright
@@ -108,9 +114,11 @@ Settings are on the phone:
   phone the other way and start the webcam again.
 
 On the PC, Exo lives in the tray. Its window, opened from the tray icon
-or the Start menu, shows each connected phone, its role and whether it
-works, and any USB phone waiting for its USB debugging prompt. It also
-holds:
+or the Start menu, lists each phone: its name, role, USB or Wi-Fi, its
+mode and a coloured state (working, paused while the phone shows Exo's
+own screen, or waiting); a USB phone with Exo not open shows its
+serial and what to do. With no phone, the steps to start take its place.
+It also holds:
 
 - **Start with Windows,** on from the first run.
 - **Allow Wi-Fi connections without asking.** Off by default.
@@ -152,8 +160,8 @@ stops it. Its log is `C:\Windows\Temp\Exo\logs\exo-hub.log`.
 - **Two-finger gestures** work only in apps that handle touch natively.
 - **The pointer runs slightly ahead of the picture,** so a dragged window
   trails it.
-- **The display's resolution is set on the phone,** not in Windows'
-  display settings. Unplugging a phone stops only that phone's role;
+- **The display's resolution is the phone's own,** not set in Windows'
+  display settings; its orientation is. Unplugging a phone stops only that phone's role;
   plugging it back resumes in about a second.
 
 ## Update

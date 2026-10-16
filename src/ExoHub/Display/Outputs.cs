@@ -8,12 +8,41 @@ namespace ExoHub.Display;
 // GdiName (\\.\DISPLAY12) is only valid inside this enumeration: it changed
 // to DISPLAY18 across a driver restart in spike 2. MonitorId is the EDID
 // manufacturer and product code (ACR0721), which is what we match on.
+// Width and Height are the desktop's, after Turns: Windows' Display
+// orientation, clockwise quarter turns; the monitor's own pixels are the
+// other way round when Turns is odd.
 record OutputInfo(uint AdapterIndex, uint OutputIndex, string AdapterName,
-                  string GdiName, string MonitorId, int Left, int Top, int Width, int Height)
+                  string GdiName, string MonitorId, int Left, int Top, int Width, int Height, int Turns = 0)
 {
     public override string ToString() =>
         $"adapter {AdapterIndex} output {OutputIndex}  monitor={MonitorId}  {GdiName}  " +
-        $"{Width}x{Height} at ({Left},{Top})  on {AdapterName}";
+        $"{Width}x{Height} at ({Left},{Top}){(Turns != 0 ? $", turned {Turns * 90}" : "")}  on {AdapterName}";
+
+    // The monitor's own size: the phone's picture, which Windows turned the
+    // desktop into.
+    public int PictureWidth => Turns % 2 == 1 ? Height : Width;
+    public int PictureHeight => Turns % 2 == 1 ? Width : Height;
+
+    // A picture pixel to the desktop, as an offset from Left and Top, and
+    // back. Turned 90 (Windows' Portrait), the picture's top row is the
+    // desktop's right column, read top down: measured from the driver's
+    // pointer against GetCursorPos (s6-winrot2), the opposite of reading
+    // DISPLAYCONFIG_ROTATION_ROTATE90 as the desktop turned clockwise.
+    public (int X, int Y) ToDesktop(int px, int py) => Turns switch
+    {
+        1 => (Width - 1 - py, px),
+        2 => (Width - 1 - px, Height - 1 - py),
+        3 => (py, Height - 1 - px),
+        _ => (px, py),
+    };
+
+    public (int X, int Y) ToPicture(int dx, int dy) => Turns switch
+    {
+        1 => (dy, Width - 1 - dx),
+        2 => (Width - 1 - dx, Height - 1 - dy),
+        3 => (Height - 1 - dy, dx),
+        _ => (dx, dy),
+    };
 }
 
 static class Outputs

@@ -10,7 +10,6 @@ import android.graphics.Paint;
 import android.graphics.PixelFormat;
 import android.graphics.PorterDuff;
 import android.graphics.Rect;
-import android.hardware.display.DisplayManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -20,7 +19,6 @@ import android.view.Choreographer;
 import android.view.Display;
 import android.view.Gravity;
 import android.view.MotionEvent;
-import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
@@ -66,6 +64,8 @@ public class DisplayActivity extends Activity {
     // The link's sentence over the video: waiting, or why the PC refused.
     // Hidden while connected.
     private TextView statusView;
+    // The mode this start sent, or sends once the window has turned.
+    private DisplaySettings settings;
 
     // The hub's pointer, drawn over the video (DECISIONS 11.1) on a surface
     // of its own, as SuperDisplay does: a View over the SurfaceView shows
@@ -158,15 +158,29 @@ public class DisplayActivity extends Activity {
         String codec = in.getStringExtra("codec");
         // The mode the hub's monitor gets: the settings MainActivity saved,
         // with the tools' extras it passed on.
-        DisplaySettings settings = DisplaySettings.load(this);
+        settings = DisplaySettings.load(this);
         settings.apply(in);
         Log.i(Codecs.TAG, "display settings: " + settings);
         Codecs.logAvcDecoders(new int[][] {{settings.panelW, settings.panelH}}, new int[] {30, 60});
         if (name == null) pinPanel(settings.fps);
-        // Sensor variants, so a turn through 180 degrees follows the phone.
+        // Landscape, flipping with the device by the sensor whether or not
+        // its rotation is locked, as SuperDisplay's default; portrait is
+        // Windows' Display orientation (PLAN.md, Decide, Display).
         // configChanges keeps the activity, and the link, through any turn.
-        setRequestedOrientation(name == null && settings.portrait ? ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
-                : ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+        // Where Android ignores this (Android 17 on a large screen), the
+        // window turns as the device does and the picture is fitted to it.
+        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+        // Refitted whenever the window's size changes, as on such a turn.
+        root.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
+            if (r - l != or - ol || b - t != ob - ot) {
+                int w, h;
+                synchronized (cursorLock) {
+                    w = pictureW;
+                    h = pictureH;
+                }
+                if (w != 0) fit(w, h);
+            }
+        });
         if (name == null) {
             running = this;
             if (Build.VERSION.SDK_INT >= 33) {
@@ -193,22 +207,20 @@ public class DisplayActivity extends Activity {
         String linkRun = String.format("%tH%<tM%<tS", System.currentTimeMillis());
 
         // Both inputs need the Surface, so both start once it exists and stop
-        // before it goes. The link waits until the window has turned to the
-        // chosen orientation, so the picture is fitted to the screen it stays on.
+        // before it goes.
         view.getHolder().addCallback(new SurfaceHolder.Callback() {
             @Override
             public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
                 if (name != null) return;
-                boolean held = height > width;
                 if (link != null) {
-                    // Back in view. The same mode resumes the connection;
-                    // settings changed meanwhile connect again, as a new
-                    // start does (PLAN.md, Decide, Phone and protocol).
+                    // Back in view. The same mode, held the same way,
+                    // resumes the connection; otherwise it connects again,
+                    // as a new start does (PLAN.md, Decide, Phone and protocol).
                     if (!link.paused()) return;
                     DisplayService.stop(DisplayActivity.this);
                     DisplaySettings now = DisplaySettings.load(DisplayActivity.this);
                     now.apply(getIntent());
-                    if (followHeld(now, held) && now.size != null && settings.size != null
+                    if (now.size != null && settings.size != null
                             && Arrays.equals(now.helloTail(), settings.helloTail())) {
                         if (!link.resume()) {
                             Log.i(Codecs.TAG, "the hub now speaks below protocol 9; connecting again");
@@ -220,12 +232,7 @@ public class DisplayActivity extends Activity {
                     }
                     return;
                 }
-                if (!followHeld(settings, held)) return;
-                if (settings.size == null) {
-                    showStatus("This tablet cannot decode the display at " + settings.fps
-                            + " fps held this way. Turn it, or pick another frame rate.");
-                    return;
-                }
+                Log.i(Codecs.TAG, "display " + settings);
                 link = new Link(DisplayActivity.this, Identity.of(DisplayActivity.this), in.getIntExtra("proto", Link.VERSION),
                         Link.ROLE_DISPLAY, new Link.Listener() {
                             @Override
@@ -347,6 +354,7 @@ public class DisplayActivity extends Activity {
 
     /** The link's sentence over the video, or nothing once connected. Any thread. */
     private void showStatus(String sentence) {
+        status = sentence;
         runOnUiThread(() -> {
             statusView.setText(sentence);
             statusView.setVisibility(sentence == null ? View.GONE : View.VISIBLE);
@@ -365,15 +373,16 @@ public class DisplayActivity extends Activity {
     /**
      * UI thread. One TOUCH per MotionEvent, carrying every finger. View to
      * picture: the listener is on the video view, so the event's x and y are
-     * already relative to it; divide by the view's scale over the picture,
-     * and clamp, so a drag that leaves the picture stays on its edge rather
-     * than landing on another monitor. Historical samples are ignored: the
-     * hub keeps only the latest position per finger anyway.
+     * already relative to it; divided by the view's scale over the picture,
+     * and clamped, so a drag that
+     * leaves the picture stays on its edge rather than landing on another
+     * monitor. Historical samples are ignored: the hub keeps only the latest
+     * position per finger anyway.
      */
     private boolean onTouch(View v, MotionEvent e) {
         int action = e.getActionMasked();
         if (pictureW == 0 || link == null) return true;
-        double sx = (double) v.getWidth() / pictureW, sy = (double) v.getHeight() / pictureH;
+        double vw = v.getWidth(), vh = v.getHeight();
         int n = e.getPointerCount();
         ByteBuffer b = ByteBuffer.allocate(8 + 2 + 2 + 1 + n * 10); // big-endian, as everything on the wire
         long now = System.nanoTime();
@@ -386,8 +395,8 @@ public class DisplayActivity extends Activity {
                 if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN) phase = DOWN;
                 if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_POINTER_UP) phase = UP;
             }
-            int px = Math.max(0, Math.min(pictureW - 1, (int) Math.round(e.getX(i) / sx)));
-            int py = Math.max(0, Math.min(pictureH - 1, (int) Math.round(e.getY(i) / sy)));
+            int px = Math.max(0, Math.min(pictureW - 1, (int) Math.round(e.getX(i) / vw * pictureW)));
+            int py = Math.max(0, Math.min(pictureH - 1, (int) Math.round(e.getY(i) / vh * pictureH)));
             b.put((byte) e.getPointerId(i)).put((byte) phase).putInt(px).putInt(py);
             if (phase == DOWN) {
                 Log.i(Codecs.TAG, String.format("touch DOWN id %d at view (%.1f,%.1f) -> picture (%d,%d)",
@@ -483,11 +492,12 @@ public class DisplayActivity extends Activity {
         if (c == null) return;
         c.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
         if (show) {
-            double sx = (double) w / pw, sy = (double) h / ph;
-            int left = (int) Math.round((x - hotX) * sx), top = (int) Math.round((y - hotY) * sy);
-            cursorDst.set(left, top, left + (int) Math.round(shape.getWidth() * sx),
-                    top + (int) Math.round(shape.getHeight() * sy));
+            // In picture pixels.
+            c.save();
+            c.scale((float) w / pw, (float) h / ph);
+            cursorDst.set(x - hotX, y - hotY, x - hotX + shape.getWidth(), y - hotY + shape.getHeight());
             c.drawBitmap(shape, null, cursorDst, cursorPaint);
+            c.restore();
         }
         holder.unlockCanvasAndPost(c);
         surfaceClear = !show;
@@ -499,7 +509,7 @@ public class DisplayActivity extends Activity {
         }
         if (show != cursorShown) {
             Log.i(Codecs.TAG, show ? String.format("cursor shown: hotspot at picture (%d,%d), shape %dx%d hot (%d,%d),"
-                    + " drawn at %s on %dx%d", x, y, shape.getWidth(), shape.getHeight(), hotX, hotY,
+                    + " picture rect %s on %dx%d", x, y, shape.getWidth(), shape.getHeight(), hotX, hotY,
                     cursorDst.toShortString(), w, h) : "cursor hidden");
             cursorShown = show;
         }
@@ -523,24 +533,6 @@ public class DisplayActivity extends Activity {
             cursorSurface.setLayoutParams(new FrameLayout.LayoutParams(vw, vh, Gravity.CENTER));
             postCursor();
         });
-    }
-
-    /**
-     * Android 16 ignores an app's orientation on a screen 600dp or more
-     * across, for targetSdk 36 and later, with no opt-out at 37: a tablet
-     * faces the way it is held, so s takes that orientation. The largest
-     * size the decoder took stays the largest it takes this way; any other
-     * is kept if it still fits. False on a phone held the other way, which
-     * turns: wait for the window to.
-     */
-    private boolean followHeld(DisplaySettings s, boolean held) {
-        if (held == s.portrait) return true;
-        if (Build.VERSION.SDK_INT < 36 || getResources().getConfiguration().smallestScreenWidthDp < 600) return false;
-        boolean largest = s.size == null || s.size == s.sizes.get(0);
-        s.portrait = held;
-        s.refresh(largest ? null : s.size[0] + "x" + s.size[1]);
-        Log.i(Codecs.TAG, "held the other way; display settings: " + s);
-        return true;
     }
 
     /** MainActivity's "Back to display" brings this one to the front. */
@@ -571,6 +563,8 @@ public class DisplayActivity extends Activity {
 
     /** The display role's activity while it lives, connected or paused; else null. */
     static volatile DisplayActivity running;
+    /** Its sentence while it runs, for the app's screen: waiting, or why the PC refused; null once connected. */
+    static volatile String status;
 
     /** "Stop display": ends the display and its connection. Main thread. */
     static void end() {
@@ -581,7 +575,10 @@ public class DisplayActivity extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if (running == this) running = null;
+        if (running == this) {
+            running = null;
+            status = null;
+        }
         DisplayService.stop(this);
         if (link != null) link.stop();
         link = null;

@@ -58,8 +58,11 @@ static class Topology
     // The monitor's rectangle on the desktop and its refresh rate, while it
     // is active. Where touch lands, so it is read again whenever it may
     // have moved.
+    // turns: Windows' Display orientation, clockwise quarter turns, 0 to 3.
+    // The source mode keeps the unturned size (2026-10-16, s6-winrot: after
+    // Portrait the hub still read 2944x1840), so a quarter turn swaps it here.
     public static bool Placement(uint luidLow, int luidHigh, uint target,
-                                 out (int x, int y, int w, int h) rect, out (uint num, uint den) refresh)
+                                 out (int x, int y, int w, int h) rect, out (uint num, uint den) refresh, out int turns)
     {
         Query(QDC_ONLY_ACTIVE_PATHS, out var paths, out var modes);
         int exo = Array.FindIndex(paths, p => IsTarget(p, luidLow, luidHigh, target));
@@ -67,10 +70,14 @@ static class Topology
         {
             rect = default;
             refresh = default;
+            turns = 0;
             return false;
         }
         rect = SourceRect(paths[exo], modes);
         refresh = (paths[exo].refreshNumerator, paths[exo].refreshDenominator);
+        turns = paths[exo].rotation is >= 1 and <= 4 ? (int)paths[exo].rotation - 1 : 0;
+        if (turns % 2 == 1)
+            rect = (rect.x, rect.y, rect.h, rect.w);
         return true;
     }
 

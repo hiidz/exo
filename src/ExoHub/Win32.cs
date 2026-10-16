@@ -150,6 +150,7 @@ static class Win32
         [FieldOffset(24)] public int targetAdapterHigh;
         [FieldOffset(28)] public uint targetId;
         [FieldOffset(32)] public uint targetModeIdx;
+        [FieldOffset(40)] public uint rotation;  // DISPLAYCONFIG_ROTATION: 1 none, 2 90, 3 180, 4 270 clockwise
         [FieldOffset(48)] public uint refreshNumerator;
         [FieldOffset(52)] public uint refreshDenominator;
         [FieldOffset(60)] public int targetAvailable;

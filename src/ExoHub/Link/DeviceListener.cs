@@ -1,7 +1,8 @@
-// The one loopback port every device's localabstract:exo reaches through
-// adb reverse (PROJECT_SPEC FR-4.3). Accepts, runs the handshake in
-// DECISIONS 5.7, and holds the display connection and the camera
-// connection, whose frames go to the camera decoder.
+// The loopback ports each USB device's localabstract:exo reaches through
+// adb reverse, one a serial, so a connection's port names its device
+// (PLAN.md, Transport and Wi-Fi), and the Wi-Fi port. Accepts, runs the
+// handshake in DECISIONS 5.7, and holds the display connection and the
+// camera connection, whose frames go to the camera decoder.
 //
 // One thread accepts and one thread serves each connection. There are only
 // ever a few connections, and a blocking thread each reads top to bottom.
@@ -25,7 +26,7 @@ sealed class DeviceListener : IDisposable
     // autotunes it and a fast-completing write would hide a backlog (5.7).
     const int SendBufferBytes = 256 * 1024;
 
-    readonly TcpListener listener;  // loopback, for adb reverse
+    readonly Dictionary<string, TcpListener> usb = new();  // loopback, a serial's, for adb reverse; under itself
     readonly TcpListener wifi;      // every interface, for Wi-Fi (PLAN.md, Transport and Wi-Fi)
     readonly Stopwatch clock;
     readonly DisplaySender sender;
@@ -40,14 +41,14 @@ sealed class DeviceListener : IDisposable
     // Random per hub start, sent in every WELCOME. A phone that logs a new
     // value is talking to a new hub instance (DECISIONS 5.7).
     public ulong SessionId { get; } = BinaryPrimitives.ReadUInt64BigEndian(RandomNumberGenerator.GetBytes(8));
-    public int Port => ((IPEndPoint)listener.LocalEndpoint).Port;
     public int WifiPort => ((IPEndPoint)wifi.LocalEndpoint).Port;
     // Asks the PC's user whether a phone may connect over Wi-Fi; blocks until
     // answered, and remembers an allow. Null until the tray is up: no answer.
     public Func<Phone, bool> Ask;
 
-    sealed class Connection(Socket socket, Phone phone, byte role, byte rotation, DisplayMode mode)
+    sealed class Connection(Socket socket, Phone phone, byte role, byte rotation, DisplayMode mode, string serial)
     {
+        public readonly string Serial = serial;    // the USB device it came through; null over Wi-Fi
         public readonly Socket Socket = socket;
         public readonly Phone Phone = phone;
         public readonly byte Role = role;
@@ -55,32 +56,33 @@ sealed class DeviceListener : IDisposable
         public readonly DisplayMode Mode = mode;   // the display role's; default for the camera
         public CameraFormat Format;                // the camera role's
         public int Frames;                         // the camera role's, received so far
-        public bool Wifi;                          // reached the Wi-Fi listener, not adb reverse
+        public bool Wifi => Serial == null;
     }
 
     // One accepted connection as the window shows it. Progress moves while
     // it works: frames the display phone acked, or camera frames received.
-    public readonly record struct Link(Phone Phone, bool Camera, string Detail, int Progress);
-
-    static string Over(Connection c) => c.Wifi ? ", Wi-Fi" : ", USB";
+    // Serial is the USB device's, null over Wi-Fi. Paused: the phone's display is out of view.
+    public readonly record struct Link(Phone Phone, bool Camera, string Detail, int Progress, string Serial, bool Paused);
 
     public List<Link> Snapshot()
     {
         var links = new List<Link>();
+        bool paused = sender.Paused;  // before gate, so the two locks never nest
         lock (gate)
         {
             if (display != null)
-                links.Add(new Link(display.Phone, false, $"{display.Mode.Width}x{display.Mode.Height} at {display.Mode.Fps}fps" + Over(display),
-                                   Volatile.Read(ref sender.Acked)));
+                links.Add(new Link(display.Phone, false, $"{display.Mode.Width}x{display.Mode.Height} at {display.Mode.Fps}fps",
+                                   Volatile.Read(ref sender.Acked), display.Serial, paused));
             if (cameraConn != null)
-                links.Add(new Link(cameraConn.Phone, true, cameraConn.Format + Over(cameraConn), Volatile.Read(ref cameraConn.Frames)));
+                links.Add(new Link(cameraConn.Phone, true, cameraConn.Format.ToString(), Volatile.Read(ref cameraConn.Frames),
+                                   cameraConn.Serial, false));
         }
         return links;
     }
 
     // camera is null when the hub has no virtual camera to feed, so the
     // camera role is refused.
-    public DeviceListener(int port, Stopwatch clock, DisplaySender sender, TouchInjector touch, CameraDecoder camera,
+    public DeviceListener(Stopwatch clock, DisplaySender sender, TouchInjector touch, CameraDecoder camera,
                           VirtualCamera vcam, VirtualDisplay monitor)
     {
         this.clock = clock;
@@ -89,22 +91,50 @@ sealed class DeviceListener : IDisposable
         this.touch = touch;
         this.camera = camera;
         this.vcam = vcam;
-        // Loopback only, so nothing on the LAN can connect. Exclusive, so a
-        // second hub fails here instead of sharing the port with this one.
-        listener = new TcpListener(IPAddress.Loopback, port) { ExclusiveAddressUse = true };
-        listener.Start();
-        // Port 0 too, so an orphan hub cannot be mistaken for this one: the
+        // Port 0, so an orphan hub cannot be mistaken for this one: the
         // phone learns the port and session from Discovery's answer. No TLS,
         // as SuperDisplay (PLAN.md, Wi-Fi as built in step 4).
         wifi = new TcpListener(IPAddress.Any, 0) { ExclusiveAddressUse = true };
         wifi.Start();
-        new Thread(() => AcceptLoop(listener, false)) { IsBackground = true, Name = "accept" }.Start();
-        new Thread(() => AcceptLoop(wifi, true)) { IsBackground = true, Name = "accept-wifi" }.Start();
+        new Thread(() => AcceptLoop(wifi, null)) { IsBackground = true, Name = "accept-wifi" }.Start();
+    }
+
+    // A port for this USB device alone, for its reverse; the same one while
+    // it stays. Loopback only, so nothing on the LAN can connect. Port 0 and
+    // exclusive, so with WELCOME's session ID it names this hub (5.7, 5.8).
+    public int Listen(string serial)
+    {
+        TcpListener l;
+        lock (usb)
+        {
+            if (usb.TryGetValue(serial, out l))
+                return ((IPEndPoint)l.LocalEndpoint).Port;
+            l = new TcpListener(IPAddress.Loopback, 0) { ExclusiveAddressUse = true };
+            l.Start();
+            usb[serial] = l;
+        }
+        int port = ((IPEndPoint)l.LocalEndpoint).Port;
+        Log($"{serial} listening on 127.0.0.1:{port}");
+        new Thread(() => AcceptLoop(l, serial)) { IsBackground = true, Name = "accept " + serial }.Start();
+        return port;
+    }
+
+    // The device left: its port closes. Its connections end as its
+    // transport went, by themselves.
+    public void Unlisten(string serial)
+    {
+        TcpListener l;
+        lock (usb)
+            if (!usb.Remove(serial, out l))
+                return;
+        l.Stop();
+        Log($"{serial} port closed");
     }
 
     void Log(string line) => Console.WriteLine($"{clock.Elapsed.TotalSeconds,8:F3}s link {line}");
 
-    void AcceptLoop(TcpListener from, bool overWifi)
+    // serial: the USB device whose port this is; null for Wi-Fi.
+    void AcceptLoop(TcpListener from, string serial)
     {
         while (true)
         {
@@ -117,12 +147,12 @@ sealed class DeviceListener : IDisposable
             {
                 return;  // Dispose stopped the listener
             }
-            new Thread(() => Serve(s, overWifi)) { IsBackground = true, Name = "device" }.Start();
+            new Thread(() => Serve(s, serial)) { IsBackground = true, Name = "device" }.Start();
         }
     }
 
     // One connection, from accept to close.
-    void Serve(Socket s, bool overWifi)
+    void Serve(Socket s, string serial)
     {
         string who = s.RemoteEndPoint?.ToString() ?? "?";
         Connection conn = null;
@@ -130,7 +160,7 @@ sealed class DeviceListener : IDisposable
         {
             using var net = new NetworkStream(s, ownsSocket: true);
             s.ReceiveTimeout = HelloTimeoutMs;
-            conn = Handshake(s, net, who, overWifi);
+            conn = Handshake(s, net, who, serial);
             if (conn == null)
                 return;
             s.ReceiveTimeout = 0;
@@ -184,8 +214,9 @@ sealed class DeviceListener : IDisposable
 
     // Reads a HELLO and answers it. Returns the accepted connection, or null
     // after a refusal, which has already been logged and sent.
-    Connection Handshake(Socket s, NetworkStream net, string who, bool overWifi)
+    Connection Handshake(Socket s, NetworkStream net, string who, string serial)
     {
+        bool overWifi = serial == null;
         Span<byte> head = stackalloc byte[8];
         net.ReadExactly(head);
         if (!head[..4].SequenceEqual(Wire.Magic))
@@ -283,7 +314,7 @@ sealed class DeviceListener : IDisposable
             Log($"{name} allowed by the PC's user");
         }
 
-        var conn = new Connection(s, phone, role, rotation, mode) { Format = format, Wifi = overWifi };
+        var conn = new Connection(s, phone, role, rotation, mode, serial) { Format = format };
         Connection replaced;
         lock (gate)
         {
@@ -317,7 +348,7 @@ sealed class DeviceListener : IDisposable
         SendWelcome(net, version, Wire.Accepted, session);
         Log($"{name} accepted: protocol {version} (device {oldest} to {newest}), role {roleName}, " +
             (role == Wire.RoleDisplay ? $"{mode}" : $"{format}, rotation {rotation * 90}") + $", session {SessionId:x16}, " +
-            (overWifi ? $"Wi-Fi from {who}" : "USB"));
+            (overWifi ? $"Wi-Fi from {who}" : $"USB {serial}"));
         return conn;
     }
 
@@ -476,7 +507,12 @@ sealed class DeviceListener : IDisposable
 
     public void Dispose()
     {
-        listener.Stop();
+        lock (usb)
+        {
+            foreach (var l in usb.Values)
+                l.Stop();
+            usb.Clear();
+        }
         wifi.Stop();
         lock (gate)
         {

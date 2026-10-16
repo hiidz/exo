@@ -120,11 +120,13 @@ sealed class DriverCursor : IDisposable
                 continue;
             }
             // GetCursorPos is the hotspot in virtual-desktop pixels. With the
-            // mouse still, it minus the monitor's origin must equal what the
-            // driver's top-left plus the shape's hotspot gave.
+            // mouse still, it minus the monitor's origin, turned as Windows
+            // turns the desktop onto the monitor, must equal what the driver's
+            // top-left plus the shape's hotspot gave: the driver's pointer is
+            // already in the monitor's own pixels, its shapes turned too.
             Win32.GetCursorPos(out Win32.POINT cp);
             OutputInfo o = output();
-            int gx = cp.X - (o?.Left ?? 0), gy = cp.Y - (o?.Top ?? 0);
+            var (gx, gy) = o == null ? (cp.X, cp.Y) : o.ToPicture(cp.X - o.Left, cp.Y - o.Top);
             bool agree = gx == Tracker.X && gy == Tracker.Y;
             if (!agree)
                 Disagreements++;

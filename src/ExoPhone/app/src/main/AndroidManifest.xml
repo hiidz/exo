@@ -29,23 +29,22 @@
     <application
         android:label="Exo"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
-        <!-- sensorLandscape: either landscape, whichever way up the device
-             is held. A 180 degree turn keeps the size and orientation, so
-             the activity is not recreated and the link stays up. The home
-             screen too, so the webcam's first rotation is read in landscape
-             (DECISIONS 6.4). -->
+        <!-- fullUser: the settings screen turns with the device, unless
+             its rotation is locked (PLAN.md, Decide, Display). A portrait
+             reading reaches the webcam as its last landscape way
+             (CameraService.turns). -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
-            android:screenOrientation="sensorLandscape">
+            android:screenOrientation="fullUser">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <!-- Its orientation is the display setting, set in onCreate. It
-             handles turns itself, so the link stays up through them. -->
+        <!-- Landscape, flipping with the device, set in onCreate. It handles
+             turns itself, so the link stays up through them. -->
         <activity
             android:name=".DisplayActivity"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize"

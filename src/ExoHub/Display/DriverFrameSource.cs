@@ -133,9 +133,9 @@ sealed class DriverFrameSource : IDisposable
         o = null;
         hz = default;
         if (!monitor.TryGetTarget(out uint low, out int high, out uint target) ||
-            !Topology.Placement(low, high, target, out var r, out var rate))
+            !Topology.Placement(low, high, target, out var r, out var rate, out int turns))
             return false;
-        o = new OutputInfo(0, 0, "ExoDisplay", Name ?? "-", VirtualDisplay.MonitorId, r.x, r.y, r.w, r.h);
+        o = new OutputInfo(0, 0, "ExoDisplay", Name ?? "-", VirtualDisplay.MonitorId, r.x, r.y, r.w, r.h, turns);
         hz = new Rational(rate.num, rate.den);
         return true;
     }

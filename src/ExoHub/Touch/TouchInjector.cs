@@ -4,7 +4,8 @@
 // TOUCH body, big-endian: sent i64 (phone microseconds), picture width and
 // height u16, count u8, then count entries of id u8, phase u8, x i32, y i32.
 // x and y are picture pixels, which are the EXO monitor's pixels, so the
-// desktop point is the monitor's origin plus them. Signed throughout: the
+// desktop point is the monitor's origin plus them, turned as Windows turned
+// the desktop onto the monitor (OutputInfo.ToDesktop). Signed throughout: the
 // origin is negative when the monitor sits left of or above the primary.
 //
 // Two threads. The device thread parses each TOUCH, maps it to the desktop
@@ -99,7 +100,8 @@ sealed class TouchInjector : IDisposable
         OutputInfo o = target;
         string drop = Broken != null ? $"injector not running: {Broken}"
             : o == null ? "no monitor texture, so no rectangle"
-            : picW != o.Width || picH != o.Height ? $"phone's picture {picW}x{picH} is not the output's {o.Width}x{o.Height}"
+            : picW != o.PictureWidth || picH != o.PictureHeight
+                ? $"phone's picture {picW}x{picH} is not the output's {o.PictureWidth}x{o.PictureHeight}"
             : null;
         if (drop != null)
         {
@@ -133,8 +135,8 @@ sealed class TouchInjector : IDisposable
                 ReadOnlySpan<byte> e = body.Slice(Fixed + i * Entry, Entry);
                 int id = e[0];
                 byte phase = e[1];
-                int dx = o.Left + BinaryPrimitives.ReadInt32BigEndian(e[2..]);
-                int dy = o.Top + BinaryPrimitives.ReadInt32BigEndian(e[6..]);
+                var (ox, oy) = o.ToDesktop(BinaryPrimitives.ReadInt32BigEndian(e[2..]), BinaryPrimitives.ReadInt32BigEndian(e[6..]));
+                int dx = o.Left + ox, dy = o.Top + oy;
                 if (phase == Down) receiving.Add(id);
                 if (phase is Up or Cancel) receiving.Remove(id);
 

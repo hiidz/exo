@@ -217,6 +217,16 @@ sealed class DisplaySender : IDisposable
     // in flight are written off, since the phone acks what still arrives
     // but the stall check must not count them. Resumed, as a new
     // connection: a forced IDR first, and the cursor replayed.
+    // For the window: the phone's display is out of view.
+    public bool Paused
+    {
+        get
+        {
+            lock (gate)
+                return paused;
+        }
+    }
+
     public void Pause(NetworkStream net)
     {
         lock (gate)

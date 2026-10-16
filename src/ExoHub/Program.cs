@@ -8,7 +8,7 @@
 // own thread (DriverCursor). Quit in the tray, or Ctrl+C where there is a
 // console, stops it and prints totals.
 //
-// Every device that reaches adb gets the reverse to the hub's port; the
+// Every device that reaches adb gets the reverse to a hub port of its own; the
 // role is picked in the app on the phone, which then connects.
 //
 // One hub per Windows session: a second start shows the first one's window
@@ -158,21 +158,21 @@ using VirtualCamera vcam = VirtualCamera.Register(clock, camera);
 var decoder = new CameraDecoder(camera, clock);
 // Null to refuse the camera role: no virtual camera for it to reach.
 CameraDecoder cameraRole = vcam != null ? decoder : null;
-// Port 0: Windows picks it, and this instance holds it exclusively. With
-// the session ID in WELCOME it is the per-session identifier (5.7, 5.8).
+// The listener binds each USB device a port, 0 so Windows picks it, held
+// exclusively; with the session ID in WELCOME it names this hub (5.7, 5.8).
 using var display = new DisplaySender(clock) { BitrateOverride = bitrateAt30 };
 var touch = new TouchInjector(clock);
 // Before the listener, which tells it when the display connection comes
 // and goes.
 using var monitor = new VirtualDisplay(clock);
-using var devices = new DeviceListener(0, clock, display, touch, cameraRole, vcam, monitor);
-Console.WriteLine($"listening on 127.0.0.1:{devices.Port}, session {devices.SessionId:x16}, " +
+using var devices = new DeviceListener(clock, display, touch, cameraRole, vcam, monitor);
+Console.WriteLine($"session {devices.SessionId:x16}, " +
                   $"camera role {(cameraRole != null ? "open" : "REFUSED")}, " +
-                  $"reverse {(reverse ? "for every device" : "for none")}");
+                  $"reverse {(reverse ? "for every device, a loopback port each" : "for none")}");
 // Wi-Fi: the phone asks on the LAN and dials the port in the answer.
 using var discovery = Discovery.Start(clock, devices.WifiPort, devices.SessionId, out string wifiProblem);
 Console.WriteLine($"Wi-Fi on 0.0.0.0:{devices.WifiPort}" + (discovery == null ? $", not found: {wifiProblem}" : ""));
-var reverses = new ReverseSetup(devices.Port, clock);
+var reverses = new ReverseSetup(devices.Listen, devices.Unlisten, clock);
 // Off from the window, or refused while a foreign adb holds 5037; the hub
 // runs on without it either way (AdbControl).
 var adb = new AdbControl(clock, (serial, state) =>
@@ -667,7 +667,7 @@ static OutputInfo CheckTouchTarget(OutputInfo o, string t)
     var m = mi.rcMonitor;
     bool agree = got && m.Left == o.Left && m.Top == o.Top &&
                  m.Right - m.Left == o.Width && m.Bottom - m.Top == o.Height;
-    Console.WriteLine($"{t} touch target: DXGI ({o.Left},{o.Top}) {o.Width}x{o.Height}, " +
+    Console.WriteLine($"{t} touch target: DXGI ({o.Left},{o.Top}) {o.Width}x{o.Height}, turned {o.Turns * 90}, " +
                       (got ? $"GetMonitorInfo ({m.Left},{m.Top})-({m.Right},{m.Bottom})" : "no monitor at its centre") +
                       $", {(agree ? "agree" : "DISAGREE, touch refused")}");
     return agree ? o : null;
