@@ -13,7 +13,8 @@ by**.
 
 - **USB:** plug the phone in. It needs USB debugging, as in
   [Install](install.md#for-usb-only-usb-debugging).
-- **Wi-Fi:** tap **Pick a PC** and choose yours, or type its address.
+- **Wi-Fi:** tap **PC** (it reads **Pick one** at first) and choose
+  yours, or type its address.
   The first time, the PC asks whether to allow the phone, and both show
   the same 6-digit code: allow only if they match. After that the phone
   connects by itself. If you say no, the phone stops trying until
@@ -42,15 +43,17 @@ Settings are on the phone, under **Connection**, **Display** and
   down. For a portrait monitor, set its **Display orientation** to
   Portrait (or Portrait (flipped), whichever comes out upright) in
   Windows' display settings and hold the phone upright; touch follows.
-- **Webcam:** front or back, the lens, the size and frame rate, a torch,
+- **Webcam:** front or back, the lens, the size and frame rate, shown as
+  one line until you tap **Settings**. While the webcam runs: a torch,
   and zoom, exposure and focus, live. The turn: **Auto** keeps the
   picture upright whichever way the phone lies on its side; **Fixed**
   keeps the way it lay when the webcam started.
 
 ## On the PC
 
-Exo lives in the tray. Its window lists each phone with its role, USB
-or Wi-Fi, mode and state; with no phone, the steps to start. It also
+Exo lives in the tray. Its window, light or dark as Windows' app mode,
+lists each phone with its role, USB or Wi-Fi, mode and state; with no
+phone, the steps to start. It also
 holds:
 
 - **Start with Windows,** on from the first run.

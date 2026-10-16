@@ -9,6 +9,7 @@
 
 using System.Drawing;
 using System.Windows.Forms;
+using Microsoft.Win32;
 using ExoHub.Link;
 
 namespace ExoHub.Ui;
@@ -29,10 +30,15 @@ sealed class Tray
     readonly ManualResetEventSlim ready = new();
     Form form;
     NotifyIcon icon;
-    ListView phones;   // a row a phone; hidden while there is none
-    Label steps;       // the first-run steps, in the list's place
-    Label problems;    // only while there is one
-    string shown;      // the rows last put in the list, so a still list is left alone
+    Icon small;
+    SectionTitle phonesTitle, settingsTitle;
+    PhoneTable phones;     // a row a phone; hidden while there is none
+    Steps steps;           // the first-run steps, in the list's place
+    ProblemLines problems; // only while there is one
+    CardPanel settingsCard;
+    CheckRow start, adb;
+    Hyperlink displaySettings;
+    string shown;          // the rows last put in the list, so a still list is left alone
     readonly Dictionary<(string, bool), (int Progress, long At)> seen = new();
 
     public Tray(Func<HubState> state, Action quit, Func<bool, string> setAdb, bool show)
@@ -64,13 +70,10 @@ sealed class Tray
                 asks[(phone.Id, code)] = answer = tcs.Task;
                 form.BeginInvoke(() =>
                 {
-                    // DefaultDesktopOnly: on top of whatever has focus, since
-                    // the window may be hidden in the tray.
-                    var r = MessageBox.Show($"Allow \"{phone.Name}\" to connect to this PC over Wi-Fi?\n\n" +
-                                            $"The phone shows a code. Allow only if it is {code}.\n\n" +
-                                            "Once allowed, it connects without asking.", "Exo",
-                                            MessageBoxButtons.YesNo, MessageBoxIcon.Question,
-                                            MessageBoxDefaultButton.Button2, MessageBoxOptions.DefaultDesktopOnly);
+                    // Its own top-level window, on top of whatever has
+                    // focus, since this one may be hidden in the tray.
+                    using var d = new PairingDialog(phone.Name, code, small);
+                    var r = d.ShowDialog();
                     lock (asks)
                         asks.Remove((phone.Id, code));
                     tcs.SetResult(r == DialogResult.Yes);
@@ -95,14 +98,19 @@ sealed class Tray
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
-        using var appIcon = LoadIcon(SystemInformation.SmallIconSize);
-        BuildForm(appIcon);
+        using var appIcon = LoadIcon("Exo.ico", SystemInformation.SmallIconSize);
+        using var trayIcon = LoadIcon("Exo-tray.ico", SystemInformation.SmallIconSize);
+        small = appIcon;
+        BuildForm();
+        var menu = new ContextMenuStrip { Items = { { "Open Exo", null, (_, _) => Open() }, { "Quit", null, (_, _) => quit() } } };
+        // Bold, as the default item: what a left click does.
+        menu.Items[0].Font = new Font(menu.Items[0].Font, FontStyle.Bold);
         icon = new NotifyIcon
         {
-            Icon = appIcon,
+            Icon = trayIcon,
             Text = "Exo",
             Visible = true,
-            ContextMenuStrip = new ContextMenuStrip { Items = { { "Open Exo", null, (_, _) => Open() }, { "Quit", null, (_, _) => quit() } } },
+            ContextMenuStrip = menu,
         };
         icon.MouseClick += (_, e) =>
         {
@@ -119,94 +127,64 @@ sealed class Tray
         Application.Run();
     }
 
-    static Icon LoadIcon(Size size)
+    static Icon LoadIcon(string name, Size size)
     {
-        using var s = typeof(Tray).Assembly.GetManifestResourceStream("ExoHub.Exo.ico");
+        using var s = typeof(Tray).Assembly.GetManifestResourceStream("ExoHub." + name);
         return new Icon(s, size);
     }
 
-    void BuildForm(Icon small)
+    void BuildForm()
     {
         form = new Form
         {
             Text = "Exo",
-            Icon = LoadIcon(SystemInformation.IconSize),
+            Icon = LoadIcon("Exo.ico", SystemInformation.IconSize),
             FormBorderStyle = FormBorderStyle.FixedSingle,
             MaximizeBox = false,
             StartPosition = FormStartPosition.CenterScreen,
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            AutoScaleMode = AutoScaleMode.Dpi,
-            Font = SystemFonts.MessageBoxFont,
+            // Arrange sizes everything, in the design's pixels at the
+            // window's own DPI, again whenever that changes.
+            AutoScaleMode = AutoScaleMode.None,
         };
-        form.BackColor = SystemColors.Window;
-        var panel = new FlowLayoutPanel
-        {
-            FlowDirection = FlowDirection.TopDown,
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            Padding = new Padding(16),
-            WrapContents = false,
-        };
-        var heading = new Font(form.Font.FontFamily, form.Font.Size * 1.25f, FontStyle.Bold);
-        Label Heading(string text, int top) =>
-            new() { Text = text, AutoSize = true, Font = heading, Margin = new Padding(0, top, 3, 6) };
-
-        // The list: one row a phone, its state as a coloured dot. Sized by the
-        // DPI-scaled font, not in pixels.
-        int em = TextRenderer.MeasureText("M", form.Font).Width;
-        var dots = new ImageList { ImageSize = new Size(em, em), ColorDepth = ColorDepth.Depth32Bit };
-        foreach (var c in new[] { Color.FromArgb(61, 176, 96), Color.FromArgb(224, 160, 48), Color.Gray })
-            dots.Images.Add(Dot(c, em));
-        phones = new ListView
-        {
-            View = View.Details,
-            FullRowSelect = true,
-            HeaderStyle = ColumnHeaderStyle.Nonclickable,
-            SmallImageList = dots,
-            Size = new Size(em * 46, em * 7),
-            Margin = new Padding(0, 0, 3, 6),
-            BorderStyle = BorderStyle.FixedSingle,
-        };
-        foreach (var (name, width) in new[] { ("Phone", 10), ("Role", 8), ("Via", 4), ("Mode", 15), ("State", 9) })
-            phones.Columns.Add(name, em * width);
-        steps = new Label
-        {
-            AutoSize = true,
-            MinimumSize = new Size(em * 46, 0),  // the list's width, so the window keeps its size
-            Margin = new Padding(0, 0, 3, 6),
-            Text = "No phone yet.\n\n" +
-                   "1.  Install Exo on the phone.\n" +
-                   "2.  USB: turn on USB debugging on the phone and plug it in.\n" +
-                   "     Wi-Fi: join the same network as this PC.\n" +
-                   "3.  Open Exo on the phone, then Use as display or Use as webcam.",
-        };
-        problems = new Label { AutoSize = true, MaximumSize = new Size(em * 46, 0), ForeColor = Color.FromArgb(176, 96, 0),
-                               Margin = new Padding(0, 0, 3, 6) };
-
-        var start = new CheckBox { Text = "Start with Windows", AutoSize = true, Checked = Settings.StartWithWindows };
+        phonesTitle = new SectionTitle("Phones");
+        settingsTitle = new SectionTitle("Settings");
+        steps = new Steps();
+        phones = new PhoneTable();
+        problems = new ProblemLines();
+        settingsCard = new CardPanel();
+        start = new CheckRow("Start with Windows", Settings.StartWithWindows);
         start.CheckedChanged += (_, _) => Settings.StartWithWindows = start.Checked;
-        var adb = new CheckBox { Text = "Enable adb connections (USB)", AutoSize = true, Checked = Settings.AdbEnabled };
+        adb = new CheckRow("Enable adb connections (USB)", Settings.AdbEnabled);
         adb.CheckedChanged += (_, _) =>
         {
             bool on = adb.Checked;
             Settings.AdbEnabled = on;
-            adb.Enabled = false;
+            adb.Busy = true;
             // Starting adb takes seconds, so not on this thread.
             Task.Run(() => setAdb(on)).ContinueWith(_ => form.BeginInvoke(() =>
             {
-                adb.Enabled = true;
+                adb.Busy = false;
                 Refresh();
             }));
         };
-        var link = new LinkLabel { Text = "Windows display settings", AutoSize = true, Margin = new Padding(3, 12, 3, 3) };
-        link.LinkClicked += (_, _) =>
+        displaySettings = new Hyperlink("Windows display settings ↗");
+        displaySettings.Clicked += (_, _) =>
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("ms-settings:display") { UseShellExecute = true });
-        panel.Controls.AddRange([Heading("Phones", 0), phones, steps, problems, Heading("Settings", 12), start, adb, link]);
-        form.Controls.Add(panel);
+        settingsCard.Controls.AddRange([start, adb, displaySettings]);
+        form.Controls.AddRange([phonesTitle, steps, phones, problems, settingsTitle, settingsCard]);
+        ApplyTheme();
         // Now, so Show and Close can reach this thread before the window
         // was ever shown.
         _ = form.Handle;
+        Theme.TitleBar(form.Handle);
+        Arrange();
+        form.DpiChanged += (_, _) => Arrange();
+        // Light or dark follows Windows' app theme as it changes.
+        SystemEvents.UserPreferenceChanged += (_, _) => form.BeginInvoke(() =>
+        {
+            if (Theme.Update())
+                ApplyTheme();
+        });
         // Every close hides it, whoever sent it: a WM_CLOSE from another
         // process (CloseMainWindow, TaskManagerClosing) once destroyed the
         // window, which Show and Close invoke on. Only signing out and the
@@ -220,15 +198,53 @@ sealed class Tray
         };
     }
 
-    static Bitmap Dot(Color c, int size)
+    void ApplyTheme()
     {
-        var b = new Bitmap(size, size);
-        using var g = Graphics.FromImage(b);
-        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-        using var brush = new SolidBrush(c);
-        int d = size * 3 / 5, at = (size - d) / 2;
-        g.FillEllipse(brush, at, at, d, d);
-        return b;
+        var p = Theme.P;
+        form.BackColor = p.Window;
+        foreach (Control c in form.Controls)
+            c.BackColor = p.Window;
+        foreach (Control c in settingsCard.Controls)
+            c.BackColor = p.Card;
+        if (form.IsHandleCreated)
+            Theme.TitleBar(form.Handle);
+        form.Invalidate(true);
+    }
+
+    // Shown: the table or the steps, and the problem lines only while there
+    // is one. Not Control.Visible, which is false while the window is hidden.
+    bool listShown, problemsShown;
+
+    // The blocks top to bottom: 4px above, 24 at the sides and below, 14
+    // between; the settings card 16 inside, 14 between its rows.
+    void Arrange()
+    {
+        int dpi = form.DeviceDpi;
+        int Px(float v) => Theme.Px(v, dpi);
+        int x = Px(24), w = Px(620) - Px(48), y = Px(4);
+        phones.Visible = listShown;
+        steps.Visible = !listShown;
+        problems.Visible = problemsShown;
+        var blocks = new List<Control> { phonesTitle, listShown ? phones : steps };
+        if (problemsShown)
+            blocks.Add(problems);
+        blocks.Add(settingsTitle);
+        foreach (var c in blocks)
+        {
+            c.Bounds = new Rectangle(x, y, w, ((Painted)c).Measure(w));
+            y += c.Height + Px(14);
+        }
+        int cy = Px(16), cw = w - Px(32);
+        foreach (var r in new[] { start, adb })
+        {
+            r.Bounds = new Rectangle(Px(16), cy, cw, r.Measure(cw));
+            cy += r.Height + Px(14);
+        }
+        displaySettings.Bounds = new Rectangle(Px(16), cy, displaySettings.TextWidth, displaySettings.Measure(cw));
+        cy += displaySettings.Height + Px(16);
+        settingsCard.Bounds = new Rectangle(x, y, w, cy);
+        form.ClientSize = new Size(Px(620), y + cy + Px(24));
+        form.Invalidate(true);
     }
 
     void Open()
@@ -240,7 +256,7 @@ sealed class Tray
         form.Activate();
     }
 
-    // The list's dots, in the ImageList's order.
+    // A role's or a row's state, as its dot shows it.
     const int Working = 0, Waiting = 1, Idle = 2;
 
     void Refresh()
@@ -302,22 +318,19 @@ sealed class Tray
         else if (s.AdbProblem != null)
             lines.Add($"USB connections are off: adb failed: {s.AdbProblem}");
 
+        // Laid out again only when something shown changed.
+        bool changed = problems.SetLines(lines) | listShown != rows.Count > 0 | problemsShown != lines.Count > 0;
         string rowsKey = string.Join("\n", rows.Select(r => r.Dot + "|" + string.Join("|", r.Cells)));
         if (rowsKey != shown)
         {
             shown = rowsKey;
-            phones.BeginUpdate();
-            phones.Items.Clear();
-            foreach (var (dot, cells) in rows)
-                phones.Items.Add(new ListViewItem(cells, dot));
-            phones.EndUpdate();
+            phones.SetRows(rows.Select(r => (r.Dot switch { Working => Theme.Working, Waiting => Theme.Waiting, _ => Theme.Off }, r.Cells)).ToList());
+            changed = true;
         }
-        phones.Visible = rows.Count > 0;
-        steps.Visible = rows.Count == 0;
-        string text = string.Join("\n", lines);
-        if (problems.Text != text)
-            problems.Text = text;
-        problems.Visible = lines.Count > 0;
+        listShown = rows.Count > 0;
+        problemsShown = lines.Count > 0;
+        if (changed)
+            Arrange();
         icon.Text = s.Links.Count == 0 ? "Exo: no phone" : $"Exo: {string.Join(", ", s.Links.Select(l => l.Camera ? "webcam" : "display"))}";
     }
 }

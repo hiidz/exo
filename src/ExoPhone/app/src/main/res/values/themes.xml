@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The app's screen: light only (no dark design yet), indigo accent,
+         dark icons on the cream system bars. -->
+    <style name="Exo" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:colorAccent">#3A3F8F</item>
+        <item name="android:colorPrimary">#3A3F8F</item>
+        <item name="android:colorControlActivated">#3A3F8F</item>
+        <item name="android:textColorPrimary">#1D1B20</item>
+        <item name="android:textColorSecondary">#5F5D6E</item>
+        <item name="android:windowBackground">@color/screen</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:alertDialogTheme">@style/Exo.Dialog</item>
+    </style>
+
+    <!-- Dialogs: a 28dp surface over the scrim. -->
+    <style name="Exo.Dialog" parent="android:Theme.Material.Light.Dialog.Alert">
+        <item name="android:colorAccent">#3A3F8F</item>
+        <item name="android:colorControlActivated">#3A3F8F</item>
+        <item name="android:textColorPrimary">#1D1B20</item>
+        <item name="android:textColorSecondary">#5F5D6E</item>
+        <item name="android:windowBackground">@drawable/dialog</item>
+        <item name="android:backgroundDimAmount">0.45</item>
+        <item name="android:buttonBarButtonStyle">@style/Exo.DialogButton</item>
+    </style>
+
+    <style name="Exo.DialogButton" parent="android:Widget.Material.Button.Borderless.Colored">
+        <item name="android:textAllCaps">false</item>
+    </style>
+
+    <color name="screen">#F7F4EE</color>
+</resources>

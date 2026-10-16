@@ -197,10 +197,12 @@ public class DisplayActivity extends Activity {
             root.addView(blackView, new FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
             statusView = new TextView(this);
-            statusView.setTextSize(24);
+            statusView.setTextSize(26);
+            statusView.setLineSpacing(0, 1.4f);
             statusView.setTextColor(Color.WHITE);
             statusView.setGravity(Gravity.CENTER);
-            statusView.setPadding(48, 48, 48, 48);
+            int side = Math.round(80 * getResources().getDisplayMetrics().density);
+            statusView.setPadding(side, side / 2, side, side / 2);
             root.addView(statusView, new FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
             if (settings.size == null) {
@@ -370,7 +372,19 @@ public class DisplayActivity extends Activity {
     private void showStatus(String sentence) {
         status = sentence;
         runOnUiThread(() -> {
-            statusView.setText(sentence);
+            // Pairing: the code on its own line, large, in saffron.
+            String[] p = Link.splitPairing(sentence);
+            if (p == null) {
+                statusView.setText(sentence);
+            } else {
+                android.text.SpannableString s = new android.text.SpannableString(p[0] + "\n" + p[1]);
+                int at = p[0].length() + 1, end = s.length();
+                s.setSpan(new android.text.style.RelativeSizeSpan(56f / 26), at, end, 0);
+                s.setSpan(new android.text.style.TypefaceSpan("monospace"), at, end, 0);
+                s.setSpan(new android.text.style.StyleSpan(android.graphics.Typeface.BOLD), at, end, 0);
+                s.setSpan(new android.text.style.ForegroundColorSpan(0xFFE0A526), at, end, 0);
+                statusView.setText(s);
+            }
             statusView.setVisibility(sentence == null ? View.GONE : View.VISIBLE);
         });
     }
@@ -578,6 +592,13 @@ public class DisplayActivity extends Activity {
     static volatile DisplayActivity running;
     /** Its sentence while it runs, for the app's screen: waiting, or why the PC refused; null once connected. */
     static volatile String status;
+
+    /** The PC refused the running display, which then stops trying. */
+    static boolean refused() {
+        DisplayActivity a = running;
+        Link l = a == null ? null : a.link;
+        return l != null && l.refused();
+    }
 
     /** "Stop display": ends the display and its connection. Main thread. */
     static void end() {

@@ -48,6 +48,7 @@
     <Using Remove="System.Windows.Forms" />
     <Using Remove="System.Drawing" />
     <EmbeddedResource Include="Exo.ico" LogicalName="ExoHub.Exo.ico" />
+    <EmbeddedResource Include="Exo-tray.ico" LogicalName="ExoHub.Exo-tray.ico" />
   </ItemGroup>
 
   <ItemGroup>

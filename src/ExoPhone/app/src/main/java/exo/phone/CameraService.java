@@ -52,6 +52,13 @@ public class CameraService extends Service {
     private volatile CameraRole current;    // the connection's camera, or null
     private static volatile CameraService instance;
 
+    /** The PC refused the running webcam, which then stops trying. */
+    static boolean refused() {
+        CameraService s = instance;
+        Link l = s == null ? null : s.link;
+        return l != null && l.refused();
+    }
+
     /**
      * MainActivity changed and saved the webcam's settings. Zoom, focus,
      * exposure and torch go into the running capture; another lens, side,
@@ -228,7 +235,7 @@ public class CameraService extends Service {
                 .setContentTitle("Exo webcam")
                 .setContentText(text)
                 .setStyle(new Notification.BigTextStyle().bigText(text))
-                .setSmallIcon(android.R.drawable.presence_video_online)
+                .setSmallIcon(R.drawable.ic_stat_exo)
                 .setOngoing(true)
                 .build();
     }

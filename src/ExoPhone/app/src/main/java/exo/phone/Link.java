@@ -142,6 +142,20 @@ final class Link implements Runnable {
     static final String NEEDS_PERMISSION = "Exo needs the Nearby devices permission to find the PC. Pick Wi-Fi again to allow it.";
     static final String BLOCKED = "Android does not let Exo use the network. Allow network data for Exo in Settings, Apps.";
     static final String HUB_TOO_OLD = "Exo on the PC is too old for this app. Update Exo on the PC.";
+    private static final String PAIRING_TAIL = ": Exo asks there. Allow it only if the PC shows ";
+
+    /** The sentence while the PC asks its user, with the code both ends show. */
+    static String pairing(String pc, String code) {
+        return "Allow this phone on " + pc + PAIRING_TAIL + code + ".";
+    }
+
+    /** A pairing sentence's words and its code, for screens that show the code large; null for any other. */
+    static String[] splitPairing(String sentence) {
+        int at = sentence == null || !sentence.endsWith(".") ? -1 : sentence.indexOf(PAIRING_TAIL);
+        if (at < 0) return null;
+        int code = at + PAIRING_TAIL.length();
+        return new String[] {sentence.substring(0, code - 1), sentence.substring(code, sentence.length() - 1)};
+    }
     private static final int CONNECT_TIMEOUT_MS = 3000, FIND_MS = 1000;
     static final int FRAME = 1, PING = 2, PONG = 3, FLAG_KEYFRAME = 1, FLAG_CONFIG = 2;
     static final int CURSOR_SHAPE = 4, CURSOR_POS = 5, TOUCH = 6, ACK = 7, PAUSE = 8, RESUME = 9, FLAG_VISIBLE = 1;
@@ -164,7 +178,7 @@ final class Link implements Runnable {
     private volatile Conn socket;
     private final Context context;
     private final Via via;
-    private boolean refused;
+    private volatile boolean refused;
     private int attempts;
     private String lastFailure;
     private String lastStatus = "";  // never a sentence, so the first status is passed on
@@ -205,6 +219,11 @@ final class Link implements Runnable {
         if (java.util.Objects.equals(sentence, lastStatus)) return;
         lastStatus = sentence;
         listener.onStatus(sentence);
+    }
+
+    /** The PC refused this phone, so the link has stopped trying. */
+    boolean refused() {
+        return refused;
     }
 
     /** The hub's refusal as the user should read it. text is the WELCOME body. */
@@ -519,7 +538,7 @@ final class Link implements Runnable {
                     throw new IOException(e);
                 }
                 Log.i(Codecs.TAG, "link pending: " + pc + " is asking its user, code " + code);
-                status("Allow this phone on " + pc + ": Exo asks there. Allow it only if the PC shows " + code + ".");
+                status(pairing(pc, code));
                 s.timeout(ASK_MS);
                 in.readFully(magic);
                 if (!java.util.Arrays.equals(magic, MAGIC)) throw new IOException("WELCOME has bad magic");

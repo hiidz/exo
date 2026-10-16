@@ -47,7 +47,7 @@ public class DisplayService extends Service {
         Notification n = new Notification.Builder(this, CHANNEL)
                 .setContentTitle("Exo display")
                 .setContentText("Still connected to the PC. Open Exo to go back to it.")
-                .setSmallIcon(android.R.drawable.ic_menu_view)
+                .setSmallIcon(R.drawable.ic_stat_exo)
                 .setContentIntent(open)
                 .setOngoing(true)
                 .build();

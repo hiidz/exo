@@ -27,6 +27,8 @@
     <!-- NoActionBar: the default theme draws an ActionBar over the content
          and hides its top. -->
     <application
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:label="Exo"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
         <!-- fullUser: the settings screen turns with the device, unless
@@ -37,6 +39,7 @@
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
+            android:theme="@style/Exo"
             android:screenOrientation="fullUser">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
