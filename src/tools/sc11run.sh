@@ -4,7 +4,7 @@
 # Shaped like linkrun.sh: hub, live logcat from a device time, timestats,
 # then a second hub that sets no reverse to collect. Adds the Chrome page
 # (campage.ps1) and a once-a-minute heat and battery sample per phone.
-# Usage: sc11run.sh <seconds> <tag> [display fps, 30]
+# Usage: CAM=<serial> DISP=<serial> sc11run.sh <seconds> <tag> [display fps, 30]
 # DISPVIA and CAMVIA in the environment, usb (the default) or wifi, pick
 # each phone's transport; the phone keeps it for later starts.
 #
@@ -15,7 +15,7 @@
 export MSYS_NO_PATHCONV=1
 sh C:/Dev/Exo/src/tools/preflight.sh || exit 1
 S=$1; TAG=$2; RATE=${3:-30}
-CAM=PHONESERIAL; DISP=TABLETSERIAL
+: ${CAM:?set CAM to the camera phone's serial} ${DISP:?set DISP to the display phone's serial}
 T=C:/Dev/Exo/src/ExoPhone/testdata/sc11/$TAG; mkdir -p $T
 BIN=C:/Dev/Exo/src/ExoHub/bin/Release/net10.0-windows
 HUB=$BIN/ExoHub.exe; ADB=$BIN/adb/adb.exe
@@ -93,7 +93,8 @@ wait $HUBPID
 say "hub exited: $(tail -1 $T/hub.log)"
 wait $SAMPLERPID
 sleep 2
-kill $LOGPID_PHONESERIAL $LOGPID_TABLETSERIAL 2>/dev/null
+eval kill \$LOGPID_$CAM \$LOGPID_$DISP 2>/dev/null
+eval DSTART=\$START_$DISP
 
 # Collection, through a hub that sets no reverse, so neither app reconnects.
 # The tablet writes its CSV after the connection ends; with ~100k rows that
@@ -102,10 +103,10 @@ hub $T/collect.log --no-reverse --seconds 180
 say "collect hub up"
 sample
 for i in $(seq 1 60); do
-    "$ADB" -s $DISP logcat -d -T $START_TABLETSERIAL.000 -s ExoPhone:V | grep -q "wrote .*-link-" && break
+    "$ADB" -s $DISP logcat -d -T $DSTART.000 -s ExoPhone:V | grep -q "wrote .*-link-" && break
     sleep 2
 done
-"$ADB" -s $DISP logcat -d -T $START_TABLETSERIAL.000 -s ExoPhone:V | grep "wrote " | tee -a $T/run.txt
+"$ADB" -s $DISP logcat -d -T $DSTART.000 -s ExoPhone:V | grep "wrote " | tee -a $T/run.txt
 for f in $("$ADB" -s $DISP shell "ls $FILES/ | grep -- -link-" | tr -d '\r'); do
     "$ADB" -s $DISP pull $FILES/$f $T/$f > /dev/null && say "pulled $f $(wc -c < $T/$f) bytes"
 done

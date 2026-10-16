@@ -9,8 +9,8 @@
 # passes through it:
 #   - the release certificate, CN=Exo Release, in CurrentUser\My; it signs
 #     the display driver, and the installer trusts it on the user's PC
-#   - the APK keystore, C:\Users\you\keys\exo-release.jks, alias exo,
-#     or EXO_KEYSTORE; its password from EXO_KEYSTORE_PASSWORD, else asked
+#   - the APK keystore, alias exo, its path in EXO_KEYSTORE;
+#     its password from EXO_KEYSTORE_PASSWORD, else asked
 #   - Inno Setup 6
 # Rebuilds the display driver signed with the release certificate; run
 # src/ExoDisplay/build.bat again before a dev install.ps1.
@@ -74,7 +74,7 @@ Step 'installer'
 
 if (-not $PcOnly) {
     Step 'phone app'
-    if (-not $env:EXO_KEYSTORE) { $env:EXO_KEYSTORE = 'C:\Users\you\keys\exo-release.jks' }
+    if (-not $env:EXO_KEYSTORE) { throw 'EXO_KEYSTORE is not set: the path of the APK keystore' }
     if (-not (Test-Path $env:EXO_KEYSTORE)) { throw "no keystore at $env:EXO_KEYSTORE" }
     if (-not $env:EXO_KEYSTORE_PASSWORD) {
         $env:EXO_KEYSTORE_PASSWORD = [Net.NetworkCredential]::new('', (Read-Host 'Keystore password' -AsSecureString)).Password
