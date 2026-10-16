@@ -1,11 +1,8 @@
-<!-- logo: centred wordmark, docs/img/logo-wordmark.svg, width 360 -->
 <h1 align="center">Exo</h1>
 
-<p align="center"><b>Your Android phone as a webcam and a second monitor for Windows.</b></p>
+<p align="center"><img src="docs/img/social-preview.png" alt="Exo: turns an Android phone or tablet into a webcam and a second monitor with touch for a Windows 11 PC. USB or Wi-Fi, Windows 11, Android 10+." width="720"></p>
 
 <p align="center">Plug it in by USB or join the same Wi-Fi, and the phone becomes a camera any app can pick, a touch screen beside your desktop, or both.</p>
-
-<!-- hero screenshot: a phone as a second monitor beside the PC, docs/img/hero.jpg -->
 
 - [What is Exo?](#what-is-exo)
 - [Why Exo](#why-exo)
@@ -45,7 +42,7 @@ And I wanted to see what Claude Opus 5.5 could do building an app from
 scratch: a Windows display driver, a virtual camera, a PC app and an
 Android app.
 
-<!-- screenshot: the phone app's home screen, and the PC window listing a phone, side by side -->
+<p align="center"><img src="docs/img/apps.png" alt="The phone app's home screen, and the PC window with one phone as the display and one as the webcam" width="720"></p>
 
 ## Features
 
@@ -65,8 +62,6 @@ Android app.
 - **Settings live on the phone.** The PC app sits in the tray, starts
   with Windows, and shows each phone with its role and state.
 - **Free and open source,** under the MIT License.
-
-<!-- screenshot: the phone's webcam settings, and the picture in a Windows camera app -->
 
 ## Getting started
 

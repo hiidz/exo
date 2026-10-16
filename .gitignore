@@ -25,6 +25,7 @@ obj/
 
 # Captured stills, regenerable
 *.png
+!docs/img/*.png
 
 # ExoPhone test input and run output, local evidence
 src/ExoPhone/testdata/
