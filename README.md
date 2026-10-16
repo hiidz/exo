@@ -1,5 +1,10 @@
 <h1 align="center">Exo</h1>
 
+<p align="center"><b>Use your Android phone or tablet as a webcam and a second monitor for Windows 11.</b><br>
+Free and open source, over USB or Wi-Fi. An alternative to SuperDisplay, Spacedesk and DroidCam.</p>
+
+<p align="center"><a href="https://github.com/hiidz/exo/releases/latest"><b>Download for Windows (setup.exe) and Android (APK)</b></a></p>
+
 <p align="center"><img src="docs/img/social-preview.png" alt="Exo: turns an Android phone or tablet into a webcam and a second monitor with touch for a Windows 11 PC. USB or Wi-Fi, Windows 11, Android 10+." width="720"></p>
 
 <p align="center">Plug it in by USB or join the same Wi-Fi, and the phone becomes a camera any app can pick, a touch screen beside your desktop, or both.</p>
