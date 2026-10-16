@@ -42,7 +42,16 @@ And I wanted to see what Claude Opus 5.5 could do building an app from
 scratch: a Windows display driver, a virtual camera, a PC app and an
 Android app.
 
-<p align="center"><img src="docs/img/apps.png" alt="The phone app's home screen, and the PC window with one phone as the display and one as the webcam" width="720"></p>
+<table align="center">
+  <tr>
+    <th>Windows</th>
+    <th>Android</th>
+  </tr>
+  <tr>
+    <td valign="top"><img src="docs/img/windows.png" alt="The PC window, with one phone as the display over USB and one as the webcam over Wi-Fi" width="420"></td>
+    <td valign="top"><img src="docs/img/android.png" alt="The phone app's home screen, with the display and webcam roles and their settings" width="300"></td>
+  </tr>
+</table>
 
 ## Features
 
