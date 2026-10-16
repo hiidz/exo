@@ -88,7 +88,6 @@ Settings are on the phone, under **Connection**, **Display** and
   down. For a portrait monitor, set its **Display orientation** to
   Portrait (or Portrait (flipped), whichever comes out upright) in
   Windows' display settings and hold the phone upright; touch follows.
-  On an Android 17 tablet, Android may turn the display with the tablet.
 - **Webcam:** front or back, the lens, the size and frame rate, a torch,
   and zoom, exposure and focus, live. The turn: **Auto** keeps the
   picture upright whichever way the phone lies on its side; **Fixed**
