@@ -178,7 +178,9 @@ sealed class Tray
         _ = form.Handle;
         Theme.TitleBar(form.Handle);
         Arrange();
-        form.DpiChanged += (_, _) => Arrange();
+        // After WinForms has applied Windows' suggested size, which runs
+        // after this event, so the measured size is the one kept.
+        form.DpiChanged += (_, _) => form.BeginInvoke(Arrange);
         // Light or dark follows Windows' app theme as it changes.
         SystemEvents.UserPreferenceChanged += (_, _) => form.BeginInvoke(() =>
         {
@@ -235,10 +237,12 @@ sealed class Tray
             y += c.Height + Px(14);
         }
         int cy = Px(16), cw = w - Px(32);
+        // Each row is 20 high; its bounds reach 3 past that above and below
+        // for the focus ring.
         foreach (var r in new[] { start, adb })
         {
-            r.Bounds = new Rectangle(Px(16), cy, cw, r.Measure(cw));
-            cy += r.Height + Px(14);
+            r.Bounds = new Rectangle(Px(16), cy - Px(3), cw, r.Measure(cw));
+            cy += Px(20) + Px(14);
         }
         displaySettings.Bounds = new Rectangle(Px(16), cy, displaySettings.TextWidth, displaySettings.Measure(cw));
         cy += displaySettings.Height + Px(16);

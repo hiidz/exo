@@ -25,6 +25,10 @@ sealed class PairingDialog : Form
         StartPosition = FormStartPosition.CenterScreen;
         ShowInTaskbar = true;
         TopMost = true;
+        // The body drags it as a caption would, so a double-click there
+        // would otherwise maximize it.
+        MaximizeBox = false;
+        MinimizeBox = false;
         AutoScaleMode = AutoScaleMode.None;
         KeyPreview = true;
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
@@ -35,7 +39,9 @@ sealed class PairingDialog : Form
         CancelButton = no;
         ActiveControl = no;
         Arrange();
-        DpiChanged += (_, _) => Arrange();
+        // After WinForms has applied Windows' suggested size, which runs
+        // after this event, so the measured size is the one kept.
+        DpiChanged += (_, _) => BeginInvoke(Arrange);
     }
 
     int Px(float v) => Theme.Px(v, DeviceDpi);

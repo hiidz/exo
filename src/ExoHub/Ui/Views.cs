@@ -270,7 +270,8 @@ sealed class CheckRow : Painted
         }
     }
 
-    public override int Measure(int width) => Px(20);
+    // The 20px box and 3px above and below it for the focus ring.
+    public override int Measure(int width) => Px(26);
 
     // For screen readers: a checkbox, named by its text, its state read here.
     protected override AccessibleObject CreateAccessibilityInstance() => new Access(this);

@@ -543,12 +543,19 @@ public class MainActivity extends Activity {
         segment.setElevation(on ? dp(1) : 0);
     }
 
+    /** A divider line across parent, marginDp above and below it. */
+    private void rule(LinearLayout parent, int marginDp) {
+        View rule = new View(this);
+        rule.setBackgroundColor(DIVIDER);
+        LinearLayout.LayoutParams at = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, Math.max(1, dp(1)));
+        at.topMargin = at.bottomMargin = dp(marginDp);
+        parent.addView(rule, at);
+    }
+
     /** Content under a divider line, 12dp below it. */
     private LinearLayout divided(View content) {
         LinearLayout l = column(0);
-        View rule = new View(this);
-        rule.setBackgroundColor(DIVIDER);
-        l.addView(rule, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, Math.max(1, dp(1))));
+        rule(l, 0);
         content.setPadding(content.getPaddingLeft(), dp(12), content.getPaddingRight(), content.getPaddingBottom());
         l.addView(content);
         return l;
@@ -562,6 +569,9 @@ public class MainActivity extends Activity {
         TextView value = text("", 15, ACCENT, MEDIUM);
         value.setGravity(Gravity.END);
         r.addView(value);
+        // 48dp, the smallest comfortable touch target, with a ripple.
+        r.setMinimumHeight(dp(48));
+        r.setBackground(touchable(null, 0));
         r.setOnClickListener(v -> onTap.run());
         parent.addView(underDivider ? divided(r) : r);
         return value;
@@ -570,11 +580,7 @@ public class MainActivity extends Activity {
     /** A setting row in the opened setup, 12dp above and below, a line above all but the first. */
     private TextView listRow(LinearLayout parent, String label, boolean line, Runnable onTap) {
         LinearLayout wrap = column(0);
-        if (line) {
-            View rule = new View(this);
-            rule.setBackgroundColor(DIVIDER);
-            wrap.addView(rule, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, Math.max(1, dp(1))));
-        }
+        if (line) rule(wrap, 0);
         LinearLayout r = new LinearLayout(this);
         r.setGravity(Gravity.CENTER_VERTICAL);
         r.setPadding(0, dp(12), 0, dp(12));
@@ -858,9 +864,13 @@ public class MainActivity extends Activity {
     private void pcList(List<Discovery.Answer> pcs) {
         LinearLayout list = column(0);
         list.setPadding(0, dp(8), 0, dp(8));
+        // Scrolls, so every PC and the address row stay reachable on a
+        // short landscape screen.
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(list);
         AlertDialog d = new AlertDialog.Builder(this)
                 .setTitle(pcs.isEmpty() ? "No PC answered. Is Exo running on it?" : "Connect to")
-                .setView(list)
+                .setView(scroll)
                 .create();
         for (Discovery.Answer a : pcs) {
             LinearLayout item = column(0);
@@ -874,13 +884,7 @@ public class MainActivity extends Activity {
             });
             list.addView(item);
         }
-        if (!pcs.isEmpty()) {
-            View rule = new View(this);
-            rule.setBackgroundColor(DIVIDER);
-            LinearLayout.LayoutParams at = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, Math.max(1, dp(1)));
-            at.topMargin = at.bottomMargin = dp(8);
-            list.addView(rule, at);
-        }
+        if (!pcs.isEmpty()) rule(list, 8);
         TextView type = text("Type its address...", 16, ACCENT, MEDIUM);
         type.setPadding(dp(24), dp(12), dp(24), dp(12));
         type.setBackground(touchable(null, 0));

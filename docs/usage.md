@@ -35,7 +35,7 @@ which reconnects in about a second.
 
 ## Settings
 
-Settings are on the phone, under **Connection**, **Display** and
+Settings are on the phone, under **Connect by**, **Display** and
 **Webcam**:
 
 - **Display:** 30 or 60fps. The monitor is the phone's full screen, long
