@@ -127,6 +127,8 @@ final class Link implements Runnable {
     // 8, over Wi-Fi only: the PC asks its user, then answers again; or its
     // user said no, and this phone stops asking until its role starts again.
     static final int PENDING = 6, DENIED = 7;
+    // 10, over Wi-Fi only: pairing paused for a few minutes; tried again.
+    static final int PAIRING_PAUSED = 8;
     private static final int ASK_MS = 120_000;
     static final String WAITING = "Waiting for the PC. Plug this phone in by USB, with Exo running on the PC.";
     static final String NO_WIFI = "This phone is not on Wi-Fi. Join the PC's network.";
@@ -201,6 +203,8 @@ final class Link implements Runnable {
                 return "Exo's webcam is not set up on the PC. Reinstall Exo on the PC.";
             case DISPLAY_UNAVAILABLE:
                 return "Exo's display driver is not working on the PC. Reinstall Exo on the PC.";
+            case PAIRING_PAUSED:
+                return "The PC paused pairing for a few minutes. Exo tries again by itself.";
             case DENIED:
                 return "The PC did not allow this phone. Start again to ask again.";
             case BAD_HELLO:
@@ -253,7 +257,7 @@ final class Link implements Runnable {
                     status(e.getMessage());
                     break;
                 }
-                if (!stopped) status(e instanceof NoWifi ? NO_WIFI : blocked(e) ? blockedSentence(context) : waiting());
+                if (!stopped) status(e instanceof NoWifi ? NO_WIFI : e instanceof HubTooOld ? HUB_TOO_OLD :blocked(e) ? blockedSentence(context) : waiting());
             }
             if (stopped || refused) break;
             try {
@@ -280,12 +284,19 @@ final class Link implements Runnable {
     }
 
     /**
-     * Found before HELLO and not fixed by trying again: a hub too old for
-     * TLS, or not the PC this phone paired with. The message is the sentence.
+     * Not fixed by trying again: not the PC this phone paired with, or a
+     * pairing the PC started over. The message is the sentence.
      */
     private static final class Refusal extends IOException {
         Refusal(String sentence) {
             super(sentence);
+        }
+    }
+
+    /** The picked PC's discovery answer says its hub is too old for TLS. */
+    private static final class HubTooOld extends IOException {
+        HubTooOld() {
+            super("the PC's answer says protocol below " + TLS_FROM);
         }
     }
 
@@ -376,7 +387,8 @@ final class Link implements Runnable {
         if (hub == null) throw new IOException("no answer from " + via.target());
         // A hub from before TLS would close on the TLS handshake, and the
         // phone could only say it is looking.
-        if (hub.protocol < TLS_FROM) throw new Refusal(HUB_TOO_OLD);
+        // Tried again all the same: anyone on the network can send an answer.
+        if (hub.protocol < TLS_FROM) throw new HubTooOld();
         Socket t = net.getSocketFactory().createSocket();
         Pairing.HubTrust trust = new Pairing.HubTrust(Pairing.pin(context, via.target()));
         SSLSocket[] tls = new SSLSocket[1];

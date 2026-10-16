@@ -57,6 +57,9 @@ static class Wire
     // own nonce [32], raw, which must hash to HELLO's commitment. Both sides
     // then show the code (Pairing.Code).
     public const byte Pending = 6, Denied = 7;
+    // From 10, Wi-Fi only: the hub paused pairing for a few minutes after
+    // abandoned pairings; the phone says so and tries again.
+    public const byte PairingPaused = 8;
 
     // Every message after the handshake: type, flags, reserved u16, body length u32.
     public const int HeaderSize = 8;

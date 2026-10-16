@@ -161,8 +161,16 @@ sealed class DeviceListener : IDisposable
         var net = new NetworkStream(s, ownsSocket: true);
         // A TLS handshake record starts 0x16; a HELLO starts with 'E'.
         Span<byte> first = stackalloc byte[1];
-        if (serial != null || s.Receive(first, SocketFlags.Peek) != 1 || first[0] != 0x16)
-            return net;
+        try
+        {
+            if (serial != null || s.Receive(first, SocketFlags.Peek) != 1 || first[0] != 0x16)
+                return net;
+        }
+        catch
+        {
+            net.Dispose();  // Serve's using never got it
+            throw;
+        }
         var tls = new SslStream(net, leaveInnerStreamOpen: false);
         try
         {
@@ -353,18 +361,17 @@ sealed class DeviceListener : IDisposable
                     Log($"{name} over Wi-Fi from {who}: closed, nobody to ask yet");
                     return null;
                 }
-                if (PairingProblem != null)
-                    return Refuse(net, name, Wire.Denied, "pairing is paused after abandoned pairings");
                 byte[] commitment = body[(pairAt + 1)..(pairAt + Wire.PairFields)];
                 string key = phone.Id + Convert.ToHexString(commitment);
-                byte[] hubNonce = NonceFor(key);
+                if (BeginPairing(key) is not { } entry)
+                    return Refuse(net, name, Wire.PairingPaused, "pairing is paused after abandoned pairings");
+                byte[] hubNonce = entry.Nonce;
                 Log($"{name} over Wi-Fi from {who}: pairing, {(phoneAsks ? "the phone holds no pin" : "not allowed here")}");
                 SendWelcome(net, Wire.Version, Wire.Pending, [.. hubNonce, .. Encoding.UTF8.GetBytes(Dns.GetHostName())]);
                 // The phone reveals its nonce at once. One that does not has
                 // seen the code this PC would show and may try again with a
                 // new commitment until it matches the code on the phone it
-                // sits in front of: so only a few, then no pairing until
-                // the hub starts again.
+                // sits in front of: so only a few at a time (BeginPairing).
                 byte[] phoneNonce = new byte[Wire.NonceSize];
                 bool revealed;
                 try
@@ -378,23 +385,33 @@ sealed class DeviceListener : IDisposable
                 }
                 if (!revealed)
                 {
-                    lock (nonces)
+                    int n;
+                    lock (pairings)
                     {
-                        nonces.Remove(key);
-                        if (++abandoned >= MaxAbandoned)
-                            PairingProblem = "Wi-Fi pairing is paused: something on the network started pairing and " +
-                                             "gave up several times. Restart Exo to pair again.";
+                        pairings.Remove(key);
+                        abandonedAt.Add(Stopwatch.GetTimestamp());
+                        n = abandonedAt.Count;
                     }
-                    Log($"{name} pairing ABANDONED ({abandoned} since the last answer)");
+                    Log($"{name} pairing ABANDONED ({n} in the last {PausedFor.TotalMinutes:F0} minutes)");
                     return null;
                 }
                 string code = Pairing.Code(Pairing.Certificate, phoneCert, phoneNonce, hubNonce);
-                Log($"{name} code {code}, asking the PC's user");
-                bool yes = ask(phone, code);
-                lock (nonces)
+                bool yes;
+                if (entry.Answer is bool answered)
                 {
-                    nonces.Remove(key);
-                    abandoned = 0;
+                    // A retry after the phone stopped waiting, answered meanwhile.
+                    Log($"{name} code {code}, already answered");
+                    yes = answered;
+                }
+                else
+                {
+                    Log($"{name} code {code}, asking the PC's user");
+                    yes = ask(phone, code);
+                    lock (pairings)
+                    {
+                        entry.Answer = yes;
+                        entry.AnsweredAt = Stopwatch.GetTimestamp();
+                    }
                 }
                 if (!yes)
                     return Refuse(net, name, Wire.Denied, "the PC's user did not allow this phone");
@@ -441,23 +458,69 @@ sealed class DeviceListener : IDisposable
         return conn;
     }
 
-    // The hub's nonce for one pairing, by the phone's identity and
-    // commitment: the phone keeps its nonce for the whole pairing, so a
-    // second role or a retry gets the same nonce here and shows the same
-    // code. Dropped once the PC's user answers, or the pairing is abandoned.
-    readonly Dictionary<string, byte[]> nonces = new();
-    const int MaxAbandoned = 5;
-    int abandoned;  // under nonces: pairings abandoned since the last answer
-    // For the window: set once pairing paused, until the hub restarts.
-    public volatile string PairingProblem;
-
-    byte[] NonceFor(string key)
+    // One pairing, by the phone's identity and commitment: the phone keeps
+    // its nonce for the whole pairing, so a second role or a retry gets the
+    // same hub nonce here and shows the same code. Kept AnswerKept after the
+    // PC's user answers, so a phone that stopped waiting just before still
+    // gets that answer; dropped at once when abandoned.
+    sealed class PairingEntry
     {
-        lock (nonces)
+        public readonly byte[] Nonce = RandomNumberGenerator.GetBytes(Wire.NonceSize);
+        public bool? Answer;      // under pairings
+        public long AnsweredAt;   // under pairings, Stopwatch ticks
+    }
+
+    // At most MaxPairings at a time, counting those not yet answered and
+    // those abandoned within PausedFor. A slot is taken when the hub nonce
+    // goes out, not when the pairing ends, so a man in the middle cannot
+    // open many at once and finish only the one whose code matches; and the
+    // pause ends by itself, so a stranger can hold it off only for minutes.
+    const int MaxPairings = 5;
+    static readonly TimeSpan PausedFor = TimeSpan.FromMinutes(5), AnswerKept = TimeSpan.FromSeconds(60);
+    readonly Dictionary<string, PairingEntry> pairings = new();
+    readonly List<long> abandonedAt = new();  // under pairings, Stopwatch ticks
+
+    // Null when every slot is taken.
+    PairingEntry BeginPairing(string key)
+    {
+        lock (pairings)
         {
-            if (!nonces.TryGetValue(key, out var n))
-                nonces[key] = n = RandomNumberGenerator.GetBytes(Wire.NonceSize);
-            return n;
+            Prune();
+            if (pairings.TryGetValue(key, out var e))
+                return e;
+            if (Taken() >= MaxPairings)
+                return null;
+            return pairings[key] = new PairingEntry();
+        }
+    }
+
+    // Under pairings.
+    int Taken() => pairings.Values.Count(e => e.Answer == null) + abandonedAt.Count;
+
+    // Under pairings.
+    void Prune()
+    {
+        long now = Stopwatch.GetTimestamp();
+        abandonedAt.RemoveAll(t => Stopwatch.GetElapsedTime(t, now) > PausedFor);
+        foreach (var k in pairings.Where(p => p.Value.Answer != null &&
+                                              Stopwatch.GetElapsedTime(p.Value.AnsweredAt, now) > AnswerKept)
+                                  .Select(p => p.Key).ToList())
+            pairings.Remove(k);
+    }
+
+    // For the window: pairing paused by abandoned pairings, null otherwise.
+    public string PairingProblem
+    {
+        get
+        {
+            lock (pairings)
+            {
+                Prune();
+                return abandonedAt.Count > 0 && Taken() >= MaxPairings
+                    ? "Wi-Fi pairing is paused for a few minutes: something on the network started pairing and gave up " +
+                      "several times."
+                    : null;
+            }
         }
     }
 
