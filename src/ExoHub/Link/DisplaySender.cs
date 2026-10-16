@@ -137,7 +137,7 @@ sealed class DisplaySender : IDisposable
     readonly Queue<(long qpc, double median)> tickMedians = new();
     readonly Queue<(long qpc, int bytes)> ackedBytes = new();
     bool tickAtCap;
-    public int TargetCuts, TargetRises;
+    public int TargetCuts, TargetRises, Oversized;
 
     // The target the encoder is to run at, or 0 for an encoder not built
     // for this connection.
@@ -158,7 +158,7 @@ sealed class DisplaySender : IDisposable
             fps = rate;
             bitrate = target = BitrateFor(rate, wifi);
             adaptive = wifi && BitrateOverride == 0;
-            ceiling = BitrateAt30 * rate / 30;
+            ceiling = adaptive ? BitrateAt30 * rate / 30 : bitrate;
             ResetSignal();
             keyframeWanted = waitForKeyframe = true;
             paused = false;
@@ -352,13 +352,16 @@ sealed class DisplaySender : IDisposable
         calmSinceQpc = riseAtQpc = Stopwatch.GetTimestamp();
     }
 
-    // Under gate, each 250ms tick: the target over Wi-Fi. Returns a line to
-    // log when it changed.
+    // Under gate, each 250ms tick: the target over Wi-Fi, and on any link
+    // its rise back after a frame too large to send. Returns a line to log
+    // when it changed.
     string Adapt()
     {
-        if (!adaptive || stream == null || paused || tickAcks.Count == 0)
+        if (stream == null || paused || (adaptive ? tickAcks.Count == 0 : target >= ceiling))
             return null;
         long now = Stopwatch.GetTimestamp();
+        if (!adaptive)
+            return Rise(now, "after a frame too large");
         tickAcks.Sort();
         double median = tickAcks[tickAcks.Count / 2];
         tickAcks.Clear();
@@ -386,12 +389,19 @@ sealed class DisplaySender : IDisposable
             return $"{serial} Wi-Fi target {was / 1e6:F1} -> {target / 1e6:F1} Mbps: ack median {median:F0}ms{(atCap ? ", at the cap" : "")}, " +
                    $"floor {floorMs:F0}ms, acked {acked / 1e6:F1} Mbps in the last second";
         }
+        return Rise(now, $"ack median {median:F0}ms");
+    }
+
+    // Under gate: 8% a second towards the ceiling once 2s passed calm.
+    string Rise(long now, string why)
+    {
+        uint was = target;
         if (target >= ceiling || now - calmSinceQpc < 2 * Stopwatch.Frequency || now < riseAtQpc)
             return null;
         riseAtQpc = now + Stopwatch.Frequency;
         target = (uint)Math.Min(target * RiseFactor, ceiling);
         TargetRises++;
-        return $"{serial} Wi-Fi target {was / 1e6:F1} -> {target / 1e6:F1} Mbps, ack median {median:F0}ms";
+        return $"{serial} {(adaptive ? "Wi-Fi " : "")}target {was / 1e6:F1} -> {target / 1e6:F1} Mbps, {why}";
     }
 
     public bool TakeKeyframeRequest(uint encoderFps, uint encoderBitrate)
@@ -443,6 +453,23 @@ sealed class DisplaySender : IDisposable
                 }
                 waitForKeyframe = false;
                 firstOfConnection = true;
+            }
+            // Past the wire's limit the phone would drop the connection. The
+            // frame goes instead, and with it every frame that references
+            // it, so the phone gets nothing until a new keyframe, encoded at
+            // three quarters of the rate, which rises again 2s later as over
+            // Wi-Fi. Seen after a still desktop at 2944x1840@30 over USB:
+            // 4.46MB and 5.37MB P-frames at 40 Mbps.
+            if (FrameHeader - Wire.HeaderSize + length > Wire.MaxBody)
+            {
+                uint was = target;
+                target = (uint)Math.Max(target * CutFactor, WifiFloor);
+                calmSinceQpc = Stopwatch.GetTimestamp();
+                keyframeWanted = waitForKeyframe = true;
+                Oversized++;
+                Log($"{serial} frame seq {n} of {length} bytes is past the {Wire.MaxBody}-byte limit, dropped" +
+                    $"{(keyframe ? " (a keyframe)" : "")}; target {was / 1e6:F1} -> {target / 1e6:F1} Mbps, a keyframe asked for");
+                return;
             }
             Frame f = free.Count > 0 ? free.Pop() : new Frame();
             if (f.Data.Length < length)

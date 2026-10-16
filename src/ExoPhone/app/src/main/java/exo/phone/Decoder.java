@@ -196,6 +196,10 @@ final class Decoder {
         // choosing, so the choice is checked against fps as DisplaySettings was.
         int rate = Codecs.maxRate(codec.getCodecInfo(), hintWidth, hintHeight);
         if (rate > 0) format.setInteger(MediaFormat.KEY_OPERATING_RATE, rate);
+        // Room for any frame the link accepts. Left alone the TB375FC's
+        // decoder took 4191232 bytes at 2944x1840, under the link's limit,
+        // and a frame between the two would overflow its input buffer.
+        format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, Link.MAX_BODY);
         codec.setCallback(callback, handler);
         // Counted only. Measured on the SM-G991B: the callback's time is the
         // frame's own timestamp echoed back, and it fired for all 972 frames

@@ -207,9 +207,13 @@ sealed class Tray
         // Now, so Show and Close can reach this thread before the window
         // was ever shown.
         _ = form.Handle;
+        // Every close hides it, whoever sent it: a WM_CLOSE from another
+        // process (CloseMainWindow, TaskManagerClosing) once destroyed the
+        // window, which Show and Close invoke on. Only signing out and the
+        // hub's own exit close it; refusing a sign-out would hold up Windows.
         form.FormClosing += (_, e) =>
         {
-            if (e.CloseReason != CloseReason.UserClosing)
+            if (e.CloseReason is CloseReason.WindowsShutDown or CloseReason.ApplicationExitCall)
                 return;
             e.Cancel = true;
             form.Hide();

@@ -609,7 +609,8 @@ Console.WriteLine($"sender cursor: shapes sent={display.ShapesSent} positions gi
                   $"sent={display.PositionsSent} replaced before sending={display.PositionsReplaced}");
 Console.WriteLine($"encoded->sent   ms {Spread(display.WaitMs)}");
 Console.WriteLine($"sender acks: messages={display.Acks} frames acked={display.Acked} busy at the cap={display.AtCap} " +
-                  $"stall write-offs={display.StallReleases} Wi-Fi target cuts={display.TargetCuts} rises={display.TargetRises}");
+                  $"stall write-offs={display.StallReleases} Wi-Fi target cuts={display.TargetCuts} target rises={display.TargetRises} " +
+                  $"too large={display.Oversized}");
 Console.WriteLine($"sent->acked     ms {Spread(display.AckMs)}");
 Console.WriteLine($"write blocked   ms {Spread(display.WriteMs)}");
 if (converter?.Pool is Nv12Pool pool)
