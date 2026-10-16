@@ -64,6 +64,9 @@ public class DisplayActivity extends Activity {
     // The link's sentence over the video: waiting, or why the PC refused.
     // Hidden while connected.
     private TextView statusView;
+    // Black over the video and pointer while the hub sends no picture
+    // (Link.onPicture), under the sentence.
+    private View blackView;
     // The mode this start sent, or sends once the window has turned.
     private DisplaySettings settings;
 
@@ -187,6 +190,12 @@ public class DisplayActivity extends Activity {
                 getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
                         android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::back);
             }
+            // Not clickable, so touch still reaches the video view.
+            blackView = new View(this);
+            blackView.setBackgroundColor(Color.BLACK);
+            blackView.setVisibility(View.GONE);
+            root.addView(blackView, new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
             statusView = new TextView(this);
             statusView.setTextSize(24);
             statusView.setTextColor(Color.WHITE);
@@ -296,6 +305,11 @@ public class DisplayActivity extends Activity {
                                     cursorLatest = null;
                                 }
                                 writeCursorRows(file(conn + "-cursor.csv"), rows);
+                            }
+
+                            @Override
+                            public void onPicture(boolean shown) {
+                                runOnUiThread(() -> blackView.setVisibility(shown ? View.GONE : View.VISIBLE));
                             }
                         });
                 link.start();

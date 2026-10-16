@@ -104,6 +104,13 @@ final class Link implements Runnable {
         /** A display connection ended. name is the one newDecoder got. Link thread. */
         default void onLinkEnded(String name) {
         }
+
+        /**
+         * The display connection's picture stopped, or the connection ended
+         * (false), or a frame came (true). Only on a change. Any thread.
+         */
+        default void onPicture(boolean shown) {
+        }
     }
 
     static final byte[] MAGIC = {'E', 'X', 'O', 0};
@@ -139,6 +146,11 @@ final class Link implements Runnable {
     static final int FRAME = 1, PING = 2, PONG = 3, FLAG_KEYFRAME = 1, FLAG_CONFIG = 2;
     static final int CURSOR_SHAPE = 4, CURSOR_POS = 5, TOUCH = 6, ACK = 7, PAUSE = 8, RESUME = 9, FLAG_VISIBLE = 1;
     private static final int PING_MS = 1000, SILENCE_MS = 3000;
+    // The hub resends the picture every 500ms while it has one, so this
+    // long without a FRAME means it has none, as when Windows shows "PC
+    // screen only": the display goes black, as SuperDisplay's does, rather
+    // than freezing on its last picture.
+    private static final long NO_PICTURE_NS = 2_000_000_000L;
     static final int FRAME_FIELDS = 4 + 3 * 8; // seq, present, encoded, sent
     static final int HEADER_SIZE = 8, MAX_BODY = 4 << 20;
     private static final int WELCOME_TIMEOUT_MS = 2000, RETRY_MS = 1000;
@@ -170,6 +182,10 @@ final class Link implements Runnable {
     private String displayName;
     private int resumes;
     private volatile int spoken;
+    // The last FRAME's arrival, or the connection's start or RESUME; and
+    // whether the picture is out for NO_PICTURE_NS.
+    private volatile long lastFrameNs;
+    private final java.util.concurrent.atomic.AtomicBoolean noPicture = new java.util.concurrent.atomic.AtomicBoolean();
 
     /**
      * version is VERSION except to prove a mismatch is refused; then this end
@@ -561,6 +577,8 @@ final class Link implements Runnable {
             ArrayList<long[]> pongs = new ArrayList<>();
             ScheduledExecutorService pinger = Executors.newSingleThreadScheduledExecutor();
             pinger.scheduleAtFixedRate(() -> ping(out), 0, PING_MS, TimeUnit.MILLISECONDS);
+            lastFrameNs = System.nanoTime();
+            pinger.scheduleAtFixedRate(this::checkPicture, PING_MS, PING_MS, TimeUnit.MILLISECONDS);
             upward = new Upward(pinger, out);
             Decoder first;
             synchronized (view) {
@@ -578,6 +596,9 @@ final class Link implements Runnable {
             } finally {
                 upward = null;
                 pinger.shutdownNow();
+                // Black under the waiting sentence, not the last picture,
+                // until the next connection's first frame.
+                if (noPicture.compareAndSet(false, true)) listener.onPicture(false);
                 // The next connection replays the shape and position.
                 listener.onCursorPos(false, 0, 0, 0);
                 Log.i(Codecs.TAG, "link connection " + connections + " ended: " + counts + ", pongs " + pongs.size());
@@ -766,6 +787,7 @@ final class Link implements Runnable {
                 return true;
             }
             d = decoder = listener.newDecoder(displayName + "-resume" + (++resumes), this::sendAck);
+            lastFrameNs = System.nanoTime();
             sendUp(RESUME, new byte[0]);
         }
         Log.i(Codecs.TAG, "link resumed");
@@ -810,6 +832,17 @@ final class Link implements Runnable {
             }
         } catch (IOException e) {
             // The reader sees the same failure and ends the connection.
+        }
+    }
+
+    /** On the pinger's thread: no FRAME for NO_PICTURE_NS while showing puts the picture out. */
+    private void checkPicture() {
+        synchronized (view) {
+            if (paused) return;
+        }
+        if (System.nanoTime() - lastFrameNs > NO_PICTURE_NS && noPicture.compareAndSet(false, true)) {
+            Log.i(Codecs.TAG, "link: no picture from the hub for " + NO_PICTURE_NS / 1_000_000 + "ms; display black");
+            listener.onPicture(false);
         }
     }
 
@@ -925,6 +958,11 @@ final class Link implements Runnable {
             byte[] data = new byte[length - FRAME_FIELDS];
             in.readFully(data);
             u.recvNs = System.nanoTime();
+            lastFrameNs = u.recvNs;
+            if (noPicture.compareAndSet(true, false)) {
+                Log.i(Codecs.TAG, "link: picture back");
+                listener.onPicture(true);
+            }
             counts.received++;
             if (counts.lastSeq >= 0) counts.seqGaps += u.seq - counts.lastSeq - 1;
             counts.lastSeq = u.seq;
