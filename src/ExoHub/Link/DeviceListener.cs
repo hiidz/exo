@@ -418,6 +418,17 @@ sealed class DeviceListener : IDisposable
                     return Refuse(net, name, Wire.Denied, "the PC's user did not allow this phone");
                 Ui.Settings.Allow(phone.Id, fingerprint, phone.Name);
                 Log($"{name} allowed by the PC's user, certificate {fingerprint[..16]}");
+                // The phone sends nothing more until WELCOME, so a readable
+                // socket here is one it closed, with or without TLS's
+                // close_notify, while the PC's user decided:
+                // a try it gave up on after ASK_MS, whose role would take
+                // the place of its live retry, or a phone gone, for which a
+                // monitor would be plugged for nobody.
+                if (s.Poll(0, SelectMode.SelectRead))
+                {
+                    Log($"{name} closed before the answer, not accepted");
+                    return null;
+                }
             }
         }
 

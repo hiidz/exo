@@ -41,7 +41,7 @@ static class ExoDisplayDriver
         }
         if (path == "")
         {
-            why = "not installed (src/ExoDisplay/install.ps1); the display role cannot work";
+            why = "Exo's display driver is not installed. Reinstall Exo on this PC.";
             return null;
         }
 
