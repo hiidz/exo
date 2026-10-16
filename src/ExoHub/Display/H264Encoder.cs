@@ -111,8 +111,8 @@ sealed class H264Encoder : IDisposable
     public bool HasPending { get { lock (gate) return pending != null; } }
 
     // One line per forced IDR once its output has come out: whether the
-    // encoder honoured it. Filled on the event thread, so read through
-    // TakeForcedResults.
+    // encoder honoured it; and one per bitrate it refused. Filled on other
+    // threads, so read through TakeForcedResults.
     readonly List<string> forcedResults = new();
 
     public string[] TakeForcedResults()
@@ -354,8 +354,21 @@ sealed class H264Encoder : IDisposable
         {
             sample.SampleTime = time;
             sample.SampleDuration = duration;
+            // Only the AMD MFT is known to take it. One that refuses keeps
+            // its built rate rather than ending the hub: this runs on
+            // whichever thread kicked the encoder, with nothing above to
+            // catch it.
             if (retarget)
-                codec.Set(CodecApi.MeanBitRate, target, CodecApi.VT_UI4);
+            {
+                try
+                {
+                    codec.Set(CodecApi.MeanBitRate, target, CodecApi.VT_UI4);
+                }
+                catch (COMException ex)
+                {
+                    forcedResults.Add($"{Name} refused a running bitrate of {target}: 0x{ex.HResult:X8}");
+                }
+            }
             // Set immediately before the input it applies to, so there is
             // no doubt which frame the encoder makes the IDR.
             if (force)

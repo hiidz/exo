@@ -298,8 +298,13 @@ sealed class DisplaySender : IDisposable
                 var done = inFlight.Dequeue();
                 double ms = Ms(now - done.qpc);
                 AckMs.Add(ms);
-                tickAcks.Add(ms);
-                ackedBytes.Enqueue((now, done.bytes));
+                // Read only by the Wi-Fi rate control, which also empties
+                // them; elsewhere they would grow for the whole connection.
+                if (adaptive)
+                {
+                    tickAcks.Add(ms);
+                    ackedBytes.Enqueue((now, done.bytes));
+                }
                 Acked++;
                 k = kick;
             }
@@ -463,7 +468,7 @@ sealed class DisplaySender : IDisposable
             if (FrameHeader - Wire.HeaderSize + length > Wire.MaxBody)
             {
                 uint was = target;
-                target = (uint)Math.Max(target * CutFactor, WifiFloor);
+                target = (uint)Math.Max(target * CutFactor, Math.Min(WifiFloor, target));
                 calmSinceQpc = Stopwatch.GetTimestamp();
                 keyframeWanted = waitForKeyframe = true;
                 Oversized++;
